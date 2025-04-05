@@ -1,5 +1,5 @@
 ## 현재 제작 중인 모델
--**DoubleFusionNet**
+- **DoubleFusionNet**
 
 ## 제작 완료한 모델
 - **SeQRoN**: Seq2Seq + Neuron
