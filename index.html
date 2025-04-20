@@ -1,65 +1,119 @@
 <!DOCTYPE html>
 <html lang="ko">
 <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Kossistant Chat</title>
-    <link rel="stylesheet" href="style.css" />
+  <meta charset="UTF-8">
+  <title>Kossistant Chat</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      background-color: #f2f2f2;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 20px;
+    }
+    #chat-box {
+      width: 100%;
+      max-width: 600px;
+      height: 500px;
+      overflow-y: auto;
+      background: white;
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+    }
+    .message {
+      margin: 10px 0;
+      display: flex;
+    }
+    .user .bubble {
+      background-color: #dcf8c6;
+      align-self: flex-end;
+      margin-left: auto;
+    }
+    .bot .bubble {
+      background-color: #eee;
+      align-self: flex-start;
+      margin-right: auto;
+    }
+    .bubble {
+      padding: 10px 14px;
+      border-radius: 16px;
+      max-width: 70%;
+      white-space: pre-wrap;
+    }
+    #input-box {
+      display: flex;
+      margin-top: 15px;
+      width: 100%;
+      max-width: 600px;
+    }
+    #user-input {
+      flex: 1;
+      padding: 10px;
+      border: 1px solid #ccc;
+      border-radius: 12px;
+      font-size: 16px;
+    }
+    #send-btn {
+      margin-left: 10px;
+      padding: 10px 16px;
+      background-color: #4caf50;
+      color: white;
+      border: none;
+      border-radius: 12px;
+      cursor: pointer;
+    }
+    #send-btn:disabled {
+      opacity: 0.5;
+    }
+  </style>
 </head>
 <body>
-    <div class="container">
-        <header>
-            <h1>Kossistant Chat</h1>
-            <p>궁금한 점을 물어보세요!</p>
-        </header>
+  <h2>Kossistant와 대화하기</h2>
+  <div id="chat-box"></div>
+  <div id="input-box">
+    <input type="text" id="user-input" placeholder="메시지를 입력하세요..." />
+    <button id="send-btn">보내기</button>
+  </div>
 
-        <div class="chat-box" id="chatBox">
-            <!-- 봇의 응답만 이곳에 표시됩니다. -->
-        </div>
+  <script type="module">
+    import { Client } from "https://cdn.jsdelivr.net/npm/@gradio/client/dist/index.min.js";
 
-        <div class="input-area">
-            <input id="userInput" type="text" placeholder="질문을 입력하세요" />
-            <button id="sendBtn">보내기</button>
-        </div>
+    const chatBox = document.getElementById("chat-box");
+    const input = document.getElementById("user-input");
+    const sendBtn = document.getElementById("send-btn");
 
-        <footer>
-            <p>© 2025 Kossistant, 모든 권리 보유.</p>
-        </footer>
-    </div>
+    const client = await Client.connect("Yuchan5386/Kossistant-1");
 
-    <script type="module">
-        import { Client } from "https://cdn.jsdelivr.net/npm/@gradio/client/dist/index.min.js";
+    async function sendMessage() {
+      const text = input.value.trim();
+      if (!text) return;
 
-        (async () => {
-            const client = await Client.connect("Yuchan5386/Kossistant-1");
+      // 유저 메시지 출력
+      chatBox.innerHTML += `<div class="message user"><div class="bubble">${text}</div></div>`;
+      chatBox.scrollTop = chatBox.scrollHeight;
+      input.value = "";
+      sendBtn.disabled = true;
 
-            const sendMessage = async () => {
-                const userInput = document.querySelector("#userInput").value;
-                if (!userInput.trim()) return;
+      try {
+        const result = await client.predict("/chat_respond", { text });
+        const html = result.data;
 
-                // 입력 필드 초기화
-                document.querySelector("#userInput").value = '';
+        // 결과 HTML 붙이기 (이미 bubble 구조로 옴)
+        chatBox.innerHTML += html;
+        chatBox.scrollTop = chatBox.scrollHeight;
+      } catch (e) {
+        chatBox.innerHTML += `<div class="message bot"><div class="bubble">오류가 발생했어요.</div></div>`;
+      }
 
-                // 챗봇의 응답을 가져와서 표시
-                const result = await client.predict("/chat_respond", [userInput]);
-                const botMessageDiv = document.createElement('div');
-                botMessageDiv.classList.add('message', 'bot');
-                const botBubble = document.createElement('div');
-                botBubble.classList.add('bubble', 'bot-bubble');
-                botBubble.textContent = result.data[0];
-                botMessageDiv.appendChild(botBubble);
-                document.querySelector("#chatBox").appendChild(botMessageDiv);
+      sendBtn.disabled = false;
+    }
 
-                // 스크롤을 최신 메시지로 자동 이동
-                const chatBox = document.querySelector("#chatBox");
-                chatBox.scrollTop = chatBox.scrollHeight;
-            };
-
-            document.querySelector("#sendBtn").addEventListener("click", sendMessage);
-            document.querySelector("#userInput").addEventListener("keypress", (e) => {
-                if (e.key === "Enter") sendMessage();
-            });
-        })();
-    </script>
+    sendBtn.onclick = sendMessage;
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") sendMessage();
+    });
+  </script>
 </body>
 </html>
