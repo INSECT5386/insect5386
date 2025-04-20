@@ -21,20 +21,23 @@
       border-radius: 12px;
       padding: 20px;
       box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
     }
     .message {
       margin: 10px 0;
       display: flex;
-    }
-    .user .bubble {
-      background-color: #dcf8c6;
-      align-self: flex-end;
-      margin-left: auto;
+      justify-content: center;
+      width: 100%;
     }
     .bot .bubble {
       background-color: #eee;
-      align-self: flex-start;
-      margin-right: auto;
+      padding: 10px 14px;
+      border-radius: 16px;
+      max-width: 70%;
+      white-space: pre-wrap;
+      text-align: center;
     }
     .bubble {
       padding: 10px 14px;
