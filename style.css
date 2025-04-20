@@ -1,95 +1,102 @@
+/* 기본 리셋 및 스타일 설정 */
 * {
     margin: 0;
     padding: 0;
     box-sizing: border-box;
 }
 
+/* 바디 스타일 */
 body {
+    font-family: Arial, sans-serif;
     background-color: #121212;
     color: #e0e0e0;
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
     height: 100vh;
-    padding: 10px;
 }
 
+/* 컨테이너 스타일 */
 .container {
     width: 100%;
-    max-width: 600px;
+    max-width: 800px;
+    padding: 20px;
     background-color: #1e1e1e;
     border-radius: 12px;
     box-shadow: 0 0 20px rgba(0, 0, 0, 0.8);
-    display: flex;
-    flex-direction: column;
-    padding: 20px;
-    height: 90vh;
 }
 
+/* 헤더 스타일 */
 header {
     text-align: center;
-    margin-bottom: 10px;
+    margin-bottom: 20px;
 }
 
 header h1 {
-    font-size: 28px;
+    font-size: 32px;
     color: #03dac6;
 }
 
 header p {
-    font-size: 14px;
+    font-size: 16px;
     color: #bbb;
 }
 
+/* 챗박스 스타일 */
 .chat-box {
-    flex-grow: 1;
+    margin-top: 20px;
     padding: 15px;
     background-color: #2c2c2c;
     border-radius: 8px;
+    height: 300px;
     overflow-y: auto;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.6);
+}
+
+/* 메시지 스타일 */
+.message {
+    margin: 10px 0;
     display: flex;
     flex-direction: column;
-    gap: 10px;
-    scroll-behavior: smooth;
 }
 
-.chat-bubble {
-    max-width: 75%;
-    padding: 12px 16px;
-    border-radius: 18px;
-    line-height: 1.6;
-    word-break: break-word;
-    animation: fadeIn 0.3s ease-in-out;
-}
-
-.chat-bubble.user {
+.message.user .bubble {
     background-color: #03dac6;
-    color: #000;
-    align-self: flex-end;
-    border-bottom-right-radius: 4px;
-}
-
-.chat-bubble.bot {
-    background-color: #383838;
-    color: #e0e0e0;
+    color: black;
     align-self: flex-start;
-    border-bottom-left-radius: 4px;
 }
 
+.message.bot .bubble {
+    background-color: #333;
+    color: white;
+    align-self: flex-end;
+}
+
+.bubble {
+    max-width: 70%;
+    padding: 10px 15px;
+    border-radius: 12px;
+    margin: 5px;
+    word-wrap: break-word;
+}
+
+/* 입력창과 버튼 스타일 */
 .input-area {
+    margin-top: 20px;
     display: flex;
-    margin-top: 15px;
+    justify-content: space-between;
+    align-items: center;
 }
 
 #userInput {
-    flex-grow: 1;
+    width: 75%;
     padding: 12px 16px;
     font-size: 16px;
-    border: none;
     border-radius: 8px;
     background-color: #1e1e1e;
     color: #fff;
+    border: none;
     margin-right: 10px;
 }
 
@@ -97,9 +104,9 @@ header p {
     padding: 12px 20px;
     font-size: 16px;
     background-color: #03dac6;
-    color: #000;
-    border: none;
+    color: black;
     border-radius: 8px;
+    border: none;
     cursor: pointer;
     transition: background-color 0.3s ease;
 }
@@ -108,7 +115,14 @@ header p {
     background-color: #018786;
 }
 
-@keyframes fadeIn {
-    from { opacity: 0; transform: translateY(10px); }
-    to { opacity: 1; transform: translateY(0); }
+/* 푸터 스타일 */
+footer {
+    text-align: center;
+    margin-top: 20px;
+    font-size: 14px;
+    color: #bbb;
+}
+
+footer p {
+    margin-top: 10px;
 }
