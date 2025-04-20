@@ -3,148 +3,7 @@
 <head>
     <meta charset="UTF-8" />
     <title>Kossistant Chat</title>
-    <style>
-        body {
-            background-color: #121212;
-            color: #e0e0e0;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            height: 100vh;
-            margin: 0;
-            padding: 20px;
-            animation: fadeIn 1s ease-in-out;
-        }
-
-        @keyframes fadeIn {
-            0% { opacity: 0; }
-            100% { opacity: 1; }
-        }
-
-        .container {
-            width: 100%;
-            max-width: 600px;
-            background-color: #1e1e1e;
-            border-radius: 8px;
-            padding: 24px;
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.7);
-            display: flex;
-            flex-direction: column;
-            animation: slideUp 0.5s ease-out;
-            height: 90vh;
-            max-height: 800px; /* 최대 높이 제한 */
-        }
-
-        @keyframes slideUp {
-            0% { transform: translateY(20px); opacity: 0; }
-            100% { transform: translateY(0); opacity: 1; }
-        }
-
-        #response-container {
-            margin-bottom: 20px;
-            padding: 16px;
-            background-color: #1e1e1e;
-            border-radius: 8px;
-            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
-            white-space: pre-wrap;
-            line-height: 1.6;
-            color: #e0e0e0;
-            font-size: 14px;
-            flex-grow: 1;
-            animation: fadeInText 1s ease-in-out;
-            overflow-y: auto; /* 스크롤 가능하게 설정 */
-            max-height: 60vh; /* 최대 높이 설정 */
-        }
-
-        @keyframes fadeInText {
-            0% { opacity: 0; }
-            100% { opacity: 1; }
-        }
-
-        .input-container {
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-        }
-
-        #userInput {
-            padding: 12px 16px;
-            font-size: 16px;
-            border: 1px solid #333;
-            border-radius: 8px;
-            background-color: #1e1e1e;
-            color: #fff;
-            transition: background-color 0.3s ease;
-            animation: fadeInInput 1s ease-in-out;
-        }
-
-        @keyframes fadeInInput {
-            0% { opacity: 0; }
-            100% { opacity: 1; }
-        }
-
-        #userInput:focus {
-            outline: none;
-            background-color: #333;
-        }
-
-        #sendBtn {
-            padding: 12px 20px;
-            font-size: 16px;
-            background-color: #ff9800; /* 버튼 색상 변경 */
-            color: #fff;
-            border: none;
-            border-radius: 8px;
-            cursor: pointer;
-            transition: background-color 0.2s ease, transform 0.2s ease;
-            animation: fadeInButton 1s ease-in-out;
-        }
-
-        @keyframes fadeInButton {
-            0% { opacity: 0; transform: scale(0.8); }
-            100% { opacity: 1; transform: scale(1); }
-        }
-
-        #sendBtn:hover {
-            background-color: #fb8c00;
-            transform: scale(1.05);
-        }
-
-        #sendBtn:active {
-            transform: scale(0.95);
-        }
-
-        /* 로딩 스피너 */
-        .spinner {
-            width: 24px;
-            height: 24px;
-            border: 4px solid #f3f3f3;
-            border-top: 4px solid #ff9800;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-            margin: 0 auto;
-        }
-
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-
-        /* 반응형 디자인 */
-        @media (max-width: 768px) {
-            .container {
-                width: 100%;
-                padding: 16px;
-            }
-
-            #userInput, #sendBtn {
-                width: 100%;
-                max-width: 100%;
-            }
-        }
-    </style>
+    <link rel="stylesheet" href="style.css" />
 </head>
 <body>
     <div class="container">
@@ -165,25 +24,26 @@
                 const userInput = document.querySelector("#userInput").value;
                 if (!userInput.trim()) return;
 
-                // 로딩 스피너 추가
-                document.querySelector("#response-container").innerHTML = '<div class="spinner"></div>';
+                document.querySelector("#response-container").innerHTML += '<div class="spinner"></div>';
 
                 try {
                     const result = await client.predict("/chat_respond", [userInput]);
-                    document.querySelector("#response-container").innerHTML = result.data[0].replace(/\n/g, "<br>");
-                    document.querySelector("#userInput").value = ''; // 입력창 초기화
+                    document.querySelector("#response-container").innerHTML += 
+                        `<div class="message-block">${result.data[0].replace(/\n/g, "<br>")}</div>`;
+                    document.querySelector("#userInput").value = '';
+                    const container = document.querySelector("#response-container");
+                    container.scrollTop = container.scrollHeight;
                 } catch (error) {
-                    document.querySelector("#response-container").innerHTML = "오류가 발생했습니다. 다시 시도해 주세요.";
+                    document.querySelector("#response-container").innerHTML += 
+                        `<div class="error-message">오류가 발생했습니다. 다시 시도해 주세요.</div>`;
                 }
             };
 
-            // 엔터키로 메시지 전송
             document.querySelector("#sendBtn").addEventListener("click", sendMessage);
             document.querySelector("#userInput").addEventListener("keypress", (e) => {
                 if (e.key === "Enter") sendMessage();
             });
 
-            // 페이지 로딩 후 자동 포커스
             document.querySelector("#userInput").focus();
         })();
     </script>
