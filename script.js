@@ -1,39 +1,19 @@
 import { Client } from "https://cdn.jsdelivr.net/npm/@gradio/client/dist/index.min.js";
 
-(async () => {
-    const client = await Client.connect("Yuchan5386/Kossistant-1");
+(async () => { const client = await Client.connect("Yuchan5386/Kossistant-1");
 
-    const sendMessage = async () => {
-        const inputElem = document.querySelector("#userInput");
-        const userInput = inputElem.value.trim();
-        if (!userInput) return;
+const sendMessage = async () => {
+    const userInput = document.querySelector("#userInput").value;
+    if (!userInput.trim()) return;
 
-        const chatBox = document.querySelector("#chatBox");
+    const result = await client.predict("/chat_respond", [userInput]);
+    document.querySelector("#response").innerHTML = result.data[0].replace(/\n/g, "<br>");
+};
 
-        // 사용자 말풍선
-        const userBubble = document.createElement("div");
-        userBubble.className = "chat-bubble user";
-        userBubble.innerText = userInput;
-        chatBox.appendChild(userBubble);
+document.querySelector("#sendBtn").addEventListener("click", sendMessage);
+document.querySelector("#userInput").addEventListener("keypress", (e) => {
+    if (e.key === "Enter") sendMessage();
+});
 
-        inputElem.value = "";
-        chatBox.scrollTop = chatBox.scrollHeight;
-
-        // Gradio 호출
-        const result = await client.predict("/chat_respond", [userInput]);
-        const rawText = result.data[0];
-        const botOnly = rawText.split("봇:")[1]?.trim() || rawText;
-
-        // 봇 말풍선
-        const botBubble = document.createElement("div");
-        botBubble.className = "chat-bubble bot";
-        botBubble.innerText = botOnly;
-        chatBox.appendChild(botBubble);
-        chatBox.scrollTop = chatBox.scrollHeight;
-    };
-
-    document.querySelector("#sendBtn").addEventListener("click", sendMessage);
-    document.querySelector("#userInput").addEventListener("keypress", (e) => {
-        if (e.key === "Enter") sendMessage();
-    });
 })();
+
