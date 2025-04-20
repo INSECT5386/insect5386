@@ -3,41 +3,37 @@ import { Client } from "https://cdn.jsdelivr.net/npm/@gradio/client/dist/index.m
 (async () => {
     const client = await Client.connect("Yuchan5386/Kossistant-1");
 
-    const chatBox = document.querySelector(".chat-box");
-    const input = document.querySelector("#userInput");
-    const button = document.querySelector("#sendBtn");
+    const sendMessage = async () => {
+        const inputElem = document.querySelector("#userInput");
+        const userInput = inputElem.value.trim();
+        if (!userInput) return;
 
-    const appendMessage = (text, type) => {
-        const msg = document.createElement("div");
-        msg.className = `message ${type === "user" ? "user-msg" : "bot-msg"}`;
-        msg.innerHTML = text.replace(/\n/g, "<br>");
-        chatBox.appendChild(msg);
+        const chatBox = document.querySelector("#chatBox");
+
+        // 사용자 말풍선
+        const userBubble = document.createElement("div");
+        userBubble.className = "chat-bubble user";
+        userBubble.innerText = userInput;
+        chatBox.appendChild(userBubble);
+
+        inputElem.value = "";
+        chatBox.scrollTop = chatBox.scrollHeight;
+
+        // Gradio 호출
+        const result = await client.predict("/chat_respond", [userInput]);
+        const rawText = result.data[0];
+        const botOnly = rawText.split("봇:")[1]?.trim() || rawText;
+
+        // 봇 말풍선
+        const botBubble = document.createElement("div");
+        botBubble.className = "chat-bubble bot";
+        botBubble.innerText = botOnly;
+        chatBox.appendChild(botBubble);
         chatBox.scrollTop = chatBox.scrollHeight;
     };
 
-    const sendMessage = async () => {
-        const userInput = input.value.trim();
-        if (!userInput) return;
-
-        appendMessage(userInput, "user");
-        input.value = "";
-        input.disabled = true;
-        button.disabled = true;
-
-        try {
-            const result = await client.predict("/chat_respond", [userInput]);
-            appendMessage(result.data[0], "bot");
-        } catch (err) {
-            appendMessage("오류가 발생했어요. 다시 시도해 주세요.", "bot");
-        }
-
-        input.disabled = false;
-        button.disabled = false;
-        input.focus();
-    };
-
-    button.addEventListener("click", sendMessage);
-    input.addEventListener("keypress", (e) => {
+    document.querySelector("#sendBtn").addEventListener("click", sendMessage);
+    document.querySelector("#userInput").addEventListener("keypress", (e) => {
         if (e.key === "Enter") sendMessage();
     });
 })();
