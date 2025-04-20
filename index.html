@@ -33,6 +33,8 @@
             display: flex;
             flex-direction: column;
             animation: slideUp 0.5s ease-out;
+            height: 90vh;
+            max-height: 800px; /* 최대 높이 제한 */
         }
 
         @keyframes slideUp {
@@ -52,6 +54,8 @@
             font-size: 14px;
             flex-grow: 1;
             animation: fadeInText 1s ease-in-out;
+            overflow-y: auto; /* 스크롤 가능하게 설정 */
+            max-height: 60vh; /* 최대 높이 설정 */
         }
 
         @keyframes fadeInText {
