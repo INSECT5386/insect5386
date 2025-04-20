@@ -34,10 +34,11 @@
             const client = await Client.connect("Yuchan5386/Kossistant-1");
 
             const sendMessage = async () => {
-                const userInput = document.querySelector("#userInput").value;
+                const userInputEl = document.querySelector("#userInput");
+                const userInput = userInputEl.value;
                 if (!userInput.trim()) return;
 
-                // 유저 메시지 추가
+                // 유저 메시지 화면에 표시
                 const userMessageDiv = document.createElement('div');
                 userMessageDiv.classList.add('message', 'user');
                 const userBubble = document.createElement('div');
@@ -46,28 +47,31 @@
                 userMessageDiv.appendChild(userBubble);
                 document.querySelector("#chatBox").appendChild(userMessageDiv);
 
-                // 챗봇 응답 요청
+                // Gradio 예측 요청
                 const result = await client.predict("/chat_respond", [userInput]);
+                console.log("Gradio 응답:", result);
 
-                // 응답에서 마지막 줄만 가져오기
-                const raw = result.data[0];
-                const onlyBotReply = raw.split('\n').slice(-1)[0];
+                // 응답 데이터에서 봇 메시지만 추출
+                let botReply = result.data;
+                if (Array.isArray(botReply)) {
+                    botReply = botReply.at(-1);  // 마지막 항목이 챗봇 응답이라고 가정
+                }
 
-                // 챗봇 메시지 추가
+                // 챗봇 메시지 표시 (중복 div 방지)
                 const botMessageDiv = document.createElement('div');
                 botMessageDiv.classList.add('message', 'bot');
                 const botBubble = document.createElement('div');
                 botBubble.classList.add('bubble', 'bot-bubble');
-                botBubble.textContent = onlyBotReply;
+                botBubble.textContent = botReply;
                 botMessageDiv.appendChild(botBubble);
                 document.querySelector("#chatBox").appendChild(botMessageDiv);
 
-                // 스크롤 최신 위치로
+                // 스크롤 아래로
                 const chatBox = document.querySelector("#chatBox");
                 chatBox.scrollTop = chatBox.scrollHeight;
 
                 // 입력창 초기화
-                document.querySelector("#userInput").value = '';
+                userInputEl.value = '';
             };
 
             document.querySelector("#sendBtn").addEventListener("click", sendMessage);
