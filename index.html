@@ -1,119 +1,25 @@
 <!DOCTYPE html>
 <html lang="ko">
 <head>
-  <meta charset="UTF-8">
-  <title>Kossistant Chat</title>
-  <style>
-    body {
-      font-family: sans-serif;
-      background-color: #f2f2f2;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      padding: 20px;
-    }
-    #chat-box {
-      width: 100%;
-      max-width: 600px;
-      height: 500px;
-      overflow-y: auto;
-      background: white;
-      border-radius: 12px;
-      padding: 20px;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.1);
-    }
-    .message {
-      margin: 10px 0;
-      display: flex;
-    }
-    .user .bubble {
-      background-color: #dcf8c6;
-      align-self: flex-end;
-      margin-left: auto;
-    }
-    .bot .bubble {
-      background-color: #eee;
-      align-self: flex-start;
-      margin-right: auto;
-    }
-    .bubble {
-      padding: 10px 14px;
-      border-radius: 16px;
-      max-width: 70%;
-      white-space: pre-wrap;
-    }
-    #input-box {
-      display: flex;
-      margin-top: 15px;
-      width: 100%;
-      max-width: 600px;
-    }
-    #user-input {
-      flex: 1;
-      padding: 10px;
-      border: 1px solid #ccc;
-      border-radius: 12px;
-      font-size: 16px;
-    }
-    #send-btn {
-      margin-left: 10px;
-      padding: 10px 16px;
-      background-color: #4caf50;
-      color: white;
-      border: none;
-      border-radius: 12px;
-      cursor: pointer;
-    }
-    #send-btn:disabled {
-      opacity: 0.5;
-    }
-  </style>
+    <meta charset="UTF-8" />
+    <title>Kossistant Chat</title>
 </head>
 <body>
-  <h2>Kossistant와 대화하기</h2>
-  <div id="chat-box"></div>
-  <div id="input-box">
-    <input type="text" id="user-input" placeholder="메시지를 입력하세요..." />
-    <button id="send-btn">보내기</button>
-  </div>
+    <input id="userInput" type="text" placeholder="질문을 입력하세요" />
+    <button id="sendBtn">보내기</button>
+    <div id="response"></div>
 
-  <script type="module">
-    import { Client } from "https://cdn.jsdelivr.net/npm/@gradio/client/dist/index.min.js";
+    <script type="module">
+        import { Client } from "https://cdn.jsdelivr.net/npm/@gradio/client/dist/index.min.js";
+        (async () => {
+            const client = await Client.connect("Yuchan5386/Kossistant-1");
 
-    const chatBox = document.getElementById("chat-box");
-    const input = document.getElementById("user-input");
-    const sendBtn = document.getElementById("send-btn");
-
-    const client = await Client.connect("Yuchan5386/Kossistant-1");
-
-    async function sendMessage() {
-      const text = input.value.trim();
-      if (!text) return;
-
-      // 유저 메시지 출력
-      chatBox.innerHTML += `<div class="message user"><div class="bubble">${text}</div></div>`;
-      chatBox.scrollTop = chatBox.scrollHeight;
-      input.value = "";
-      sendBtn.disabled = true;
-
-      try {
-        const result = await client.predict("/chat_respond", { text });
-        const html = result.data;
-
-        // 결과 HTML 붙이기 (이미 bubble 구조로 옴)
-        chatBox.innerHTML += html;
-        chatBox.scrollTop = chatBox.scrollHeight;
-      } catch (e) {
-        chatBox.innerHTML += `<div class="message bot"><div class="bubble">오류가 발생했어요.</div></div>`;
-      }
-
-      sendBtn.disabled = false;
-    }
-
-    sendBtn.onclick = sendMessage;
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") sendMessage();
-    });
-  </script>
+            document.querySelector("#sendBtn").addEventListener("click", async () => {
+                const userInput = document.querySelector("#userInput").value;
+                const result = await client.predict("/chat_respond", [userInput]);
+                document.querySelector("#response").innerText = result.data;
+            });
+        })();
+    </script>
 </body>
 </html>
