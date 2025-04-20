@@ -2,13 +2,19 @@
 <html lang="ko">
 <head>
     <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Kossistant Chat</title>
     <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-    <input id="userInput" type="text" placeholder="질문을 입력하세요" />
-    <button id="sendBtn">보내기</button>
-    <div id="response"></div>
+    <div class="container">
+        <h1>Kossistant</h1>
+        <div class="chat-box" id="chatBox">
+            <div id="response"></div>
+        </div>
+        <input id="userInput" type="text" placeholder="질문을 입력하세요" />
+        <button id="sendBtn">보내기</button>
+    </div>
 
     <script type="module" src="script.js"></script>
 </body>
