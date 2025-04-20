@@ -112,6 +112,22 @@
             transform: scale(0.95);
         }
 
+        /* 로딩 스피너 */
+        .spinner {
+            width: 24px;
+            height: 24px;
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #ff9800;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
         /* 반응형 디자인 */
         @media (max-width: 768px) {
             .container {
@@ -137,6 +153,7 @@
 
     <script type="module">
         import { Client } from "https://cdn.jsdelivr.net/npm/@gradio/client/dist/index.min.js";
+        
         (async () => {
             const client = await Client.connect("Yuchan5386/Kossistant-1");
 
@@ -144,14 +161,26 @@
                 const userInput = document.querySelector("#userInput").value;
                 if (!userInput.trim()) return;
 
-                const result = await client.predict("/chat_respond", [userInput]);
-                document.querySelector("#response-container").innerHTML = result.data[0].replace(/\n/g, "<br>");
+                // 로딩 스피너 추가
+                document.querySelector("#response-container").innerHTML = '<div class="spinner"></div>';
+
+                try {
+                    const result = await client.predict("/chat_respond", [userInput]);
+                    document.querySelector("#response-container").innerHTML = result.data[0].replace(/\n/g, "<br>");
+                    document.querySelector("#userInput").value = ''; // 입력창 초기화
+                } catch (error) {
+                    document.querySelector("#response-container").innerHTML = "오류가 발생했습니다. 다시 시도해 주세요.";
+                }
             };
 
+            // 엔터키로 메시지 전송
             document.querySelector("#sendBtn").addEventListener("click", sendMessage);
             document.querySelector("#userInput").addEventListener("keypress", (e) => {
                 if (e.key === "Enter") sendMessage();
             });
+
+            // 페이지 로딩 후 자동 포커스
+            document.querySelector("#userInput").focus();
         })();
     </script>
 </body>
