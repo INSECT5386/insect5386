@@ -14,7 +14,7 @@
         </header>
 
         <div class="chat-box" id="chatBox">
-            <!-- 메시지가 이곳에 표시됩니다. -->
+            <!-- 봇의 응답만 이곳에 표시됩니다. -->
         </div>
 
         <div class="input-area">
@@ -36,15 +36,6 @@
             const sendMessage = async () => {
                 const userInput = document.querySelector("#userInput").value;
                 if (!userInput.trim()) return;
-
-                // 유저 입력을 chat-container에 추가 (봇은 아직 입력 안함)
-                const userMessageDiv = document.createElement('div');
-                userMessageDiv.classList.add('message', 'user');
-                const userBubble = document.createElement('div');
-                userBubble.classList.add('bubble', 'user-bubble');
-                userBubble.textContent = userInput;
-                userMessageDiv.appendChild(userBubble);
-                document.querySelector("#chatBox").appendChild(userMessageDiv);
 
                 // 입력 필드 초기화
                 document.querySelector("#userInput").value = '';
@@ -70,6 +61,5 @@
             });
         })();
     </script>
-
 </body>
 </html>
