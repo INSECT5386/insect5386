@@ -1,119 +1,83 @@
 <!DOCTYPE html>
 <html lang="ko">
 <head>
-  <meta charset="UTF-8">
-  <title>Kossistant Chat</title>
-  <style>
-    body {
-      font-family: sans-serif;
-      background-color: #f2f2f2;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      padding: 20px;
-    }
-    #chat-box {
-      width: 100%;
-      max-width: 600px;
-      height: 500px;
-      overflow-y: auto;
-      background: white;
-      border-radius: 12px;
-      padding: 20px;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.1);
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-    }
-    .message {
-      margin: 10px 0;
-      display: flex;
-      justify-content: center;
-      width: 100%;
-    }
-    .bot .bubble {
-      background-color: #eee;
-      padding: 10px 14px;
-      border-radius: 16px;
-      max-width: 70%;
-      white-space: pre-wrap;
-      text-align: center;
-    }
-    .bubble {
-      padding: 10px 14px;
-      border-radius: 16px;
-      max-width: 70%;
-      white-space: pre-wrap;
-    }
-    #input-box {
-      display: flex;
-      margin-top: 15px;
-      width: 100%;
-      max-width: 600px;
-    }
-    #user-input {
-      flex: 1;
-      padding: 10px;
-      border: 1px solid #ccc;
-      border-radius: 12px;
-      font-size: 16px;
-    }
-    #send-btn {
-      margin-left: 10px;
-      padding: 10px 16px;
-      background-color: #4caf50;
-      color: white;
-      border: none;
-      border-radius: 12px;
-      cursor: pointer;
-    }
-    #send-btn:disabled {
-      opacity: 0.5;
-    }
-  </style>
+    <meta charset="UTF-8" />
+    <title>Kossistant Chat</title>
+    <style>
+        body {
+            background-color: #121212;
+            color: #e0e0e0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+        }
+
+        #userInput {
+            width: 400px;
+            padding: 12px 16px;
+            font-size: 16px;
+            border: none;
+            border-radius: 8px;
+            margin-bottom: 12px;
+            background-color: #1e1e1e;
+            color: #fff;
+        }
+
+        #sendBtn {
+            padding: 10px 20px;
+            font-size: 16px;
+            background-color: #03dac6;
+            color: #000;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background-color 0.2s ease;
+        }
+
+        #sendBtn:hover {
+            background-color: #018786;
+        }
+
+        #response {
+            margin-top: 20px;
+            width: 80%;
+            max-width: 600px;
+            background-color: #1e1e1e;
+            border-radius: 8px;
+            padding: 16px;
+            white-space: pre-wrap;
+            line-height: 1.6;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.6);
+        }
+    </style>
 </head>
 <body>
-  <h2>Kossistant와 대화하기</h2>
-  <div id="chat-box"></div>
-  <div id="input-box">
-    <input type="text" id="user-input" placeholder="메시지를 입력하세요..." />
-    <button id="send-btn">보내기</button>
-  </div>
+    <input id="userInput" type="text" placeholder="질문을 입력하세요" />
+    <button id="sendBtn">보내기</button>
+    <div id="response"></div>
 
-  <script type="module">
-    import { Client } from "https://cdn.jsdelivr.net/npm/@gradio/client/dist/index.min.js";
+    <script type="module">
+        import { Client } from "https://cdn.jsdelivr.net/npm/@gradio/client/dist/index.min.js";
+        (async () => {
+            const client = await Client.connect("Yuchan5386/Kossistant-1");
 
-    const chatBox = document.getElementById("chat-box");
-    const input = document.getElementById("user-input");
-    const sendBtn = document.getElementById("send-btn");
+            const sendMessage = async () => {
+                const userInput = document.querySelector("#userInput").value;
+                if (!userInput.trim()) return;
 
-    const client = await Client.connect("Yuchan5386/Kossistant-1");
+                const result = await client.predict("/chat_respond", [userInput]);
+                document.querySelector("#response").innerHTML = result.data[0].replace(/\n/g, "<br>");
+            };
 
-    async function sendMessage() {
-      const text = input.value.trim();
-      if (!text) return;
-
-      sendBtn.disabled = true;
-
-      try {
-        const result = await client.predict("/chat_respond", { text });
-        const html = result.data;
-
-        // 결과 HTML 붙이기 (이제 유저 메시지 없이 바로 챗봇의 응답만 표시)
-        chatBox.innerHTML += html;
-        chatBox.scrollTop = chatBox.scrollHeight;
-      } catch (e) {
-        chatBox.innerHTML += `<div class="message bot"><div class="bubble">오류가 발생했어요.</div></div>`;
-      }
-
-      sendBtn.disabled = false;
-      input.value = "";
-    }
-
-    sendBtn.onclick = sendMessage;
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") sendMessage();
-    });
-  </script>
+            document.querySelector("#sendBtn").addEventListener("click", sendMessage);
+            document.querySelector("#userInput").addEventListener("keypress", (e) => {
+                if (e.key === "Enter") sendMessage();
+            });
+        })();
+    </script>
 </body>
 </html>
