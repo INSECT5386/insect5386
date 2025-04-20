@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8" />
+    <title>Kossistant Chat</title>
+</head>
+<body>
+    <input id="userInput" type="text" placeholder="질문을 입력하세요" />
+    <button id="sendBtn">보내기</button>
+    <div id="response"></div>
+
+    <script type="module">
+        import { Client } from "https://cdn.jsdelivr.net/npm/@gradio/client/dist/index.min.js";
+        (async () => {
+            const client = await Client.connect("Yuchan5386/Kossistant-1");
+
+            document.querySelector("#sendBtn").addEventListener("click", async () => {
+                const userInput = document.querySelector("#userInput").value;
+                const result = await client.predict("/chat_respond", [userInput]);
+                document.querySelector("#response").innerText = result.data;
+            });
+        })();
+    </script>
+</body>
+</html>
