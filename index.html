@@ -15,6 +15,12 @@
             height: 100vh;
             margin: 0;
             padding: 20px;
+            animation: fadeIn 1s ease-in-out;
+        }
+
+        @keyframes fadeIn {
+            0% { opacity: 0; }
+            100% { opacity: 1; }
         }
 
         .container {
@@ -26,6 +32,12 @@
             box-shadow: 0 4px 20px rgba(0, 0, 0, 0.7);
             display: flex;
             flex-direction: column;
+            animation: slideUp 0.5s ease-out;
+        }
+
+        @keyframes slideUp {
+            0% { transform: translateY(20px); opacity: 0; }
+            100% { transform: translateY(0); opacity: 1; }
         }
 
         #response-container {
@@ -38,7 +50,13 @@
             line-height: 1.6;
             color: #e0e0e0;
             font-size: 14px;
-            flex-grow: 1;  /* 응답 영역이 충분히 크도록 확장 */
+            flex-grow: 1;
+            animation: fadeInText 1s ease-in-out;
+        }
+
+        @keyframes fadeInText {
+            0% { opacity: 0; }
+            100% { opacity: 1; }
         }
 
         .input-container {
@@ -55,6 +73,12 @@
             background-color: #1e1e1e;
             color: #fff;
             transition: background-color 0.3s ease;
+            animation: fadeInInput 1s ease-in-out;
+        }
+
+        @keyframes fadeInInput {
+            0% { opacity: 0; }
+            100% { opacity: 1; }
         }
 
         #userInput:focus {
@@ -65,16 +89,22 @@
         #sendBtn {
             padding: 12px 20px;
             font-size: 16px;
-            background-color: #03dac6;
-            color: #000;
+            background-color: #ff9800; /* 버튼 색상 변경 */
+            color: #fff;
             border: none;
             border-radius: 8px;
             cursor: pointer;
             transition: background-color 0.2s ease, transform 0.2s ease;
+            animation: fadeInButton 1s ease-in-out;
+        }
+
+        @keyframes fadeInButton {
+            0% { opacity: 0; transform: scale(0.8); }
+            100% { opacity: 1; transform: scale(1); }
         }
 
         #sendBtn:hover {
-            background-color: #018786;
+            background-color: #fb8c00;
             transform: scale(1.05);
         }
 
