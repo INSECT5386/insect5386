@@ -84,7 +84,7 @@
     const userMessage = input.value.trim();
     if (!userMessage) return;
 
-    // 사용자 메시지 화면에 출력
+    // 사용자 메시지 화면에 표시
     addMessage("user", userMessage);
 
     input.value = "";
@@ -92,9 +92,8 @@
     // Gradio API 호출
     const result = await client.predict("/chat_respond", { message: userMessage });
 
+    // 봇 응답을 화면에 표시
     const botReply = result.data[1];
-
-    // 봇 응답 화면에 출력
     addMessage("bot", botReply);
   }
 
@@ -103,7 +102,7 @@
     div.className = `message ${role}`;
     div.textContent = text;
     chat.appendChild(div);
-    chat.scrollTop = chat.scrollHeight;
+    chat.scrollTop = chat.scrollHeight;  // 화면 맨 아래로 스크롤
   }
 
   window.send = send;
