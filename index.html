@@ -1,51 +1,92 @@
 <!DOCTYPE html>
 <html lang="ko">
 <head>
-    <meta charset="UTF-8" />
-    <title>Kossistant Chat</title>
-    <link rel="stylesheet" href="style.css" />
+  <meta charset="UTF-8">
+  <title>Kossistant 챗봇</title>
+  <style>
+    body {
+      font-family: 'Noto Sans KR', sans-serif;
+      background: #f0f0f0;
+      margin: 0;
+      padding: 20px;
+    }
+    #chat-container {
+      max-width: 600px;
+      margin: auto;
+      background: white;
+      border-radius: 10px;
+      padding: 20px;
+      box-shadow: 0 0 10px rgba(0,0,0,0.1);
+    }
+    .message {
+      margin: 10px 0;
+    }
+    .user {
+      text-align: right;
+      color: #222;
+    }
+    .bot {
+      text-align: left;
+      color: #0055aa;
+    }
+    input[type="text"] {
+      width: calc(100% - 90px);
+      padding: 10px;
+      font-size: 16px;
+    }
+    button {
+      width: 70px;
+      padding: 10px;
+      margin-left: 10px;
+      background: #0055aa;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      font-size: 16px;
+      cursor: pointer;
+    }
+    #input-area {
+      display: flex;
+      margin-top: 10px;
+    }
+  </style>
 </head>
 <body>
-    <div class="container">
-        <div id="response-container"></div>
-        <div class="input-container">
-            <input id="userInput" type="text" placeholder="질문을 입력하세요" />
-            <button id="sendBtn">보내기</button>
-        </div>
-    </div>
 
-    <script type="module">
-        import { Client } from "https://cdn.jsdelivr.net/npm/@gradio/client/dist/index.min.js";
-        
-        (async () => {
-            const client = await Client.connect("Yuchan5386/Kossistant-1");
+<div id="chat-container">
+  <h2>Kossistant 챗봇</h2>
+  <div id="chat"></div>
+  <div id="input-area">
+    <input type="text" id="userInput" placeholder="메시지를 입력하세요..." />
+    <button onclick="send()">전송</button>
+  </div>
+</div>
 
-            const sendMessage = async () => {
-                const userInput = document.querySelector("#userInput").value;
-                if (!userInput.trim()) return;
+<script type="module">
+  import { Client } from "https://cdn.jsdelivr.net/npm/@gradio/client/dist/index.min.js";
 
-                document.querySelector("#response-container").innerHTML += '<div class="spinner"></div>';
+  const client = await Client.connect("Yuchan5386/Kossistant-1");
+  const chat = document.getElementById("chat");
 
-                try {
-                    const result = await client.predict("/chat_respond", [userInput]);
-                    document.querySelector("#response-container").innerHTML += 
-                        `<div class="message-block">${result.data[0].replace(/\n/g, "<br>")}</div>`;
-                    document.querySelector("#userInput").value = '';
-                    const container = document.querySelector("#response-container");
-                    container.scrollTop = container.scrollHeight;
-                } catch (error) {
-                    document.querySelector("#response-container").innerHTML += 
-                        `<div class="error-message">오류가 발생했습니다. 다시 시도해 주세요.</div>`;
-                }
-            };
+  async function send() {
+    const input = document.getElementById("userInput");
+    const text = input.value.trim();
+    if (!text) return;
 
-            document.querySelector("#sendBtn").addEventListener("click", sendMessage);
-            document.querySelector("#userInput").addEventListener("keypress", (e) => {
-                if (e.key === "Enter") sendMessage();
-            });
+    // 사용자 메시지 출력
+    chat.innerHTML += `<div class="message user">${text}</div>`;
+    input.value = "";
 
-            document.querySelector("#userInput").focus();
-        })();
-    </script>
+    // Gradio Space로 요청 보내기
+    const result = await client.predict("/chat_respond", { message: text });
+
+    // 응답 출력
+    chat.innerHTML += `<div class="message bot">${result.data}</div>`;
+    chat.scrollTop = chat.scrollHeight;
+  }
+
+  window.send = send;
+</script>
+
 </body>
 </html>
