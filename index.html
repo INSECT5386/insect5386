@@ -78,30 +78,23 @@
 
   const client = await Client.connect("Yuchan5386/Kossistant-1");
   const chat = document.getElementById("chat");
-  let history = [];
 
   async function send() {
     const input = document.getElementById("userInput");
     const userMessage = input.value.trim();
     if (!userMessage) return;
 
-    // 화면에 사용자 메시지 출력
+    // 사용자 메시지 화면에 출력
     addMessage("user", userMessage);
 
-    // history에 추가
-    history.push([userMessage, null]);
     input.value = "";
 
-    // 챗봇 응답 요청
-    const result = await client.predict("/chat_respond", {
-      message: userMessage,
-      history: history
-    });
+    // Gradio API 호출
+    const result = await client.predict("/chat_respond", { message: userMessage });
 
     const botReply = result.data[1];
 
-    // 응답 저장 및 출력
-    history[history.length - 1][1] = botReply;
+    // 봇 응답 화면에 출력
     addMessage("bot", botReply);
   }
 
