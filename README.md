@@ -1,8 +1,9 @@
 
 
 ## 제작 완료한 모델
-- **SeQRoN**: Seq2Seq + Neuron
-- [kossistant](https://huggingface.co/Yuchan5386/kossistant)
+- **SeQRoN**
+- **kossistant**
+- **KeraLux**
 ---
 
 ### 모델 정리
