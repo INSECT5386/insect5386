@@ -2,111 +2,84 @@
 <html lang="ko">
 <head>
   <meta charset="UTF-8">
-  <title>Kossistant 챗봇</title>
+  <title>InteractGPT 실시간 스트리밍</title>
   <style>
     body {
-      font-family: 'Noto Sans KR', sans-serif;
-      background: #f0f0f0;
-      margin: 0;
-      padding: 20px;
+      font-family: 'JetBrains Mono', monospace;
+      background: #f4f4f4;
+      padding: 40px;
+      color: #222;
     }
-    #chat-container {
-      max-width: 600px;
-      margin: auto;
-      background: white;
-      border-radius: 10px;
-      padding: 20px;
-      box-shadow: 0 0 10px rgba(0,0,0,0.1);
-    }
-    .message {
-      margin: 10px 0;
-      padding: 8px 12px;
-      border-radius: 10px;
-      max-width: 80%;
-      word-wrap: break-word;
-    }
-    .user {
-      background: #d9eaff;
-      text-align: right;
-      margin-left: auto;
-    }
-    .bot {
-      background: #f3f3f3;
-      text-align: left;
-      margin-right: auto;
-    }
-    #chat {
-      max-height: 400px;
-      overflow-y: auto;
-      margin-bottom: 10px;
-    }
-    input[type="text"] {
-      flex: 1;
-      padding: 10px;
-      font-size: 16px;
+    #output {
+      white-space: pre-wrap;
       border: 1px solid #ccc;
-      border-radius: 5px;
+      padding: 20px;
+      margin-top: 20px;
+      border-radius: 8px;
+      background: #fff;
+      box-shadow: 0 0 10px rgba(0,0,0,0.05);
+      min-height: 100px;
+    }
+    #textbox {
+      width: 100%;
+      padding: 12px;
+      font-size: 16px;
+      border: 1px solid #aaa;
+      border-radius: 8px;
+      margin-bottom: 10px;
     }
     button {
       padding: 10px 20px;
-      background: #0055aa;
-      color: white;
-      border: none;
-      border-radius: 5px;
       font-size: 16px;
+      border: none;
+      background: black;
+      color: white;
+      border-radius: 8px;
       cursor: pointer;
-      margin-left: 10px;
     }
-    #input-area {
-      display: flex;
+    button:hover {
+      background: #444;
     }
   </style>
+  <script type="module">
+    import { Client } from "https://cdn.jsdelivr.net/npm/@gradio/client/+esm";
+
+    let client;
+
+    window.onload = async () => {
+      client = await Client.connect("Yuchan5386/InteractGPT");
+    };
+
+    window.sendMessage = async function () {
+      const input = document.getElementById("textbox").value;
+      const output = document.getElementById("output");
+      output.innerHTML = "⏳ 응답 생성 중...";
+
+      try {
+        const stream = await client.stream("/chat_stream", {
+          user_input: input,
+          history_html: ""
+        });
+
+        output.innerHTML = "";
+        for await (const token of stream) {
+          output.innerHTML = token.data[0]; // 스트리밍된 HTML 누적
+        }
+      } catch (err) {
+        console.error(err);
+        output.innerText = "❌ 오류 발생!";
+      }
+    };
+  </script>
 </head>
 <body>
 
-<div id="chat-container">
-  <h2>Kossistant 챗봇</h2>
-  <div id="chat"></div>
-  <div id="input-area">
-    <input type="text" id="userInput" placeholder="메시지를 입력하세요..." />
-    <button onclick="send()">전송</button>
-  </div>
-</div>
+  <h1>💬 InteractGPT (토큰 스트리밍)</h1>
 
-<script type="module">
-  import { Client } from "https://cdn.jsdelivr.net/npm/@gradio/client/dist/index.min.js";
+  <input id="textbox" type="text" placeholder="무엇이든 물어보세요!">
+  <button onclick="sendMessage()">보내기</button>
 
-  const client = await Client.connect("Yuchan5386/InteractGPT");
-  const chat = document.getElementById("chat");
-
-  async function send() {
-    const input = document.getElementById("userInput");
-    const userMessage = input.value.trim();
-    if (!userMessage) return;
-
-    // 사용자 메시지 화면에 표시
-    addMessage("user", userMessage);
-
-    input.value = "";
-
-    // Gradio API 호출
-    const result = await client.predict("/chat_stream", { message: userMessage });
-
-    // 봇 응답을 화면에 표시
-    const botReply = result.data[1];
-    addMessage("bot", botReply);
-  }
-
-  function addMessage(role, text) {
-    const div = document.createElement("div");
-    div.className = `message ${role}`;
-    div.textContent = text;
-    chat.appendChild(div);
-    chat.scrollTop = chat.scrollHeight;  // 화면 맨 아래로 스크롤
-  }
-
-  window.send = send;
-</script>
+  <div id="output">여기에 InteractGPT 응답이 표시됩니다.</div>
 
 </body>
 </html>
