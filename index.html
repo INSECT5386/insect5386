@@ -76,7 +76,7 @@
 <script type="module">
   import { Client } from "https://cdn.jsdelivr.net/npm/@gradio/client/dist/index.min.js";
 
-  const client = await Client.connect("Yuchan5386/Kossistant-1");
+  const client = await Client.connect("Yuchan5386/InteractGPT");
   const chat = document.getElementById("chat");
 
   async function send() {
@@ -90,7 +90,7 @@
     input.value = "";
 
     // Gradio API 호출
-    const result = await client.predict("/chat_respond", { message: userMessage });
+    const result = await client.predict("/chat_stream", { message: userMessage });
 
     // 봇 응답을 화면에 표시
     const botReply = result.data[1];
