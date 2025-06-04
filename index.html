@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>InteractGPT 채팅</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+    html, body {
+      height: 100%;
+      margin: 0;
+    }
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: #f0f0f0;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      background: #6c63ff;
+      color: white;
+      padding: 1rem;
+      font-size: 1.5rem;
+    }
+    #chat-container {
+      flex: 1;
+      padding: 1rem;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      min-height: 0;
+    }
+    .message {
+      padding: 0.75rem 1rem;
+      border-radius: 1rem;
+      max-width: 75%;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+    .user {
+      background: #d1e8ff;
+      align-self: flex-end;
+    }
+    .bot {
+      background: #ffffff;
+      border: 1px solid #ccc;
+      align-self: flex-start;
+    }
+    footer {
+      padding: 1rem;
+      display: flex;
+      gap: 0.5rem;
+      background: white;
+      border-top: 1px solid #ccc;
+    }
+    input[type="text"] {
+      flex: 1;
+      font-size: 1rem;
+      padding: 0.75rem;
+      border: 1px solid #ccc;
+      border-radius: 0.5rem;
+    }
+    button {
+      padding: 0.75rem 1.25rem;
+      font-size: 1rem;
+      background: #6c63ff;
+      color: white;
+      border: none;
+      border-radius: 0.5rem;
+      cursor: pointer;
+    }
+    button:disabled {
+      background: #aaa;
+    }
+  </style>
+</head>
+<body>
+
+  <header>💬 InteractGPT</header>
+
+  <div id="chat-container"></div>
+
+  <footer>
+    <input type="text" id="prompt" placeholder="메시지를 입력하세요" />
+    <button onclick="sendMessage()">전송</button>
+  </footer>
+
+  <script>
+    const chatContainer = document.getElementById("chat-container");
+    const promptInput = document.getElementById("prompt");
+    const button = document.querySelector("button");
+
+    async function sendMessage() {
+      const prompt = promptInput.value.trim();
+      if (!prompt) return;
+
+      // 사용자 메시지 추가
+      const userMessage = document.createElement("div");
+      userMessage.className = "message user";
+      userMessage.textContent = prompt;
+      chatContainer.appendChild(userMessage);
+
+      // GPT 메시지 컨테이너 추가
+      const botMessage = document.createElement("div");
+      botMessage.className = "message bot";
+      chatContainer.appendChild(botMessage);
+
+      chatContainer.scrollTop = chatContainer.scrollHeight;
+      promptInput.value = "";
+      button.disabled = true;
+
+      // 초기 안내 메시지 출력
+      botMessage.textContent = `『 "${prompt}" 에 대한 응답을 생성합니다... 』\n\n`;
+
+      const url = "https://yuchan5386-interactgpt-api.hf.space/generate";
+      const params = new URLSearchParams({ prompt });
+
+      try {
+        const response = await fetch(`${url}?${params}`);
+        if (!response.body) throw new Error("No response body");
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+
+        let isFirstChunk = true;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) {
+            botMessage.textContent += "\n[✔️ 완료]";
+            break;
+          }
+
+          const text = decoder.decode(value, { stream: true });
+
+          // 첫 번째 청크에 프롬프트 포함 시 제거
+          if (isFirstChunk && text.startsWith(prompt)) {
+            botMessage.textContent += text.slice(prompt.length).trimStart();
+          } else {
+            botMessage.textContent += text;
+          }
+
+          isFirstChunk = false;
+          chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+      } catch (err) {
+        botMessage.textContent = `[❌ 오류 발생] ${err.message}`;
+      } finally {
+        button.disabled = false;
+      }
+    }
+  </script>
+
+</body>
+</html>
