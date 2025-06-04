@@ -4,6 +4,9 @@
   <meta charset="UTF-8" />
   <title>InteractGPT Chat</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#6c63ff" />
+  <link rel="manifest" href="./manifest.json" />
+  <link rel="icon" href="icon-192.png" />
   <style>
     * {
       box-sizing: border-box;
@@ -164,13 +167,20 @@
       }
     }
 
-    // ⏎ 키 입력 시 전송
     promptInput.addEventListener("keydown", function (e) {
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         sendMessage();
       }
     });
+
+    // ✅ 서비스워커 등록
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker
+        .register("./service-worker.js")
+        .then(() => console.log("✅ 서비스워커 등록됨"))
+        .catch((err) => console.error("❌ 서비스워커 실패:", err));
+    }
   </script>
 
 </body>
