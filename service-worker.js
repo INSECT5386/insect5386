@@ -1,4 +1,4 @@
-const CACHE_NAME = "interactgpt-cache-v1";
+const CACHE_NAME = "interactgpt-cache-v2";
 const urlsToCache = [
   "./",
   "./index.html",
