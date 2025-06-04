@@ -4,6 +4,7 @@
 - **SeQRoN**
 - **kossistant**
 - **KeraLux**
+- **InteractGPT**
 ---
 
 ### 모델 정리
