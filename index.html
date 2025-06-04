@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <title>InteractGPT 채팅</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <style>
     * {
       box-sizing: border-box;
@@ -22,6 +23,7 @@
       color: white;
       padding: 1rem;
       font-size: 1.5rem;
+      text-align: center;
     }
     #chat-container {
       flex: 1;
@@ -30,14 +32,14 @@
       display: flex;
       flex-direction: column;
       gap: 1rem;
-      min-height: 0;
     }
     .message {
       padding: 0.75rem 1rem;
       border-radius: 1rem;
-      max-width: 75%;
+      max-width: 85%;
       white-space: pre-wrap;
       word-wrap: break-word;
+      line-height: 1.5;
     }
     .user {
       background: #d1e8ff;
@@ -49,7 +51,7 @@
       align-self: flex-start;
     }
     footer {
-      padding: 1rem;
+      padding: 0.75rem;
       display: flex;
       gap: 0.5rem;
       background: white;
@@ -63,16 +65,31 @@
       border-radius: 0.5rem;
     }
     button {
-      padding: 0.75rem 1.25rem;
       font-size: 1rem;
+      padding: 0.75rem 1rem;
       background: #6c63ff;
       color: white;
       border: none;
       border-radius: 0.5rem;
       cursor: pointer;
+      flex-shrink: 0;
     }
     button:disabled {
       background: #aaa;
+      cursor: not-allowed;
+    }
+
+    @media (max-width: 600px) {
+      header {
+        font-size: 1.2rem;
+      }
+      .message {
+        max-width: 100%;
+        font-size: 0.95rem;
+      }
+      button {
+        padding: 0.75rem;
+      }
     }
   </style>
 </head>
@@ -96,13 +113,11 @@
       const prompt = promptInput.value.trim();
       if (!prompt) return;
 
-      // 사용자 메시지 추가
       const userMessage = document.createElement("div");
       userMessage.className = "message user";
       userMessage.textContent = prompt;
       chatContainer.appendChild(userMessage);
 
-      // GPT 메시지 컨테이너 추가
       const botMessage = document.createElement("div");
       botMessage.className = "message bot";
       chatContainer.appendChild(botMessage);
@@ -111,7 +126,6 @@
       promptInput.value = "";
       button.disabled = true;
 
-      // 초기 안내 메시지 출력
       botMessage.textContent = `『 "${prompt}" 에 대한 응답을 생성합니다... 』\n\n`;
 
       const url = "https://yuchan5386-interactgpt-api.hf.space/generate";
@@ -134,7 +148,6 @@
 
           const text = decoder.decode(value, { stream: true });
 
-          // 첫 번째 청크에 프롬프트 포함 시 제거
           if (isFirstChunk && text.startsWith(prompt)) {
             botMessage.textContent += text.slice(prompt.length).trimStart();
           } else {
@@ -150,6 +163,14 @@
         button.disabled = false;
       }
     }
+
+    // ⏎ 키 입력 시 전송
+    promptInput.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    });
   </script>
 
 </body>
