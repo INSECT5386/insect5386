@@ -52,9 +52,10 @@
     }
     .user {
       align-self: flex-end;
-      background-color: #3a3f5c;
-      color: #ffffff;
-      border: 1px solid #5a5f7c;
+      background-color: #4a4e69;
+      color: #f8f8ff;
+      border: 1px solid #6c6f89;
+      box-shadow: 0 0 8px rgba(106, 112, 145, 0.3);
     }
     .bot {
       align-self: flex-start;
@@ -77,19 +78,25 @@
       background-color: #2a2a2a;
       color: white;
     }
-     button {
+    button {
       font-size: 1rem; 
       padding: 0.75rem 1rem;
-      background: #4c8dff;
+      background: linear-gradient(to right, #5c9eff, #3b7dd8);
       color: white;
       border: none;
       border-radius: 0.5rem;
       cursor: pointer;
-      transition: background 0.2s ease-in-out;
+      transition: background 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+      box-shadow: 0 0 8px rgba(92, 158, 255, 0.3);
+    }
+    button:hover {
+      background: linear-gradient(to right, #4a8ce0, #316ac7);
+      box-shadow: 0 0 12px rgba(92, 158, 255, 0.5);
     }
     button:disabled {
       background: #555;
       cursor: not-allowed;
+      box-shadow: none;
     }
 
     @media (max-width: 600px) {
