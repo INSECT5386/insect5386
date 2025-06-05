@@ -1,11 +1,11 @@
 {
-  "name": "InteractGPT",
-  "short_name": "InteractGPT",
+  "name": "Ector.V",
+  "short_name": "Ector.V",
   "start_url": "./index.html",
   "display": "standalone",
   "background_color": "#f0f0f0",
   "theme_color": "#6c63ff",
-  "description": "대화형 인공지능 InteractGPT",
+  "description": "대화형 인공지능 "Ector.V",
   "icons": [
     {
       "src": "1icon-192.png",
