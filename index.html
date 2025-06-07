@@ -1,466 +1,183 @@
+<!DOCTYPE html>  
 <!DOCTYPE html>
 <html lang="ko">
 <head>
   <meta charset="UTF-8" />
   <title>Ector.V Multi-Model Chat</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <style>
-    /* 기본 스타일 */
-    body {
-      margin: 0;
-      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-      background: #1e1e2f;
-      color: #ddd;
-      display: flex;
-      flex-direction: column;
-      min-height: 100vh;
-    }
-    header {
-      background: #3b3b6d;
-      color: #eee;
-      font-weight: 700;
-      font-size: 1.6rem;
-      padding: 1.2rem 1.5rem;
-      text-align: center;
-      letter-spacing: 1.2px;
-      user-select: none;
-      box-shadow: 0 4px 10px rgba(75, 75, 130, 0.6);
-    }
-
-    main#main-container {
-      flex-grow: 1;
-      padding: 2rem 1.5rem;
-      max-width: 700px;
-      margin: 0 auto;
-      width: 100%;
-      box-sizing: border-box;
-    }
-
-    /* 모델 선택 리스트 */
-    #model-selection h2 {
-      margin-bottom: 1.5rem;
-      font-weight: 700;
-      font-size: 1.4rem;
-      color: #a3a3d1;
-      text-align: center;
-      letter-spacing: 0.7px;
-    }
-    #model-selection ul {
-      list-style: none;
-      padding: 0;
-      margin: 0 auto;
-      max-width: 400px;
-    }
-    #model-selection li {
-      margin: 0.8rem 0;
-    }
-    #model-selection button {
-      width: 100%;
-      padding: 0.9rem 1rem;
-      font-size: 1.1rem;
-      border: none;
-      border-radius: 12px;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: #f0f0f5;
-      cursor: pointer;
-      font-weight: 700;
-      box-shadow: 0 6px 18px rgba(102, 126, 234, 0.5);
-      transition: all 0.3s ease;
-      user-select: none;
-    }
-    #model-selection button:hover {
-      background: linear-gradient(135deg, #8a9df9 0%, #a374bc 100%);
-      box-shadow: 0 9px 25px rgba(138, 157, 249, 0.7);
-      transform: translateY(-3px);
-    }
-
-    /* 채팅 UI */
-    #chat-ui {
-      display: flex;
-      flex-direction: column;
-      height: 75vh;
-      max-height: 600px;
-      border: 1px solid #444477;
-      border-radius: 14px;
-      background: #282846;
-      box-shadow: 0 0 18px rgba(75, 75, 130, 0.8);
-      padding: 1rem 1rem 0;
-    }
-    #chat-header {
-      font-weight: 700;
-      font-size: 1.3rem;
-      padding-bottom: 0.8rem;
-      border-bottom: 1px solid #444477;
-      color: #b0b0e8;
-      user-select: none;
-    }
-    #chat-container {
-      flex-grow: 1;
-      overflow-y: auto;
-      margin: 1rem 0;
-      padding-right: 0.6rem;
-      font-size: 1rem;
-      line-height: 1.5;
-      color: #e0e0f8;
-    }
-    .message {
-      margin-bottom: 1rem;
-      max-width: 85%;
-      padding: 0.6rem 1rem;
-      border-radius: 14px;
-      white-space: pre-wrap;
-      word-break: break-word;
-      box-shadow: 0 2px 8px rgba(70, 70, 110, 0.3);
-    }
-    .message.user {
-      background: #5c5ce6;
-      align-self: flex-end;
-      color: #e0e0ff;
-    }
-    .message.bot {
-      background: #3b3b6d;
-      align-self: flex-start;
-      color: #cfcfff;
-    }
-
-    /* 입력 영역 */
-    footer {
-      display: flex;
-      gap: 0.5rem;
-      padding-bottom: 1rem;
-    }
-    #prompt {
-      flex-grow: 1;
-      padding: 0.7rem 1rem;
-      font-size: 1.1rem;
-      border-radius: 14px;
-      border: none;
-      background: #49497d;
-      color: #eee;
-      box-shadow: inset 0 0 6px rgba(75, 75, 130, 0.7);
-      outline-offset: 2px;
-    }
-    #prompt::placeholder {
-      color: #b2b2d2;
-    }
-    #send-btn, #back-btn {
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      border: none;
-      border-radius: 14px;
-      color: #f0f0f5;
-      font-weight: 700;
-      font-size: 1rem;
-      padding: 0 1.5rem;
-      cursor: pointer;
-      box-shadow: 0 5px 15px rgba(102, 126, 234, 0.6);
-      transition: all 0.3s ease;
-      user-select: none;
-    }
-    #send-btn:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-      box-shadow: none;
-    }
-    #send-btn:hover:not(:disabled),
-    #back-btn:hover {
-      background: linear-gradient(135deg, #8a9df9 0%, #a374bc 100%);
-      box-shadow: 0 7px 20px rgba(138, 157, 249, 0.7);
-      transform: translateY(-3px);
-    }
-
-    /* 설명 모달 */
-    #model-description {
-      position: fixed;
-      top: 0; left: 0; right: 0; bottom: 0;
-      display: none;
-      justify-content: center;
-      align-items: center;
-      z-index: 9999;
-    }
-    #model-description.active {
-      display: flex;
-    }
-    .modal-bg {
-      position: absolute;
-      top: 0; left: 0; right: 0; bottom: 0;
-      background: rgba(0,0,0,0.7);
-      backdrop-filter: blur(3px);
-    }
-    .modal-content {
-      position: relative;
-      background: #2c2c54;
-      color: #fff;
-      padding: 2rem 2.5rem;
-      border-radius: 15px;
-      max-width: 400px;
-      text-align: center;
-      box-shadow: 0 0 25px rgba(118, 75, 162, 0.8);
-      user-select: none;
-      z-index: 10000;
-    }
-    .modal-content h3 {
-      margin-top: 0;
-      margin-bottom: 1rem;
-      font-size: 1.8rem;
-      font-weight: 700;
-    }
-    .modal-content p {
-      font-size: 1.1rem;
-      margin-bottom: 2rem;
-      line-height: 1.4;
-      color: #cfcfff;
-    }
-    .modal-content button {
-      margin: 0 0.5rem;
-      padding: 0.8rem 1.5rem;
-      border: none;
-      border-radius: 12px;
-      font-weight: 600;
-      font-size: 1rem;
-      cursor: pointer;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: #f0f0f5;
-      transition: all 0.3s ease;
-      box-shadow: 0 5px 15px rgba(118, 75, 162, 0.6);
-    }
-    .modal-content button:hover {
-      background: linear-gradient(135deg, #8a9df9 0%, #a374bc 100%);
-      box-shadow: 0 7px 20px rgba(138, 157, 249, 0.7);
-      transform: translateY(-3px);
-    }
-    @media (max-width: 600px) {
-      header {
-      font-size: 1.3rem;
-      padding: 1rem;
-    }
-
-    main#main-container {
-      padding: 1rem 1rem;
-    }
-
-    #model-selection h2 {
-      font-size: 1.2rem;
-    }
-
-    #model-selection button,
-    .modal-content button,
-    #send-btn,
-    #back-btn {
-      font-size: 1rem;
-      padding: 0.9rem 1.2rem;
-    }
-
-    .modal-content {
-      padding: 1.5rem;
-      width: 90%;
-      font-size: 0.95rem;
-    }
-
-    #chat-ui {
-      height: 80vh;
-      padding: 0.8rem;
-    }
-
-    #chat-container {
-      height: 55vh;
-      padding: 0.5rem;
-    }
-
-    .message {
-      font-size: 0.95rem;
-      max-width: 90%;
-      padding: 0.5rem 0.8rem;
-    }
-
-    footer {
-      display: flex;
-      gap: 0.5rem;
-      padding-bottom: calc(env(safe-area-inset-bottom, 1rem) + 0.5rem);
-      flex-wrap: wrap;
-    }
-
-    #prompt {
-      font-size: 1rem;
-      padding: 0.6rem 0.9rem;
-      width: 100%;
-    }
-
-    #send-btn, #back-btn {
-      width: 100%;
-    }
-      }
-  </style>
-</head>
-<body>
-
-  <header>Ector.V - 모델 선택</header>
-
-  <main id="main-container">
-
-    <!-- 초기 화면: 모델 선택 -->
-    <section id="model-selection">
-      <h2>사용할 모델을 선택하세요</h2>
-      <ul>
-        <li><button data-model="flexi" data-url="https://yuchan5386-flexiapi.hf.space/generate">Flexi</button></li>
-        <li><button data-model="keralux" data-url="https://yuchan5386-keralux-api.hf.space/generate">KeraLux</button></li>
-      </ul>
-    </section>
-
-    <!-- 설명 모달 -->
-    <section id="model-description">
-      <div class="modal-bg"></div>
-      <div class="modal-content">
-        <h3 id="model-name"></h3>
-        <p id="model-desc"></p>
-        <button id="start-chat-btn">채팅 시작</button>
-        <button id="cancel-btn">취소</button>
-      </div>
-    </section>
-
-    <!-- 채팅 UI (초기엔 숨김) -->
-    <section id="chat-ui" style="display:none;">
-      <header id="chat-header"></header>
-      <div id="chat-container" style="overflow-y:auto; height:60vh; padding: 1rem;"></div>
-      <footer>
-        <input type="text" id="prompt" placeholder="메시지를 입력하세요" autocomplete="off" />
-        <button id="send-btn">전송</button>
-        <button id="back-btn">모델 선택으로 돌아가기</button>
-      </footer>
-    </section>
-
-  </main>
-
-  <script>
-    const modelSelection = document.getElementById('model-selection');
-    const chatUI = document.getElementById('chat-ui');
-    const chatHeader = document.getElementById('chat-header');
-    const chatContainer = document.getElementById('chat-container');
-    const promptInput = document.getElementById('prompt');
-    const sendBtn = document.getElementById('send-btn');
-    const backBtn = document.getElementById('back-btn');
-
-    const modelDescriptionSection = document.getElementById('model-description');
-    const modelNameElem = document.getElementById('model-name');
-    const modelDescElem = document.getElementById('model-desc');
-    const startChatBtn = document.getElementById('start-chat-btn');
-    const cancelBtn = document.getElementById('cancel-btn');
-
-    let selectedModel = null;
-    let apiUrl = null;
-
-    // 모델별 간단 설명
-    const modelDescriptions = {
-      flexi: "Flexi는 InteractGPT의 개선모델로, 다양한 분석 기능과 유연한 응답을 제공합니다.",
-      keralux: "KeraLux는 180만 개 한국어 데이터로 사전학습된 GPT 기반 모델로, 한국어 최적화와 자연스러운 대화를 지원합니다."
-    };
-
-    // 1. 모델 선택 버튼 클릭 시 -> 설명 모달 띄우기
-    modelSelection.querySelectorAll('button').forEach(btn => {
-      btn.addEventListener('click', () => {
-        selectedModel = btn.dataset.model;
-        apiUrl = btn.dataset.url;
-
-        modelNameElem.textContent = selectedModel.charAt(0).toUpperCase() + selectedModel.slice(1);
-        modelDescElem.textContent = modelDescriptions[selectedModel] || "설명 없음";
-
-        modelDescriptionSection.classList.add('active');
-      });
-    });
-
-    // 2. 설명 모달에서 '채팅 시작' 클릭
-    startChatBtn.addEventListener('click', () => {
-      modelDescriptionSection.classList.remove('active');
-
-      chatHeader.textContent = `Ector.V - ${selectedModel} 모델 채팅`;
-      modelSelection.style.display = 'none';
-      chatUI.style.display = 'flex';
-
-      chatContainer.innerHTML = '';
-      promptInput.value = '';
-      promptInput.focus();
-    });
-
-    // 3. 설명 모달 취소 버튼
-    cancelBtn.addEventListener('click', () => {
-      modelDescriptionSection.classList.remove('active');
-    });
-
-    // 4. 채팅방에서 '모델 선택으로 돌아가기' 버튼 클릭
-    backBtn.addEventListener('click', () => {
-      selectedModel = null;
-      apiUrl = null;
-
-      chatUI.style.display = 'none';
-      modelSelection.style.display = 'block';
-
-      chatContainer.innerHTML = '';
-      promptInput.value = '';
-    });
-
-    // 5. 메시지 전송 함수
-    async function sendMessage() {
-      const prompt = promptInput.value.trim();
-      if (!prompt) return;
-
-      // 유저 메시지 표시
-      const userMessage = document.createElement('div');
-      userMessage.className = 'message user';
-      userMessage.textContent = prompt;
-      chatContainer.appendChild(userMessage);
-
-      // 봇 메시지 자리 만들기
-      const botMessage = document.createElement('div');
-      botMessage.className = 'message bot';
-      botMessage.textContent = `『 "${prompt}" 에 대한 응답을 생성 중... 』\n\n`;
-      chatContainer.appendChild(botMessage);
-
-      chatContainer.scrollTop = chatContainer.scrollHeight;
-      promptInput.value = '';
-      sendBtn.disabled = true;
-
-      try {
-        const params = new URLSearchParams({ prompt });
-        const response = await fetch(`${apiUrl}?${params}`);
-
-        if (!response.body) throw new Error("응답 바디가 없습니다.");
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder("utf-8");
-
-        let isFirstChunk = true;
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) {
-            botMessage.textContent += "\n[✔️ 완료]";
-            break;
-          }
-
-          const text = decoder.decode(value, { stream: true });
-
-          if (isFirstChunk && text.startsWith(prompt)) {
-            botMessage.textContent += text.slice(prompt.length).trimStart();
-          } else {
-            botMessage.textContent += text;
-          }
-          isFirstChunk = false;
-          chatContainer.scrollTop = chatContainer.scrollHeight;
-        }
-      } catch (err) {
-        botMessage.textContent = `[❌ 오류 발생] ${err.message}`;
-      } finally {
-        sendBtn.disabled = false;
-        promptInput.focus();
-      }
-    }
-
-    sendBtn.addEventListener('click', sendMessage);
-
-    promptInput.addEventListener('keydown', e => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        sendMessage();
-      }
-    });
-  </script>
-</body>
-</html>
+  <link rel="stylesheet" href="style.css" />
+  
+  <header>Ector.V - 모델 선택</header>  
+  
+  <main id="main-container">  
+  
+    <!-- 초기 화면: 모델 선택 -->  
+    <section id="model-selection">  
+      <h2>사용할 모델을 선택하세요</h2>  
+      <ul>  
+        <li><button data-model="flexi" data-url="https://yuchan5386-flexiapi.hf.space/generate">Flexi</button></li>  
+        <li><button data-model="keralux" data-url="https://yuchan5386-keralux-api.hf.space/generate">KeraLux</button></li>  
+      </ul>  
+    </section>  
+  
+    <!-- 설명 모달 -->  
+    <section id="model-description">  
+      <div class="modal-bg"></div>  
+      <div class="modal-content">  
+        <h3 id="model-name"></h3>  
+        <p id="model-desc"></p>  
+        <button id="start-chat-btn">채팅 시작</button>  
+        <button id="cancel-btn">취소</button>  
+      </div>  
+    </section>  
+  
+    <!-- 채팅 UI (초기엔 숨김) -->  
+    <section id="chat-ui" style="display:none;">  
+      <header id="chat-header"></header>  
+      <div id="chat-container" style="overflow-y:auto; height:60vh; padding: 1rem;"></div>  
+      <footer>  
+        <input type="text" id="prompt" placeholder="메시지를 입력하세요" autocomplete="off" />  
+        <button id="send-btn">전송</button>  
+        <button id="back-btn">모델 선택으로 돌아가기</button>  
+      </footer>  
+    </section>  
+  
+  </main>  
+  
+  <script>  
+    const modelSelection = document.getElementById('model-selection');  
+    const chatUI = document.getElementById('chat-ui');  
+    const chatHeader = document.getElementById('chat-header');  
+    const chatContainer = document.getElementById('chat-container');  
+    const promptInput = document.getElementById('prompt');  
+    const sendBtn = document.getElementById('send-btn');  
+    const backBtn = document.getElementById('back-btn');  
+  
+    const modelDescriptionSection = document.getElementById('model-description');  
+    const modelNameElem = document.getElementById('model-name');  
+    const modelDescElem = document.getElementById('model-desc');  
+    const startChatBtn = document.getElementById('start-chat-btn');  
+    const cancelBtn = document.getElementById('cancel-btn');  
+  
+    let selectedModel = null;  
+    let apiUrl = null;  
+  
+    // 모델별 간단 설명  
+    const modelDescriptions = {  
+      flexi: "Flexi는 InteractGPT의 개선모델로, 다양한 분석 기능과 유연한 응답을 제공합니다.",  
+      keralux: "KeraLux는 180만 개 한국어 데이터로 사전학습된 GPT 기반 모델로, 한국어 최적화와 자연스러운 대화를 지원합니다."  
+    };  
+  
+    // 1. 모델 선택 버튼 클릭 시 -> 설명 모달 띄우기  
+    modelSelection.querySelectorAll('button').forEach(btn => {  
+      btn.addEventListener('click', () => {  
+        selectedModel = btn.dataset.model;  
+        apiUrl = btn.dataset.url;  
+  
+        modelNameElem.textContent = selectedModel.charAt(0).toUpperCase() + selectedModel.slice(1);  
+        modelDescElem.textContent = modelDescriptions[selectedModel] || "설명 없음";  
+  
+        modelDescriptionSection.classList.add('active');  
+      });  
+    });  
+  
+    // 2. 설명 모달에서 '채팅 시작' 클릭  
+    startChatBtn.addEventListener('click', () => {  
+      modelDescriptionSection.classList.remove('active');  
+  
+      chatHeader.textContent = `Ector.V - ${selectedModel} 모델 채팅`;  
+      modelSelection.style.display = 'none';  
+      chatUI.style.display = 'flex';  
+  
+      chatContainer.innerHTML = '';  
+      promptInput.value = '';  
+      promptInput.focus();  
+    });  
+  
+    // 3. 설명 모달 취소 버튼  
+    cancelBtn.addEventListener('click', () => {  
+      modelDescriptionSection.classList.remove('active');  
+    });  
+  
+    // 4. 채팅방에서 '모델 선택으로 돌아가기' 버튼 클릭  
+    backBtn.addEventListener('click', () => {  
+      selectedModel = null;  
+      apiUrl = null;  
+  
+      chatUI.style.display = 'none';  
+      modelSelection.style.display = 'block';  
+  
+      chatContainer.innerHTML = '';  
+      promptInput.value = '';  
+    });  
+  
+    // 5. 메시지 전송 함수  
+    async function sendMessage() {  
+      const prompt = promptInput.value.trim();  
+      if (!prompt) return;  
+  
+      // 유저 메시지 표시  
+      const userMessage = document.createElement('div');  
+      userMessage.className = 'message user';  
+      userMessage.textContent = prompt;  
+      chatContainer.appendChild(userMessage);  
+  
+      // 봇 메시지 자리 만들기  
+      const botMessage = document.createElement('div');  
+      botMessage.className = 'message bot';  
+      botMessage.textContent = `『 "${prompt}" 에 대한 응답을 생성 중... 』\n\n`;  
+      chatContainer.appendChild(botMessage);  
+  
+      chatContainer.scrollTop = chatContainer.scrollHeight;  
+      promptInput.value = '';  
+      sendBtn.disabled = true;  
+  
+      try {  
+        const params = new URLSearchParams({ prompt });  
+        const response = await fetch(`${apiUrl}?${params}`);  
+  
+        if (!response.body) throw new Error("응답 바디가 없습니다.");  
+  
+        const reader = response.body.getReader();  
+        const decoder = new TextDecoder("utf-8");  
+  
+        let isFirstChunk = true;  
+        while (true) {  
+          const { done, value } = await reader.read();  
+          if (done) {  
+            botMessage.textContent += "\n[✔️ 완료]";  
+            break;  
+          }  
+  
+          const text = decoder.decode(value, { stream: true });  
+  
+          if (isFirstChunk && text.startsWith(prompt)) {  
+            botMessage.textContent += text.slice(prompt.length).trimStart();  
+          } else {  
+            botMessage.textContent += text;  
+          }  
+          isFirstChunk = false;  
+          chatContainer.scrollTop = chatContainer.scrollHeight;  
+        }  
+      } catch (err) {  
+        botMessage.textContent = `[❌ 오류 발생] ${err.message}`;  
+      } finally {  
+        sendBtn.disabled = false;  
+        promptInput.focus();  
+      }  
+    }  
+  
+    sendBtn.addEventListener('click', sendMessage);  
+  
+    promptInput.addEventListener('keydown', e => {  
+      if (e.key === 'Enter' && !e.shiftKey) {  
+        e.preventDefault();  
+        sendMessage();  
+      }  
+    });  
+  </script>  
+</body>  
+</html>  
+  
+  
+index.html, style.css, script.js로 나눠
