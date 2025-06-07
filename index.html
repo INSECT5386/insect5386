@@ -273,8 +273,10 @@
     }
 
     footer {
-      flex-direction: column;
-      gap: 0.4rem;
+      display: flex;
+      gap: 0.5rem;
+      padding-bottom: calc(env(safe-area-inset-bottom, 1rem) + 0.5rem);
+      flex-wrap: wrap;
     }
 
     #prompt {
