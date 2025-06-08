@@ -129,3 +129,4 @@ promptInput.addEventListener('keydown', e => {
     sendMessage();  
   }  
 });
+
