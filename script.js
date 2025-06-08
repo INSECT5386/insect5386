@@ -18,7 +18,8 @@ let apiUrl = null;
 // 모델별 간단 설명  
 const modelDescriptions = {  
   flexi: "Flexi는 InteractGPT의 개선모델로, 다양한 분석 기능과 유연한 응답을 제공합니다.",  
-  keralux: "KeraLux는 180만 개 한국어 데이터로 사전학습된 GPT 기반 모델로, 한국어 최적화와 자연스러운 대화를 지원합니다."  
+  keralux: "KeraLux는 180만 개 한국어 데이터로 사전학습된 GPT 기반 모델로, 한국어 최적화와 자연스러운 대화를 지원합니다.",
+  interactgpt: "InteractGPT는 대화형 GPT 모델로, 간단한 일상대화를 지원합니다"
 };  
 
 // 1. 모델 선택 버튼 클릭 시 -> 설명 모달 띄우기  
