@@ -1,132 +1,130 @@
-const modelSelection = document.getElementById('model-selection');  
-const chatUI = document.getElementById('chat-ui');  
-const chatHeader = document.getElementById('chat-header');  
-const chatContainer = document.getElementById('chat-container');  
-const promptInput = document.getElementById('prompt');  
-const sendBtn = document.getElementById('send-btn');  
-const backBtn = document.getElementById('back-btn');  
+document.addEventListener('DOMContentLoaded', () => {
+    const chatHeader = document.getElementById('chat-header');
+    const chatContainer = document.getElementById('chat-container');
+    const promptInput = document.getElementById('prompt');
+    const sendBtn = document.getElementById('send-btn');
+    const modelSuggestionsDiv = document.getElementById('model-suggestions');
 
-const modelDescriptionSection = document.getElementById('model-description');  
-const modelNameElem = document.getElementById('model-name');  
-const modelDescElem = document.getElementById('model-desc');  
-const startChatBtn = document.getElementById('start-chat-btn');  
-const cancelBtn = document.getElementById('cancel-btn');  
+    let selectedModel = null;
+    let selectedModelUrl = null;
 
-let selectedModel = null;  
-let apiUrl = null;  
+    // Define available models
+    const models = [
+        { name: 'Flexi', url: 'https://yuchan5386-flexi-api.hf.space/generate', desc: '유연하고 다재다능한 응답을 생성합니다.' },
+        { name: 'KeraLux', url: 'https://yuchan5386-keralux-api.hf.space/generate', desc: '정확하고 심층적인 지식을 제공합니다.' },
+        { name: 'InteractGPT', url: 'https://yuchan5386-interactgpt-api.hf.space/generate', desc: '대화형 상호작용에 특화되어 있습니다.' }
+    ];
 
-// 모델별 간단 설명  
-const modelDescriptions = {  
-  flexi: "Flexi는 InteractGPT의 개선모델로, 다양한 분석 기능과 유연한 응답을 제공합니다.",  
-  keralux: "KeraLux는 180만 개 한국어 데이터로 사전학습된 GPT 기반 모델로, 한국어 최적화와 자연스러운 대화를 지원합니다.",
-  interactgpt: "InteractGPT는 대화형 GPT 모델로, 간단한 일상대화를 지원합니다"
-};  
+    // Function to display a message in the chat
+    const displayMessage = (message, sender) => {
+        const messageElement = document.createElement('div');
+        messageElement.classList.add('chat-message', sender);
+        messageElement.innerHTML = `<p>${message}</p>`; // Use innerHTML for potential Markdown rendering
+        chatContainer.appendChild(messageElement);
+        chatContainer.scrollTop = chatContainer.scrollHeight; // Scroll to bottom
+    };
 
-// 1. 모델 선택 버튼 클릭 시 -> 설명 모달 띄우기  
-modelSelection.querySelectorAll('button').forEach(btn => {  
-  btn.addEventListener('click', () => {  
-    selectedModel = btn.dataset.model;  
-    apiUrl = btn.dataset.url;  
+    // Function to handle model selection
+    const selectModel = (modelName, modelUrl) => {
+        selectedModel = modelName;
+        selectedModelUrl = modelUrl;
+        chatHeader.textContent = `채팅 중: ${selectedModel}`;
+        displayMessage(`${selectedModel} 모델이 선택되었습니다. 이제 메시지를 입력하세요!`, 'system');
+        promptInput.placeholder = `메시지를 입력하세요.`;
+        modelSuggestionsDiv.classList.remove('active'); // Hide suggestions
+        promptInput.focus(); // Focus on input after selection
+    };
 
-    modelNameElem.textContent = selectedModel.charAt(0).toUpperCase() + selectedModel.slice(1);  
-    modelDescElem.textContent = modelDescriptions[selectedModel] || "설명 없음";  
+    // Show initial greeting or prompt
+    displayMessage('안녕하세요! Flexi, KeraLux, InteractGPT 중 하나의 모델을 선택하거나 메시지를 입력하여 채팅을 시작하세요.', 'system');
 
-    modelDescriptionSection.classList.add('active');  
-  });  
-});  
+    // Handle input change for model suggestions
+    promptInput.addEventListener('input', () => {
+        const query = promptInput.value.toLowerCase();
+        modelSuggestionsDiv.innerHTML = ''; // Clear previous suggestions
 
-// 2. 설명 모달에서 '채팅 시작' 클릭  
-startChatBtn.addEventListener('click', () => {  
-  modelDescriptionSection.classList.remove('active');  
+        if (query.length > 0 && !selectedModel) { // Only show suggestions if no model is selected
+            const filteredModels = models.filter(model =>
+                model.name.toLowerCase().includes(query)
+            );
 
-  chatHeader.textContent = `Ector.V - ${selectedModel} 모델 채팅`;  
-  modelSelection.style.display = 'none';  
-  chatUI.style.display = 'flex';  
+            if (filteredModels.length > 0) {
+                filteredModels.forEach(model => {
+                    const suggestionItem = document.createElement('div');
+                    suggestionItem.classList.add('suggestion-item');
+                    suggestionItem.textContent = model.name;
+                    suggestionItem.dataset.modelName = model.name;
+                    suggestionItem.dataset.modelUrl = model.url;
+                    suggestionItem.dataset.modelDesc = model.desc; // Store description if needed for future modals
+                    suggestionItem.addEventListener('click', () => {
+                        selectModel(model.name, model.url);
+                        promptInput.value = ''; // Clear input after selection
+                    });
+                    modelSuggestionsDiv.appendChild(suggestionItem);
+                });
+                modelSuggestionsDiv.classList.add('active'); // Show suggestions
+            } else {
+                modelSuggestionsDiv.classList.remove('active'); // Hide if no matches
+            }
+        } else {
+            modelSuggestionsDiv.classList.remove('active'); // Hide if input is empty or model selected
+        }
+    });
 
-  chatContainer.innerHTML = '';  
-  promptInput.value = '';  
-  promptInput.focus();  
-});  
+    // Handle sending messages
+    sendBtn.addEventListener('click', async () => {
+        const userPrompt = promptInput.value.trim();
 
-// 3. 설명 모달 취소 버튼  
-cancelBtn.addEventListener('click', () => {  
-  modelDescriptionSection.classList.remove('active');  
-});  
+        if (!userPrompt) return;
 
-// 4. 채팅방에서 '모델 선택으로 돌아가기' 버튼 클릭  
-backBtn.addEventListener('click', () => {  
-  selectedModel = null;  
-  apiUrl = null;  
+        // If no model is selected, try to select one from the input
+        if (!selectedModel) {
+            const foundModel = models.find(model => model.name.toLowerCase() === userPrompt.toLowerCase());
+            if (foundModel) {
+                selectModel(foundModel.name, foundModel.url);
+                promptInput.value = ''; // Clear input after selection
+                return; // Don't send the model name as a message
+            } else {
+                displayMessage('먼저 모델을 선택해 주세요 (예: Flexi, KeraLux, InteractGPT)', 'system');
+                return;
+            }
+        }
 
-  chatUI.style.display = 'none';  
-  modelSelection.style.display = 'block';  
+        displayMessage(userPrompt, 'user');
+        promptInput.value = ''; // Clear the input field
 
-  chatContainer.innerHTML = '';  
-  promptInput.value = '';  
-});  
+        try {
+            displayMessage('응답 생성 중...', 'model'); // Show a loading message
+            const response = await fetch(selectedModelUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ inputs: userPrompt }),
+            });
 
-// 5. 메시지 전송 함수  
-async function sendMessage() {  
-  const prompt = promptInput.value.trim();  
-  if (!prompt) return;  
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
 
-  // 유저 메시지 표시  
-  const userMessage = document.createElement('div');  
-  userMessage.className = 'message user';  
-  userMessage.textContent = prompt;  
-  chatContainer.appendChild(userMessage);  
+            const data = await response.json();
+            const modelResponse = data.generated_text || '응답을 생성할 수 없습니다.';
+            // Remove the loading message before displaying the actual response
+            chatContainer.lastChild.remove(); 
+            displayMessage(modelResponse, 'model');
 
-  // 봇 메시지 자리 만들기  
-  const botMessage = document.createElement('div');  
-  botMessage.className = 'message bot';  
-  botMessage.textContent = `『 "${prompt}" 에 대한 응답을 생성 중... 』\n\n`;  
-  chatContainer.appendChild(botMessage);  
+        } catch (error) {
+            console.error('Error sending message:', error);
+            // Remove the loading message and display an error message
+            chatContainer.lastChild.remove(); 
+            displayMessage('메시지를 보내는 중 오류가 발생했습니다. 다시 시도해 주세요.', 'system');
+        }
+    });
 
-  chatContainer.scrollTop = chatContainer.scrollHeight;  
-  promptInput.value = '';  
-  sendBtn.disabled = true;  
-
-  try {  
-    const params = new URLSearchParams({ prompt });  
-    const response = await fetch(`${apiUrl}?${params}`);  
-
-    if (!response.body) throw new Error("응답 바디가 없습니다.");  
-
-    const reader = response.body.getReader();  
-    const decoder = new TextDecoder("utf-8");  
-
-    let isFirstChunk = true;  
-    while (true) {  
-      const { done, value } = await reader.read();  
-      if (done) {  
-        botMessage.textContent += "\n[✔️ 완료]";  
-        break;  
-      }  
-
-      const text = decoder.decode(value, { stream: true });  
-
-      if (isFirstChunk && text.startsWith(prompt)) {  
-        botMessage.textContent += text.slice(prompt.length).trimStart();  
-      } else {  
-        botMessage.textContent += text;  
-      }  
-      isFirstChunk = false;  
-      chatContainer.scrollTop = chatContainer.scrollHeight;  
-    }  
-  } catch (err) {  
-    botMessage.textContent = `[❌ 오류 발생] ${err.message}`;  
-  } finally {  
-    sendBtn.disabled = false;  
-    promptInput.focus();  
-  }  
-}  
-
-sendBtn.addEventListener('click', sendMessage);  
-
-promptInput.addEventListener('keydown', e => {  
-  if (e.key === 'Enter' && !e.shiftKey) {  
-    e.preventDefault();  
-    sendMessage();  
-  }  
+    // Allow sending messages with Enter key
+    promptInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+            sendBtn.click();
+        }
+    });
 });
-
