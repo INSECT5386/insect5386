@@ -4,7 +4,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const chatContainer = document.getElementById('chat-container');
     const promptInput = document.getElementById('prompt');
     const sendBtn = document.getElementById('send-btn');
-    const modelSuggestionsDiv = document.getElementById('model-suggestions'); // New element for suggestions
+    const modelSuggestionsDiv = document.getElementById('model-suggestions');
+    const modelButtons = document.querySelectorAll('.model-button');
 
     let selectedModel = null;
     let apiUrl = null;
@@ -16,48 +17,36 @@ document.addEventListener('DOMContentLoaded', () => {
         { name: 'InteractGPT', url: 'https://yuchan5386-interactgpt-api.hf.space/generate', desc: 'InteractGPT는 대화형 GPT 모델로, 간단한 일상대화를 지원합니다' }
     ];
 
-    /**
-     * Appends a message to the chat container.
-     * @param {string} message - The text content of the message.
-     * @param {string} sender - 'user', 'bot', or 'system' to apply appropriate styling.
-     */
+    // Append a message to the chat container
     const displayMessage = (message, sender) => {
         const messageElement = document.createElement('div');
         messageElement.classList.add('chat-message', sender);
-        messageElement.innerHTML = `<p>${message}</p>`; // Use innerHTML for potential Markdown
+        messageElement.innerHTML = `<p>${message}</p>`;
         chatContainer.appendChild(messageElement);
-        chatContainer.scrollTop = chatContainer.scrollHeight; // Scroll to the bottom
+        chatContainer.scrollTop = chatContainer.scrollHeight;
     };
 
-    /**
-     * Sets the selected model and updates the UI.
-     * @param {string} modelName - The name of the selected model.
-     * @param {string} modelUrl - The API URL for the selected model.
-     */
+    // Select model and update UI
     const selectModel = (modelName, modelUrl) => {
         selectedModel = modelName;
         apiUrl = modelUrl;
-        chatHeader.textContent = `Ector.V - ${selectedModel} 모델 채팅`; // Update header
+        chatHeader.textContent = `Ector.V - ${selectedModel} 모델 채팅`;
         displayMessage(`${selectedModel} 모델이 선택되었습니다. 이제 메시지를 입력하세요!`, 'system');
         promptInput.placeholder = `메시지를 입력하세요.`;
-        modelSuggestionsDiv.classList.remove('active'); // Hide suggestions
-        promptInput.focus(); // Keep focus on the input field
+        modelSuggestionsDiv.classList.remove('active');
+        promptInput.focus();
     };
 
-    // Initial greeting message when the page loads
+    // Display initial greeting
     displayMessage('안녕하세요! Flexi, KeraLux, InteractGPT 중 하나의 모델을 선택하거나 메시지를 입력하여 채팅을 시작하세요.', 'system');
 
-    // Event listener for input changes to show model suggestions
+    // Handle input suggestions
     promptInput.addEventListener('input', () => {
         const query = promptInput.value.trim().toLowerCase();
-        modelSuggestionsDiv.innerHTML = ''; // Clear previous suggestions
+        modelSuggestionsDiv.innerHTML = '';
 
-        // Only show suggestions if no model is selected and there's user input
         if (query.length > 0 && !selectedModel) {
-            const filteredModels = models.filter(model =>
-                model.name.toLowerCase().includes(query)
-            );
-
+            const filteredModels = models.filter(model => model.name.toLowerCase().includes(query));
             if (filteredModels.length > 0) {
                 filteredModels.forEach(model => {
                     const suggestionItem = document.createElement('div');
@@ -65,45 +54,51 @@ document.addEventListener('DOMContentLoaded', () => {
                     suggestionItem.textContent = model.name;
                     suggestionItem.addEventListener('click', () => {
                         selectModel(model.name, model.url);
-                        promptInput.value = ''; // Clear input after selection
+                        promptInput.value = '';
                     });
                     modelSuggestionsDiv.appendChild(suggestionItem);
                 });
-                modelSuggestionsDiv.classList.add('active'); // Show suggestion box
+                modelSuggestionsDiv.classList.add('active');
             } else {
-                modelSuggestionsDiv.classList.remove('active'); // Hide if no matches
+                modelSuggestionsDiv.classList.remove('active');
             }
         } else {
-            modelSuggestionsDiv.classList.remove('active'); // Hide if input is empty or model is already selected
+            modelSuggestionsDiv.classList.remove('active');
         }
     });
 
-    /**
-     * Handles sending messages to the selected model.
-     */
+    // Handle model selection via buttons
+    modelButtons.forEach(button => {
+        button.addEventListener('click', () => {
+            const modelName = button.dataset.model;
+            const foundModel = models.find(m => m.name === modelName);
+            if (foundModel) {
+                selectModel(foundModel.name, foundModel.url);
+            }
+        });
+    });
+
+    // Send message function
     async function sendMessage() {
         const prompt = promptInput.value.trim();
         if (!prompt) return;
 
-        // If no model is selected, try to select one from the input
         if (!selectedModel) {
             const foundModel = models.find(model => model.name.toLowerCase() === prompt.toLowerCase());
             if (foundModel) {
                 selectModel(foundModel.name, foundModel.url);
-                promptInput.value = ''; // Clear input after selection
-                return; // Don't send the model name as a message
+                promptInput.value = '';
+                return;
             } else {
                 displayMessage('먼저 모델을 선택해 주세요 (예: Flexi, KeraLux, InteractGPT)', 'system');
                 return;
             }
         }
 
-        // Display user message
         displayMessage(prompt, 'user');
-        promptInput.value = ''; // Clear the input field
-        sendBtn.disabled = true; // Disable send button during response
+        promptInput.value = '';
+        sendBtn.disabled = true;
 
-        // Display a loading message for the bot's response
         const botMessage = document.createElement('div');
         botMessage.className = 'chat-message bot';
         botMessage.innerHTML = `『 "${prompt}" 에 대한 응답을 생성 중... 』<br><br>`;
@@ -114,9 +109,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const params = new URLSearchParams({ prompt });
             const response = await fetch(`${apiUrl}?${params}`);
 
-            if (!response.body) {
-                throw new Error("응답 바디가 없습니다.");
-            }
+            if (!response.body) throw new Error("응답 바디가 없습니다.");
 
             const reader = response.body.getReader();
             const decoder = new TextDecoder("utf-8");
@@ -127,39 +120,32 @@ document.addEventListener('DOMContentLoaded', () => {
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) {
-                    botMessage.innerHTML = receivedText + "<br>[✔️ 완료]"; // Add completion message
+                    botMessage.innerHTML = receivedText + "<br>[✔️ 완료]";
                     break;
                 }
 
                 const text = decoder.decode(value, { stream: true });
-
-                // Remove the initial loading message if this is the first chunk
-                if (isFirstChunk) {
-                    receivedText = text.trimStart(); // Start with the actual response
-                } else {
-                    receivedText += text;
-                }
-                
-                botMessage.innerHTML = receivedText; // Update content incrementally
+                receivedText += isFirstChunk ? text.trimStart() : text;
+                botMessage.innerHTML = receivedText;
                 isFirstChunk = false;
                 chatContainer.scrollTop = chatContainer.scrollHeight;
             }
         } catch (err) {
-            botMessage.innerHTML = `[❌ 오류 발생] ${err.message}`; // Display error message
+            botMessage.innerHTML = `[❌ 오류 발생] ${err.message}`;
             console.error('Error sending message:', err);
         } finally {
-            sendBtn.disabled = false; // Re-enable send button
-            promptInput.focus(); // Focus back on input
+            sendBtn.disabled = false;
+            promptInput.focus();
         }
     }
 
-    // Event listener for the send button
+    // Send message on button click
     sendBtn.addEventListener('click', sendMessage);
 
-    // Event listener for Enter key in the prompt input
+    // Send message on Enter key
     promptInput.addEventListener('keydown', e => {
-        if (e.key === 'Enter' && !e.shiftKey) { // Prevent new line with Shift + Enter
-            e.preventDefault(); // Prevent default Enter behavior (e.g., new line)
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
             sendMessage();
         }
     });
