@@ -1,40 +1,111 @@
-/* Add this to your style.css */
+/* 전체 기본 설정 */
+body {
+  margin: 0;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  background-color: #f4f4f9;
+  color: #333;
+}
+
+/* 헤더 */
+header {
+  background-color: #4a90e2;
+  color: white;
+  padding: 1rem;
+  text-align: center;
+  font-size: 1.5rem;
+}
+
+/* 메인 컨테이너 */
+#main-container {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 2rem;
+}
+
+/* 채팅 UI 영역 */
+#chat-ui {
+  background: white;
+  border-radius: 10px;
+  box-shadow: 0 0 10px rgba(0,0,0,0.1);
+  width: 100%;
+  max-width: 600px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 채팅 헤더 */
+#chat-header {
+  background-color: #e6efff;
+  padding: 1rem;
+  border-bottom: 1px solid #ccc;
+  font-weight: bold;
+}
+
+/* 채팅 내용 */
+#chat-container {
+  padding: 1rem;
+  overflow-y: auto;
+  height: 60vh;
+}
+
+/* 입력 영역 */
+footer {
+  display: flex;
+  flex-direction: column;
+  padding: 1rem;
+  border-top: 1px solid #ccc;
+}
 
 .input-wrapper {
-  position: relative;
-  flex-grow: 1; /* Allows the input to take available space */
+  display: flex;
+  align-items: center;
+  margin-bottom: 1rem;
 }
 
-.suggestions {
-  position: absolute;
-  bottom: 100%; /* Position above the input field */
-  left: 0;
-  right: 0;
-  background-color: white;
-  border: 1px solid #ddd;
-  border-bottom: none;
-  max-height: 150px; /* Limit height for scroll if many suggestions */
-  overflow-y: auto;
-  z-index: 10; /* Ensure it appears above other elements */
-  box-shadow: 0 -2px 5px rgba(0,0,0,0.1);
-  display: none; /* Hidden by default */
+#prompt {
+  flex: 1;
+  padding: 0.7rem;
+  font-size: 1rem;
+  border-radius: 5px;
+  border: 1px solid #ccc;
+  margin-right: 0.5rem;
 }
 
-.suggestions.active {
-  display: block; /* Show when suggestions are available */
-}
-
-.suggestion-item {
-  padding: 10px;
+#send-btn {
+  background-color: #4a90e2;
+  color: white;
+  border: none;
+  padding: 0.7rem 1rem;
+  border-radius: 5px;
   cursor: pointer;
-  border-bottom: 1px solid #eee;
+  font-weight: bold;
 }
 
-.suggestion-item:last-child {
-  border-bottom: none;
+#send-btn:hover {
+  background-color: #357bd8;
 }
 
-.suggestion-item:hover {
-  background-color: #f0f0f0;
+/* 모델 선택 버튼 */
+#model-suggestions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  flex-wrap: wrap;
 }
 
+.model-button {
+  padding: 0.5rem 0.8rem;
+  border-radius: 5px;
+  border: 1px solid #4a90e2;
+  background-color: white;
+  color: #4a90e2;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: all 0.2s ease;
+}
+
+.model-button:hover {
+  background-color: #4a90e2;
+  color: white;
+}
