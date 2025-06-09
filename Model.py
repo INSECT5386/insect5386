@@ -5,11 +5,6 @@ import tensorflow as tf
 from tensorflow.keras import layers  
 import sentencepiece as spm  
 import requests
-from tensorflow.keras import mixed_precision
-
-
-policy = mixed_precision.Policy('mixed_float16')
-mixed_precision.set_global_policy(policy)
 
 # ⬇️ 파일 다운로드 함수
 def download_file(url, save_path):
@@ -139,8 +134,6 @@ class RotaryPositionalEmbedding(layers.Layer):
         emb_cos = tf.cos(freqs)  
         emb_cos = tf.reshape(emb_cos, [1, 1, seq_len, -1])  
         emb_sin = tf.reshape(emb_sin, [1, 1, seq_len, -1])  
-        emb_cos = tf.cast(emb_cos, x.dtype)
-        emb_sin = tf.cast(emb_sin, x.dtype)
         x1 = x[..., ::2]  
         x2 = x[..., 1::2]  
         x_rotated = tf.stack([  
@@ -162,7 +155,7 @@ class SwiGLU(tf.keras.layers.Layer):
         return self.out(x_val * tf.nn.silu(x_gate))
         
 class Block(tf.keras.layers.Layer):  
-    def __init__(self, d_model, d_ff, num_heads=6, dropout_rate=0.05, adapter_dim=48):    
+    def __init__(self, d_model, d_ff, num_heads=4, dropout_rate=0.05, adapter_dim=48):    
         super().__init__()    
         self.ln1 = tf.keras.layers.LayerNormalization(epsilon=1e-5)    
         self.mha = tf.keras.layers.MultiHeadAttention(num_heads=num_heads, key_dim=d_model // num_heads)    
@@ -200,7 +193,7 @@ class Block(tf.keras.layers.Layer):
         return x
 
 class Flexi(tf.keras.Model):  
-    def __init__(self, vocab_size, seq_len, d_model, d_ff, n_layers, num_heads=6, dropout_rate=0.1):  
+    def __init__(self, vocab_size, seq_len, d_model, d_ff, n_layers, num_heads=4, dropout_rate=0.1):  
         super().__init__()  
         self.token_embedding = tf.keras.layers.Embedding(vocab_size, d_model)  
         self.blocks = [Block(d_model, d_ff, num_heads, dropout_rate) for _ in range(n_layers)]  
@@ -224,9 +217,9 @@ def masked_loss(y_true, y_pred):
 model = Flexi(
     vocab_size=vocab_size,
     seq_len=max_len,
-    d_model=192,
-    d_ff=768,       
-    n_layers=16
+    d_model=128,
+    d_ff=512,       
+    n_layers=12
 )
 
 model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=5e-5), loss=masked_loss)
