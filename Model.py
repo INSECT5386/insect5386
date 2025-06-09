@@ -230,7 +230,7 @@ model.summary()
 
 steps_per_epoch = len(encoded_inputs) // batch_size
 model.fit(dataset, epochs=1, steps_per_epoch=steps_per_epoch)
-model.save_weights("InteractGPT.weights.h5")  
+model.save_weights("Flexi.weights.h5")  
 print("모델 가중치 저장 완료!")  
 
 def generate_text_topp(model, prompt, max_len=100, max_gen=98, p=0.9, temperature=0.8, min_len=20):
