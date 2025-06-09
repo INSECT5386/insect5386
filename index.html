@@ -7,39 +7,20 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <header>모델 선택</header>
+  <header>Multi-Model Chat</header>
 
   <main id="main-container">  
-    <!-- 초기 화면: 모델 선택 -->  
-    <section id="model-selection">  
-      <h2>사용할 모델을 선택하세요</h2>  
-      <ul>  
-        <li><button data-model="flexi" data-url="https://yuchan5386-flexi-api.hf.space/generate">Flexi</button></li>  
-        <li><button data-model="keralux" data-url="https://yuchan5386-keralux-api.hf.space/generate">KeraLux</button></li>
-        <li><button data-model="interactgpt" data-url="https://yuchan5386-interactgpt-api.hf.space/generate">InteractGPT</button></li>
-      </ul>  
-    </section>  
-
-    <!-- 설명 모달 -->  
-    <section id="model-description">  
-      <div class="modal-bg"></div>  
-      <div class="modal-content">  
-        <h3 id="model-name"></h3>  
-        <p id="model-desc"></p>  
-        <button id="start-chat-btn">채팅 시작</button>  
-        <button id="cancel-btn">취소</button>  
-      </div>  
-    </section>  
-
-    <!-- 채팅 UI (초기엔 숨김) -->  
-    <section id="chat-ui" style="display:none;">  
-      <header id="chat-header"></header>  
+    <section id="chat-ui">  
+      <header id="chat-header">모델을 선택하거나 메시지를 입력하세요.</header>  
       <div id="chat-container" style="overflow-y:auto; height:60vh; padding: 1rem;"></div>  
       <footer>  
-        <input type="text" id="prompt" placeholder="메시지를 입력하세요" autocomplete="off" />  
+        <div class="input-wrapper">
+          <input type="text" id="prompt" placeholder="Flexi, KeraLux, InteractGPT 중 선택하거나 메시지를 입력하세요." autocomplete="off" />  
+          <div id="model-suggestions" class="suggestions">
+            </div>
+        </div>
         <button id="send-btn">전송</button>  
-        <button id="back-btn">모델 선택으로 돌아가기</button>  
-      </footer>  
+        </footer>  
     </section>  
   </main>  
 
