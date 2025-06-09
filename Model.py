@@ -219,7 +219,7 @@ model = Flexi(
     seq_len=max_len,
     d_model=128,
     d_ff=512,       
-    n_layers=12
+    n_layers=13
 )
 
 model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=5e-5), loss=masked_loss)
