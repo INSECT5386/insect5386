@@ -7,28 +7,40 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <header>Multi-Model Chat</header>
+  <header>
+    <h1>Multi-Model Chat</h1>
+  </header>
 
   <main id="main-container">  
     <section id="chat-ui">  
-      <header id="chat-header">모델을 선택하거나 메시지를 입력하세요.</header>  
-      <div id="chat-container" style="overflow-y:auto; height:60vh; padding: 1rem;"></div>  
-      <footer>  
+      <div id="chat-header" class="chat-header">
+        모델을 선택하거나 메시지를 입력하세요.
+      </div>  
+
+      <div id="chat-container" class="chat-container" style="overflow-y: auto; height: 60vh; padding: 1rem;"></div>  
+
+      <footer class="chat-footer">  
         <div class="input-wrapper">
-          <input type="text" id="prompt" placeholder="Flexi, KeraLux, InteractGPT 중 선택하거나 메시지를 입력하세요." autocomplete="off" />  
+          <input
+            type="text"
+            id="prompt"
+            placeholder="Flexi, KeraLux, InteractGPT 중 선택하거나 메시지를 입력하세요."
+            autocomplete="off"
+            aria-label="메시지 입력"
+          />  
+
           <div id="model-suggestions" class="suggestions">
             <button class="model-button" data-model="Flexi">Flexi</button>
-<button class="model-button" data-model="KeraLux">KeraLux</button>
-<button class="model-button" data-model="InteractGPT">InteractGPT</button>
-
-            </div>
+            <button class="model-button" data-model="KeraLux">KeraLux</button>
+            <button class="model-button" data-model="InteractGPT">InteractGPT</button>
+          </div>
         </div>
-        <button id="send-btn">전송</button>  
-        </footer>  
+
+        <button id="send-btn" aria-label="메시지 전송">전송</button>  
+      </footer>  
     </section>  
   </main>  
 
   <script src="script.js"></script>
 </body>
 </html>
-
