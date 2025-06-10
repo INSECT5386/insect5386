@@ -138,7 +138,7 @@ class SwiGLU(tf.keras.layers.Layer):
         # Apply SiLU activation to the gate and multiply with the value
         return self.out(x_val * tf.nn.silu(x_gate))
 
-class GPTBlock(tf.keras.layers.Layer):
+class Block(tf.keras.layers.Layer):
     def __init__(self, d_model, d_ff, num_heads=16, dropout_rate=0.1):
         super().__init__()
         # Layer Normalization before self-attention
@@ -174,7 +174,7 @@ class GPTBlock(tf.keras.layers.Layer):
 
         return x
 
-class GPT(tf.keras.Model):
+class Model(tf.keras.Model):
     def __init__(self, vocab_size, seq_len, d_model, d_ff, n_layers, num_heads=16):
         super().__init__()
         # 토큰 임베딩 레이어
@@ -186,7 +186,7 @@ class GPT(tf.keras.Model):
             initializer=tf.keras.initializers.RandomNormal(stddev=0.01)
         )
         # GPTBlock 인스턴스 리스트
-        self.blocks = [GPTBlock(d_model, d_ff, num_heads) for _ in range(n_layers)]
+        self.blocks = [Block(d_model, d_ff, num_heads) for _ in range(n_layers)]
         # 최종 레이어 정규화
         self.ln_f = layers.LayerNormalization(epsilon=1e-5)
         self.d_model = d_model
@@ -213,7 +213,7 @@ def masked_loss(y_true, y_pred):
     mask = tf.cast(tf.not_equal(y_true, pad_id), tf.float32)  
     return tf.reduce_sum(loss * mask) / tf.reduce_sum(mask) 
 
-model = KeraLux(
+model = Model(
     vocab_size=vocab_size,
     seq_len=max_len,
     d_model=160,
