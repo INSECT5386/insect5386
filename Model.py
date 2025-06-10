@@ -177,34 +177,34 @@ class GPTBlock(tf.keras.layers.Layer):
 class GPT(tf.keras.Model):
     def __init__(self, vocab_size, seq_len, d_model, d_ff, n_layers, num_heads=16):
         super().__init__()
-        # Token embedding layer
+        # 토큰 임베딩 레이어
         self.token_embedding = layers.Embedding(vocab_size, d_model)
-        # Positional embedding, added as a trainable weight
+        # 위치 임베딩
         self.pos_embedding = self.add_weight(
             name="pos_embedding",
             shape=[seq_len, d_model],
             initializer=tf.keras.initializers.RandomNormal(stddev=0.01)
         )
-        # List of GPTBlock instances
+        # GPTBlock 인스턴스 리스트
         self.blocks = [GPTBlock(d_model, d_ff, num_heads) for _ in range(n_layers)]
-        # Final Layer Normalization
+        # 최종 레이어 정규화
         self.ln_f = layers.LayerNormalization(epsilon=1e-5)
         self.d_model = d_model
         self.vocab_size = vocab_size
 
     def call(self, x, training=False):
         seq_len = tf.shape(x)[1]
-        # Apply token and positional embeddings
+        # 토큰 및 위치 임베딩 적용
         x = self.token_embedding(x) + self.pos_embedding[tf.newaxis, :seq_len, :]
-        # Pass through each GPTBlock
+        # 각 GPTBlock 통과
         for block in self.blocks:
-            x = block(x, training=training) # Pass training argument
-        # Apply final layer normalization
+            x = block(x, training=training) # training 인자 전달
+        # 최종 레이어 정규화 적용
         x = self.ln_f(x)
-        # Project to vocabulary size for logits (using shared weights with token embedding)
-        logits = tf.matmul(x, self.token_embedding.weights[0], transpose_b=True)
+        
+        # 수정된 부분: 토큰 임베딩의 'embeddings' 속성 직접 사용
+        logits = tf.matmul(x, self.token_embedding.embeddings, transpose_b=True)
         return logits
-
 
 loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True, reduction='none')
 
