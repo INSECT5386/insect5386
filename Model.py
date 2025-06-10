@@ -120,106 +120,91 @@ dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
 print("✅ TF Dataset 생성 완료!")
 
-class RotaryPositionalEmbedding(layers.Layer):
-    def __init__(self, dim):
-        super().__init__()
-        self.dim = dim
-        inv_freq = 1.0 / (10000 ** (np.arange(0, dim, 2) / dim))
-        self.inv_freq = tf.constant(inv_freq, dtype=tf.float32)
+import tensorflow as tf
+from tensorflow.keras import layers
 
-    def call(self, x):
-        # x shape: (batch, heads, seq_len, depth)
-        batch, heads, seq_len, depth = tf.unstack(tf.shape(x))
-
-        t = tf.range(seq_len, dtype=tf.float32)  # (seq_len,)
-        freqs = tf.einsum('i,j->ij', t, self.inv_freq)  # (seq_len, dim//2)
-
-        emb_sin = tf.sin(freqs)  # (seq_len, dim//2)
-        emb_cos = tf.cos(freqs)  # (seq_len, dim//2)
-
-        # (seq_len, dim//2) -> (1, 1, seq_len, dim//2) to broadcast with x
-        emb_cos = tf.reshape(emb_cos, [1, 1, seq_len, -1])
-        emb_sin = tf.reshape(emb_sin, [1, 1, seq_len, -1])
-
-        x1 = x[..., ::2]  # (batch, heads, seq_len, depth//2)
-        x2 = x[..., 1::2]
-
-        x_rotated = tf.stack([
-            x1 * emb_cos - x2 * emb_sin,
-            x1 * emb_sin + x2 * emb_cos
-        ], axis=-1)  # shape (batch, heads, seq_len, depth//2, 2)
-
-        x_rotated = tf.reshape(x_rotated, tf.shape(x))  # 다시 (batch, heads, seq_len, depth)
-        return x_rotated
-
-class GEGLU(tf.keras.layers.Layer):
+class SwiGLU(tf.keras.layers.Layer):
     def __init__(self, d_model, d_ff):
         super().__init__()
+        # Projects input to 2*d_ff dimensions, then splits for GLU
         self.proj = layers.Dense(d_ff * 2)
+        # Projects the result back to d_model
         self.out = layers.Dense(d_model)
+
     def call(self, x):
         x_proj = self.proj(x)
+        # Split the projected tensor into two halves along the last axis
         x_val, x_gate = tf.split(x_proj, 2, axis=-1)
-        return self.out(x_val * tf.nn.gelu(x_gate))
+        # Apply SiLU activation to the gate and multiply with the value
+        return self.out(x_val * tf.nn.silu(x_gate))
 
-class KeraLuxBlock(tf.keras.layers.Layer):
-    def __init__(self, d_model, d_ff, num_heads=20, dropout_rate=0.1):
+class GPTBlock(tf.keras.layers.Layer):
+    def __init__(self, d_model, d_ff, num_heads=16, dropout_rate=0.1):
         super().__init__()
+        # Layer Normalization before self-attention
         self.ln1 = layers.LayerNormalization(epsilon=1e-5)
-        self.mha = layers.MultiHeadAttention(num_heads=num_heads, key_dim=d_model // num_heads)
+        # Multi-head self-attention layer
+        self.attn = layers.MultiHeadAttention(num_heads=num_heads, key_dim=d_model // num_heads)
+        # Dropout after self-attention
         self.dropout1 = layers.Dropout(dropout_rate)
+
+        # Layer Normalization before the feed-forward network
         self.ln2 = layers.LayerNormalization(epsilon=1e-5)
-        self.ffn = GEGLU(d_model, d_ff)
+        # SwiGLU feed-forward network
+        self.ffn = SwiGLU(d_model, d_ff)
+        # Dropout after the feed-forward network
         self.dropout2 = layers.Dropout(dropout_rate)
-        self.rope = RotaryPositionalEmbedding(d_model // num_heads)
+
+        # Removed self.res_scale as it's not commonly used in standard Transformers
 
     def call(self, x, training=False):
+        # Self-attention block with pre-normalization and residual connection
         x_norm = self.ln1(x)
+        attn_out = self.attn(query=x_norm, value=x_norm, key=x_norm, use_causal_mask=True)
+        attn_out = self.dropout1(attn_out, training=training)
+        # Removed drop_path1
+        x = x + attn_out # Removed self.res_scale multiplication
 
-        # MHA 쿼리, 키에 RoPE 적용
-        batch_size = tf.shape(x_norm)[0]
-        seq_len = tf.shape(x_norm)[1]
-        num_heads = self.mha.num_heads
-        depth = (x_norm.shape[-1]) // num_heads
+        # Feed-forward block with pre-normalization and residual connection
+        x_norm2 = self.ln2(x)
+        ffn_out = self.ffn(x_norm2)
+        ffn_out = self.dropout2(ffn_out, training=training)
+        # Removed drop_path2
+        x = x + ffn_out # Removed self.res_scale multiplication
 
-        # (batch, seq_len, d_model) -> (batch, num_heads, seq_len, depth)
-        qkv = tf.reshape(x_norm, [batch_size, seq_len, num_heads, depth])
-        qkv = tf.transpose(qkv, [0, 2, 1, 3])  # (batch, heads, seq_len, depth)
-
-        # RoPE 적용 (query, key 모두 동일 x_norm 사용하니 둘 다 적용)
-        q = self.rope(qkv)
-        k = self.rope(qkv)
-
-        # 다시 원래 shape로
-        q = tf.transpose(q, [0, 2, 1, 3])
-        q = tf.reshape(q, [batch_size, seq_len, num_heads * depth])
-        k = tf.transpose(k, [0, 2, 1, 3])
-        k = tf.reshape(k, [batch_size, seq_len, num_heads * depth])
-
-        # MHA 호출: query=k=v=x_norm, 하지만 RoPE 씌운 q,k로 대체
-        attn_out = self.mha(query=q, value=x_norm, key=k, use_causal_mask=True, training=training)
-
-        x = x + self.dropout1(attn_out, training=training)
-        ffn_out = self.ffn(self.ln2(x))
-        x = x + self.dropout2(ffn_out, training=training)
         return x
-        
-class KeraLux(tf.keras.Model):
-    def __init__(self, vocab_size, seq_len, d_model, d_ff, n_layers, num_heads=20, dropout_rate=0.1):
+
+class GPT(tf.keras.Model):
+    def __init__(self, vocab_size, seq_len, d_model, d_ff, n_layers, num_heads=16):
         super().__init__()
+        # Token embedding layer
         self.token_embedding = layers.Embedding(vocab_size, d_model)
-        # pos_embedding 제거
-        self.blocks = [KeraLuxBlock(d_model, d_ff, num_heads, dropout_rate) for _ in range(n_layers)]
+        # Positional embedding, added as a trainable weight
+        self.pos_embedding = self.add_weight(
+            name="pos_embedding",
+            shape=[seq_len, d_model],
+            initializer=tf.keras.initializers.RandomNormal(stddev=0.01)
+        )
+        # List of GPTBlock instances
+        self.blocks = [GPTBlock(d_model, d_ff, num_heads) for _ in range(n_layers)]
+        # Final Layer Normalization
         self.ln_f = layers.LayerNormalization(epsilon=1e-5)
+        self.d_model = d_model
+        self.vocab_size = vocab_size
 
     def call(self, x, training=False):
         seq_len = tf.shape(x)[1]
-        x = self.token_embedding(x)
+        # Apply token and positional embeddings
+        x = self.token_embedding(x) + self.pos_embedding[tf.newaxis, :seq_len, :]
+        # Pass through each GPTBlock
         for block in self.blocks:
-            x = block(x, training=training)
+            x = block(x, training=training) # Pass training argument
+        # Apply final layer normalization
         x = self.ln_f(x)
-        logits = tf.matmul(x, self.token_embedding.embeddings, transpose_b=True)
+        # Project to vocabulary size for logits (using shared weights with token embedding)
+        logits = tf.matmul(x, self.token_embedding.weights[0], transpose_b=True)
         return logits
+
 
 loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True, reduction='none')
 
