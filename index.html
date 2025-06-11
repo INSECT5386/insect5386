@@ -29,20 +29,23 @@
             aria-label="메시지 입력"
           />  
 
-          <div id="model-suggestions" class="suggestions">
-            <button class="model-button" data-model="Flexi">Flexi</button>
-            <button class="model-button" data-model="KeraLux">KeraLux</button>
-            <button class="model-button" data-model="InteractGPT">InteractGPT</button>
-            <button class="model-button" data-model="Flexi2">Flexi2</button>
-          </div>
+          <!-- 여긴 추천 텍스트가 동적으로 들어가는 영역 (초기엔 비어있어야 함!) -->
+          <div id="model-suggestions" class="suggestions"></div>
         </div>
 
         <button id="send-btn" aria-label="메시지 전송">전송</button>  
       </footer>  
+
+      <!-- 모델 선택 버튼은 따로 아래에 배치! -->
+      <div class="model-buttons" style="margin-top: 1rem;">
+        <button class="model-button" data-model="Flexi">Flexi</button>
+        <button class="model-button" data-model="KeraLux">KeraLux</button>
+        <button class="model-button" data-model="InteractGPT">InteractGPT</button>
+        <button class="model-button" data-model="Flexi2">Flexi2</button>
+      </div>
     </section>  
   </main>  
 
   <script src="script.js"></script>
 </body>
 </html>
-
