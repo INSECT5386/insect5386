@@ -13,7 +13,6 @@ document.addEventListener('DOMContentLoaded', () => {
         { name: 'Flexi', url: 'https://yuchan5386-flexi-api.hf.space/generate', desc: 'Flexi는 InteractGPT의 개선모델로, 다양한 분석 기능과 유연한 응답을 제공합니다.' },
         { name: 'KeraLux', url: 'https://yuchan5386-keralux-api.hf.space/generate', desc: 'KeraLux는 180만 개 한국어 데이터로 사전학습된 GPT 기반 모델로, 한국어 최적화와 자연스러운 대화를 지원합니다.' },
         { name: 'InteractGPT', url: 'https://yuchan5386-interactgpt-api.hf.space/generate', desc: 'InteractGPT는 대화형 GPT 모델로, 간단한 일상대화를 지원합니다.' },
-        { name: 'Flexi2', url: 'https://yuchan5386-flexi-2-api.hf.space/generate', desc: 'Flexi의 개선 모델입니다.' }
     ];
 
     const displayMessage = (message, sender) => {
