@@ -117,7 +117,6 @@ dataset = tf.data.Dataset.from_generator(
 )
 
 dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
-dataset = dataset.repeat()
 
 print("✅ TF Dataset 생성 완료!")
 
