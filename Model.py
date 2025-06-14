@@ -16,8 +16,8 @@ def download_file(url, save_path):
     print(f"✅ 파일 저장됨: {save_path}")
 
 # ⬇️ 데이터와 토크나이저 다운로드
-download_file('https://huggingface.co/datasets/Yuchan5386/Test1111/resolve/main/dataset.parquet?download=true', 'dataset.parquet')
-download_file('https://huggingface.co/datasets/Yuchan5386/Test1111/resolve/main/kolig_unigram.model?download=true', 'ko_unigram.model')
+download_file('https://huggingface.co/datasets/Yuchan5386/KeraLux4/resolve/main/dataset.parquet?download=true', 'dataset.parquet')
+download_file('https://huggingface.co/datasets/Yuchan5386/KeraLux4/resolve/main/kolig_unigram.model?download=true', 'ko_unigram.model')
 
 # ⬇️ Parquet 데이터 불러오기
 df = pd.read_parquet("dataset.parquet", engine="pyarrow")
@@ -33,7 +33,7 @@ for conversations in df["conversations"]:
             response = item2.get("value", "").strip().replace("\n", " ")
             full = f"<start> {prompt} <sep> {response} <end>"
             train_sentences.append(full)
-train_sentences = train_sentences[:10000]
+train_sentences = train_sentences
 print(f"총 문장 개수: {len(train_sentences)}")
 
 # ⬇️ 토크나이저 불러오기
@@ -59,7 +59,7 @@ def ids_to_text(ids):
 
 # ⬇️ 전처리 하이퍼파라미터
 max_len = 100
-batch_size = 42
+batch_size = 48
 
 # ⬇️ 인풋과 타겟 마스킹 포함된 전처리
 encoded_inputs = []
@@ -120,117 +120,243 @@ dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
 print("✅ TF Dataset 생성 완료!")
 
-import tensorflow as tf
-from tensorflow.keras import layers
-
-class SwiGLU(tf.keras.layers.Layer):
-    def __init__(self, d_model, d_ff):
+class RealMambaCore(tf.keras.layers.Layer):
+    def __init__(self, hidden_dim, conv_kernel_size=3):
         super().__init__()
-        # Projects input to 2*d_ff dimensions, then splits for GLU
-        self.proj = layers.Dense(d_ff * 2)
-        # Projects the result back to d_model
-        self.out = layers.Dense(d_model)
+        self.hidden_dim = hidden_dim
+
+        # Gate & Input projections
+        self.gate_proj = layers.Dense(hidden_dim)
+        self.input_proj = layers.Dense(hidden_dim)
+
+        # SSM 파라미터 벡터
+        self.A = self.add_weight(shape=(hidden_dim,),
+                                 initializer=tf.keras.initializers.RandomNormal(mean=-0.5, stddev=0.1),
+                                 trainable=True, name="A")
+        self.B = self.add_weight(shape=(hidden_dim,),
+                                 initializer='random_normal',
+                                 trainable=True, name="B")
+        self.C = self.add_weight(shape=(hidden_dim,),
+                                 initializer='random_normal',
+                                 trainable=True, name="C")
+        self.D = self.add_weight(shape=(hidden_dim,),
+                                 initializer='zeros',
+                                 trainable=True, name="D")
+
+        # Depthwise Conv1D
+        self.conv = layers.DepthwiseConv1D(kernel_size=conv_kernel_size,
+                                           padding='same',
+                                           use_bias=False)
+
+        # FFN (후처리)
+        self.ffn = tf.keras.Sequential([
+            layers.Dense(hidden_dim, activation='gelu'),
+            layers.Dense(hidden_dim)
+        ])
+
+        self.norm = layers.LayerNormalization()
+        self.output_proj = layers.Dense(hidden_dim)
+
+    def fft_convolve(self, u_t, kernel_t, T):
+        pad_len = T - 1
+        seq_len = T + pad_len
+
+        # 2의 제곱수로 fft_len 맞추기
+        fft_len_float = tf.math.ceil(tf.math.log(tf.cast(seq_len, tf.float32)) / tf.math.log(2.0))
+        fft_len = tf.cast(2 ** fft_len_float, tf.int32)
+
+        # u_t 패딩: 앞쪽 pad_len, 뒤쪽 fft_len - seq_len
+        u_padded = tf.pad(u_t, [[0, 0], [0, 0], [pad_len, fft_len - seq_len]])
+        # kernel_t 패딩: 뒤쪽 fft_len - T
+        K_padded = tf.pad(kernel_t, [[0, 0], [0, fft_len - T]])
+
+        # FFT
+        U_f = tf.signal.fft(tf.cast(tf.complex(u_padded, 0.0), tf.complex64))  # (B, D, fft_len)
+        K_f = tf.signal.fft(tf.cast(tf.complex(K_padded, 0.0), tf.complex64))  # (D, fft_len)
+
+        # 곱셈 (브로드캐스트 맞춰서)
+        Y_f = U_f * tf.expand_dims(K_f, 0)  # (B, D, fft_len)
+
+        # 역 FFT
+        y_full = tf.signal.ifft(Y_f)  # (B, D, fft_len)
+
+        # 실수부만 취하고, 필요한 길이만 슬라이스
+        y_real = tf.math.real(y_full)[..., pad_len:pad_len + T]  # (B, D, T)
+
+        return y_real
 
     def call(self, x):
-        x_proj = self.proj(x)
-        # Split the projected tensor into two halves along the last axis
-        x_val, x_gate = tf.split(x_proj, 2, axis=-1)
-        # Apply SiLU activation to the gate and multiply with the value
-        return self.out(x_val * tf.nn.silu(x_gate))
+        B = tf.shape(x)[0]
+        T = tf.shape(x)[1]
+        D = self.hidden_dim
 
-class Block(tf.keras.layers.Layer):
-    def __init__(self, d_model, d_ff, num_heads=16, dropout_rate=0.1):
+        # 1. Gate & input projections
+        gate = tf.nn.silu(self.gate_proj(x))
+        x_proj = self.input_proj(x)
+        u = gate * x_proj  # (B, T, D)
+
+        # 2. SSM 파라미터로 컨볼루션 커널 생성
+        time_idx = tf.cast(tf.range(T), dtype=self.A.dtype)[:, None]  # (T,1)
+        A_pow = tf.pow(tf.expand_dims(self.A, 0), time_idx)  # (T, D)
+        kernel = self.B * A_pow  # (T, D)
+
+        # 3. FFT convolution
+        u_t = tf.transpose(u, [0, 2, 1])       # (B, D, T)
+        kernel_t = tf.transpose(kernel, [1, 0])  # (D, T)
+
+        y_real = self.fft_convolve(u_t, kernel_t, T)  # (B, D, T)
+        y = tf.transpose(y_real, [0, 2, 1])  # (B, T, D)
+
+        # 4. 출력 조합
+        y = self.C * y + self.D * u
+
+        # 5. Conv + FFN + Norm + Output projection
+        y = self.conv(y)
+        y = self.ffn(y)
+        y = self.norm(y)
+        y = self.output_proj(y)
+
+        return y
+
+
+class Cobrablock(tf.keras.layers.Layer):
+    def __init__(self, d_model, dropout_rate=0.1):
         super().__init__()
-        # Layer Normalization before self-attention
-        self.ln1 = layers.LayerNormalization(epsilon=1e-5)
-        # Multi-head self-attention layer
-        self.attn = layers.MultiHeadAttention(num_heads=num_heads, key_dim=d_model // num_heads)
-        # Dropout after self-attention
+        self.norm1 = layers.LayerNormalization(epsilon=1e-5)
+        self.mamba = RealMambaCore(d_model)
         self.dropout1 = layers.Dropout(dropout_rate)
 
-        # Layer Normalization before the feed-forward network
-        self.ln2 = layers.LayerNormalization(epsilon=1e-5)
-        # SwiGLU feed-forward network
-        self.ffn = SwiGLU(d_model, d_ff)
-        # Dropout after the feed-forward network
+        self.norm2 = layers.LayerNormalization(epsilon=1e-5)
         self.dropout2 = layers.Dropout(dropout_rate)
 
-        # Removed self.res_scale as it's not commonly used in standard Transformers
-
     def call(self, x, training=False):
-        # Self-attention block with pre-normalization and residual connection
-        x_norm = self.ln1(x)
-        attn_out = self.attn(query=x_norm, value=x_norm, key=x_norm, use_causal_mask=True)
-        attn_out = self.dropout1(attn_out, training=training)
-        # Removed drop_path1
-        x = x + attn_out # Removed self.res_scale multiplication
+    # Mamba block
+        residual = x
+        x = self.norm1(x)
+        x = self.mamba(x)
+        x = residual + self.dropout1(x, training=training)
 
-        # Feed-forward block with pre-normalization and residual connection
-        x_norm2 = self.ln2(x)
-        ffn_out = self.ffn(x_norm2)
-        ffn_out = self.dropout2(ffn_out, training=training)
-        # Removed drop_path2
-        x = x + ffn_out # Removed self.res_scale multiplication
+    # FFN block (또는 그냥 후처리)
+        residual = x
+        x = self.norm2(x)
+        x = self.dropout2(x, training=training)
+        x = residual + x  # 여기서 진짜 residual connection
 
         return x
 
-class Model(tf.keras.Model):
-    def __init__(self, vocab_size, seq_len, d_model, d_ff, n_layers, num_heads=16):
+    
+class CobraModel(tf.keras.Model):
+    def __init__(self, vocab_size, seq_len, d_model, n_layers, dropout_rate=0.1):
         super().__init__()
-        # 토큰 임베딩 레이어
         self.token_embedding = layers.Embedding(vocab_size, d_model)
-        # 위치 임베딩
-        self.pos_embedding = self.add_weight(
-            name="pos_embedding",
-            shape=[seq_len, d_model],
-            initializer=tf.keras.initializers.RandomNormal(stddev=0.01)
-        )
-        # GPTBlock 인스턴스 리스트
-        self.blocks = [Block(d_model, d_ff, num_heads) for _ in range(n_layers)]
-        # 최종 레이어 정규화
+        self.position_embedding = layers.Embedding(seq_len, d_model)  # 위치 임베딩 추가
+        self.blocks = [Cobrablock(d_model, dropout_rate) for _ in range(n_layers)]
         self.ln_f = layers.LayerNormalization(epsilon=1e-5)
-        self.d_model = d_model
-        self.vocab_size = vocab_size
 
     def call(self, x, training=False):
-        seq_len = tf.shape(x)[1]
-        # 토큰 및 위치 임베딩 적용
-        x = self.token_embedding(x) + self.pos_embedding[tf.newaxis, :seq_len, :]
-        # 각 GPTBlock 통과
+        positions = tf.range(start=0, limit=tf.shape(x)[1], delta=1)
+        pos_emb = self.position_embedding(positions)
+        x = self.token_embedding(x) + pos_emb  # 위치 임베딩 더해줌
         for block in self.blocks:
-            x = block(x, training=training) # training 인자 전달
-        # 최종 레이어 정규화 적용
+            x = block(x, training=training)
         x = self.ln_f(x)
-        
-        # 수정된 부분: 토큰 임베딩의 'embeddings' 속성 직접 사용
         logits = tf.matmul(x, self.token_embedding.embeddings, transpose_b=True)
         return logits
 
+
+# 손실 함수 및 메트릭 정의
 loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True, reduction='none')
 
-def masked_loss(y_true, y_pred):  
-    loss = loss_fn(y_true, y_pred)  
-    mask = tf.cast(tf.not_equal(y_true, pad_id), tf.float32)  
-    return tf.reduce_sum(loss * mask) / tf.reduce_sum(mask) 
+def masked_loss(y_true, y_pred):
+    loss = loss_fn(y_true, y_pred)
+    mask = tf.cast(tf.not_equal(y_true, pad_id), tf.float32)
+    masked_loss = tf.reduce_sum(loss * mask) / tf.reduce_sum(mask)
+    return masked_loss
 
-model = Model(
+def masked_accuracy(y_true, y_pred):
+    preds = tf.argmax(y_pred, axis=-1, output_type=y_true.dtype)
+    matches = tf.cast(tf.equal(y_true, preds), tf.float32)
+    mask = tf.cast(tf.not_equal(y_true, pad_id), tf.float32)
+    return tf.reduce_sum(matches * mask) / tf.reduce_sum(mask)
+
+def masked_perplexity(y_true, y_pred):
+    loss = loss_fn(y_true, y_pred)
+    mask = tf.cast(tf.not_equal(y_true, pad_id), tf.float32)
+    avg_loss = tf.reduce_sum(loss * mask) / tf.reduce_sum(mask)
+    return tf.exp(tf.minimum(avg_loss, 10.0))  # 수치 안정성 확보
+
+def masked_top5_accuracy(y_true, y_pred):
+    top5_preds = tf.nn.top_k(y_pred, k=5).indices
+    top5_preds = tf.cast(top5_preds, dtype=y_true.dtype)  # <-- 이 줄 추가
+    y_true_expanded = tf.expand_dims(y_true, axis=-1)
+    matches = tf.reduce_any(tf.equal(y_true_expanded, top5_preds), axis=-1)
+    matches = tf.cast(matches, tf.float32)
+    mask = tf.cast(tf.not_equal(y_true, pad_id), tf.float32)
+    return tf.reduce_sum(matches * mask) / tf.reduce_sum(mask)
+
+
+def token_level_loss(y_true, y_pred):
+    loss = loss_fn(y_true, y_pred)
+    mask = tf.cast(tf.not_equal(y_true, pad_id), tf.float32)
+    return tf.reduce_mean(loss * mask)
+
+def create_lr_schedule(initial_lr=5e-5, decay_steps=10000, decay_rate=0.9):
+    return tf.keras.optimizers.schedules.ExponentialDecay(
+        initial_learning_rate=initial_lr,
+        decay_steps=decay_steps,
+        decay_rate=decay_rate,
+        staircase=False
+    )
+
+
+# 모델 생성
+model = CobraModel(
     vocab_size=vocab_size,
     seq_len=max_len,
-    d_model=160,
-    d_ff=616,       
-    n_layers=8
+    d_model=256,
+    n_layers=10
 )
 
-model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=5e-5), loss=masked_loss)
-dummy_input = np.zeros((1, max_len), dtype=np.int32)
+# 옵티마이저 설정
+optimizer = tf.keras.optimizers.Adam(
+    learning_rate=create_lr_schedule(),
+    beta_1=0.9,
+    beta_2=0.95,
+    epsilon=1e-8,
+    clipnorm=1.0
+)
 
-model(dummy_input)  
+# 모델 컴파일
+model.compile(
+    optimizer=optimizer,
+    loss=masked_loss,
+    metrics=[
+        masked_accuracy,
+        masked_perplexity,
+        masked_top5_accuracy,
+        token_level_loss
+    ]
+)
+
+# 더미 인풋으로 모델 초기화
+dummy_input = np.zeros((1, max_len), dtype=np.int32)
+model(dummy_input)
 model.summary()
 
-steps_per_epoch = len(encoded_inputs) // batch_size
-model.fit(dataset, epochs=1, steps_per_epoch=steps_per_epoch)
-model.save_weights("Flexi.weights.h5")  
-print("모델 가중치 저장 완료!")  
+# 학습 시작
+history = model.fit(
+    dataset,
+    epochs=1,
+    steps_per_epoch = encoded_inputs.shape[0] // batch_size,
+    verbose=1
+)
+
+# 가중치 저장
+model.save_weights("Cobra.weights.h5")
+print("모델 가중치 저장 완료!")
+from google.colab import files
+files.download('Cobra.weights.h5')  # 여기에 다운로드할 파일명을 넣어줘
+
 
 def generate_text_topp(model, prompt, max_len=100, max_gen=98, p=0.9, temperature=0.8, min_len=20):
     model_input = text_to_ids(f"<start> {prompt} <sep>")
