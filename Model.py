@@ -139,13 +139,19 @@ class SwiGLUFFN(tf.keras.layers.Layer):
 import tensorflow as tf
 from tensorflow.keras import layers
 
+def create_causal_mask(seq_len):
+    """하삼각 행렬 형태의 causal mask 생성"""
+    mask = tf.linalg.band_part(tf.ones((seq_len, seq_len)), -1, 0)  # lower triangle
+    return mask  # shape: (seq_len, seq_len)
+
 class S4Core(tf.keras.layers.Layer):
-    def __init__(self, d_model, seq_len=None):
+    def __init__(self, d_model, seq_len=None, use_causal_mask=True):
         super().__init__()
         self.d_model = d_model
-        self.seq_len = seq_len  # seq_len은 실험용으로 고정했으니 그대로 사용 가능
+        self.seq_len = seq_len
+        self.use_causal_mask = use_causal_mask  # causal masking 여부
 
-        # 복소수 파라미터: 실수부(real)와 허수부(imag)로 나누어 선언
+        # 복소수 파라미터 정의
         self.A_real = self.add_weight(shape=(d_model,), initializer='random_normal', trainable=True, name='A_real')
         self.A_imag = self.add_weight(shape=(d_model,), initializer='random_normal', trainable=True, name='A_imag')
 
@@ -158,12 +164,25 @@ class S4Core(tf.keras.layers.Layer):
         # D parameter: skip connection용 float32
         self.D = self.add_weight(shape=(d_model,), initializer='zeros', dtype=tf.float32, trainable=True)
 
-    def call(self, u):
-        u_orig = u  # residual connection 용 원본 저장
+        # seq_len 고정일 경우 fft_len precompute 가능
+        if seq_len is not None:
+            self.fft_len = 2 ** tf.math.ceil(tf.math.log(tf.cast(2 * seq_len - 1, tf.float32)) / tf.math.log(2.0))
+            self.fft_len = int(self.fft_len)
+        else:
+            self.fft_len = None
+
+    def call(self, u, mask=None, training=False):
+        u_orig = u
         batch, seq_len, d_model = tf.unstack(tf.shape(u))
 
-        # FFT 길이 계산
-        fft_len = 2 ** tf.cast(tf.math.ceil(tf.math.log(tf.cast(2 * seq_len - 1, tf.float32)) / tf.math.log(2.0)), tf.int32)
+        # FFT 길이 계산 (고정된 seq_len이 없을 경우 동적 계산)
+        if self.fft_len is None:
+            fft_len = 2 ** tf.cast(
+                tf.math.ceil(tf.math.log(tf.cast(2 * seq_len - 1, tf.float32)) / tf.math.log(2.0)),
+                tf.int32
+            )
+        else:
+            fft_len = self.fft_len
         pad_len = fft_len - seq_len
 
         # 시간축 t 정의
@@ -200,6 +219,14 @@ class S4Core(tf.keras.layers.Layer):
         # 원래 모양으로 복귀 (batch, seq_len, d_model)
         y = tf.transpose(y, [0, 2, 1])
         y = tf.cast(y, tf.float32)
+
+        # 🔥 Causal mask 적용
+        if self.use_causal_mask and mask is None:
+            causal_mask = create_causal_mask(seq_len)
+            y *= causal_mask[None, :, :, None]  # (1, seq_len, seq_len, 1)
+
+        elif mask is not None:
+            y *= tf.cast(mask[:, :, None], tf.float32)  # 사용자가 직접 mask 제공 시
 
         # Residual with D param
         return y + self.D[None, None, :] * u_orig
