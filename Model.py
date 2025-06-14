@@ -154,13 +154,16 @@ class S4Core(tf.keras.layers.Layer):
 
     def call(self, u):
         u_orig = u
-        batch, seq_len, d_model = tf.unstack(tf.shape(u))
+        batch = tf.shape(u)[0]
+        seq_len = tf.shape(u)[1]
+        d_model = tf.shape(u)[2]
 
-        # Causal FFT 길이: 2 * seq_len - 1 로 zero-padding
-        fft_len = 2 ** tf.cast(tf.math.ceil(tf.math.log(tf.cast(2 * seq_len - 1, tf.float32)) / tf.math.log(2.0)), tf.int32)
+        # causal FFT 길이 및 padding
+        fft_len_float = tf.math.log(tf.cast(2 * seq_len - 1, tf.float32)) / tf.math.log(2.0)
+        fft_len = tf.cast(tf.math.pow(2.0, tf.math.ceil(fft_len_float)), tf.int32)
         pad_len = fft_len - seq_len
 
-        # 시간축 정의
+        # 시간축
         t = tf.cast(tf.range(seq_len), tf.complex64)  # (seq_len,)
 
         # 복소수 파라미터
@@ -168,28 +171,26 @@ class S4Core(tf.keras.layers.Layer):
         B_c = tf.complex(self.B_real, self.B_imag)
         C_c = tf.complex(self.C_real, self.C_imag)
 
-        # A^t 계산
+        # A^t
         A_t = tf.pow(tf.expand_dims(A_c, 0), tf.expand_dims(t, 1))  # (seq_len, d_model)
         kernel = tf.expand_dims(C_c, 0) * A_t * tf.expand_dims(B_c, 0)  # (seq_len, d_model)
         kernel = tf.transpose(kernel, [1, 0])  # (d_model, seq_len)
 
-        # ✨ causal하게 제로 패딩: 오른쪽으로만 padding
+        # causal zero padding (right-side only)
         kernel = tf.pad(kernel, [[0, 0], [0, pad_len]])  # (d_model, fft_len)
 
-        # 커널 FFT
         kernel_fft = tf.signal.fft(kernel)  # (d_model, fft_len)
 
-        # 입력 FFT
+        # 입력 padding 및 FFT
         u_t = tf.transpose(u, [0, 2, 1])  # (batch, d_model, seq_len)
-        u_padded = tf.pad(u_t, [[0, 0], [0, 0], [0, pad_len]])  # causal padding
-        U_f = tf.signal.fft(tf.cast(u_padded, tf.complex64))  # (batch, d_model, fft_len)
+        u_padded = tf.pad(u_t, [[0, 0], [0, 0], [0, pad_len]])  # (batch, d_model, fft_len)
+        U_f = tf.signal.fft(tf.cast(u_padded, tf.complex64))
 
-        # 곱셈 & IFFT
-        Y_f = U_f * tf.expand_dims(kernel_fft, 0)
+        # pointwise 곱셈 후 IFFT
+        Y_f = U_f * tf.expand_dims(kernel_fft, 0)  # (batch, d_model, fft_len)
         y_full = tf.signal.ifft(Y_f)[..., :seq_len]  # (batch, d_model, seq_len)
         y = tf.math.real(y_full)
         y = tf.transpose(y, [0, 2, 1])  # (batch, seq_len, d_model)
-        y = tf.cast(y, tf.float32)
 
         return y + self.D[None, None, :] * u_orig
 
