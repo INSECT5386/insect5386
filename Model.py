@@ -137,54 +137,59 @@ class SwiGLUFFN(tf.keras.layers.Layer):
 
 
 import tensorflow as tf
-import numpy as np
+from tensorflow.keras import layers
 
 class S4Core(tf.keras.layers.Layer):
-    def __init__(self, d_model, seq_len):
+    def __init__(self, d_model, seq_len=None):
         super().__init__()
         self.d_model = d_model
-        self.seq_len = seq_len
+        self.seq_len = seq_len  # seq_len은 실험용으로 고정했으니 그대로 사용 가능
 
-        # 파라미터: A, B, C는 복소수 변환 전용 float32 벡터, D는 float32 벡터
-        self.A = self.add_weight(shape=(d_model,), initializer='random_normal', trainable=True)
-        self.B = self.add_weight(shape=(d_model,), initializer='random_normal', trainable=True)
-        self.C = self.add_weight(shape=(d_model,), initializer='random_normal', trainable=True)
+        # 복소수 파라미터: 실수부(real)와 허수부(imag)로 나누어 선언
+        self.A_real = self.add_weight(shape=(d_model,), initializer='random_normal', trainable=True, name='A_real')
+        self.A_imag = self.add_weight(shape=(d_model,), initializer='random_normal', trainable=True, name='A_imag')
+
+        self.B_real = self.add_weight(shape=(d_model,), initializer='random_normal', trainable=True, name='B_real')
+        self.B_imag = self.add_weight(shape=(d_model,), initializer='random_normal', trainable=True, name='B_imag')
+
+        self.C_real = self.add_weight(shape=(d_model,), initializer='random_normal', trainable=True, name='C_real')
+        self.C_imag = self.add_weight(shape=(d_model,), initializer='random_normal', trainable=True, name='C_imag')
+
+        # D parameter: skip connection용 float32
         self.D = self.add_weight(shape=(d_model,), initializer='zeros', dtype=tf.float32, trainable=True)
 
     def call(self, u):
-        # u: (batch, seq_len, d_model)
-        u_orig = u  # residual용 원본 저장
-
+        u_orig = u  # residual connection 용 원본 저장
         batch, seq_len, d_model = tf.unstack(tf.shape(u))
 
-        # FFT 길이 계산 (2^ceil(log2(2*seq_len - 1)))
+        # FFT 길이 계산
         fft_len = 2 ** tf.cast(tf.math.ceil(tf.math.log(tf.cast(2 * seq_len - 1, tf.float32)) / tf.math.log(2.0)), tf.int32)
         pad_len = fft_len - seq_len
 
-        # 시간축 t 정의 (복소수)
+        # 시간축 t 정의
         t = tf.cast(tf.range(seq_len), tf.complex64)  # (seq_len,)
 
-        # 파라미터 복소수 변환
-        A_c = tf.cast(self.A, tf.complex64)  # (d_model,)
-        B_c = tf.cast(self.B, tf.complex64)
-        C_c = tf.cast(self.C, tf.complex64)
+        # 복소수 파라미터 생성
+        A_c = tf.complex(self.A_real, self.A_imag)  # (d_model,)
+        B_c = tf.complex(self.B_real, self.B_imag)
+        C_c = tf.complex(self.C_real, self.C_imag)
 
         # A^t 계산 (seq_len, d_model)
         A_t = tf.math.pow(tf.expand_dims(A_c, 0), tf.expand_dims(t, 1))  # (seq_len, d_model)
 
-        # kernel k(t) = C * A^t * B, shape 맞추고 transpose
-        kernel = tf.expand_dims(C_c, 0) * A_t * tf.expand_dims(B_c, 0)   # (seq_len, d_model)
+        # kernel k(t) = C * A^t * B
+        kernel = tf.expand_dims(C_c, 0) * A_t * tf.expand_dims(B_c, 0)  # (seq_len, d_model)
         kernel = tf.transpose(kernel, [1, 0])  # (d_model, seq_len)
 
         # zero padding to fft_len
-        kernel = tf.pad(kernel, [[0,0], [0, pad_len]])  # (d_model, fft_len)
+        kernel = tf.pad(kernel, [[0, 0], [0, pad_len]])  # (d_model, fft_len)
 
         # kernel FFT
         kernel_fft = tf.signal.fft(kernel)  # (d_model, fft_len)
 
         # 입력 u FFT 준비: (batch, d_model, seq_len)
         u_t = tf.transpose(u, [0, 2, 1])
-        u_padded = tf.pad(u_t, [[0,0], [0,0], [0, pad_len]])  # (batch, d_model, fft_len)
+        u_padded = tf.pad(u_t, [[0, 0], [0, 0], [0, pad_len]])  # (batch, d_model, fft_len)
         U_f = tf.signal.fft(tf.cast(u_padded, tf.complex64))  # (batch, d_model, fft_len)
 
         # 곱셈 후 IFFT
@@ -196,9 +201,8 @@ class S4Core(tf.keras.layers.Layer):
         y = tf.transpose(y, [0, 2, 1])
         y = tf.cast(y, tf.float32)
 
-        # Residual connection with D param (broadcast 가능)
+        # Residual with D param
         return y + self.D[None, None, :] * u_orig
-
 
 class Cobrablock(tf.keras.layers.Layer):
     def __init__(self, d_model, seq_len, dropout_rate=0.1):
