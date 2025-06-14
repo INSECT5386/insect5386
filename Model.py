@@ -120,6 +120,10 @@ dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
 print("✅ TF Dataset 생성 완료!")
 
+import tensorflow as tf
+from tensorflow.keras import layers
+
+# SwiGLU Feed Forward Network
 class SwiGLUFFN(tf.keras.layers.Layer):
     def __init__(self, hidden_dim):
         super().__init__()
@@ -128,18 +132,18 @@ class SwiGLUFFN(tf.keras.layers.Layer):
         self.output_proj = layers.Dense(hidden_dim, use_bias=True)
 
     def call(self, x):
-        # 병렬 연산으로 projection 한 번에
         x_proj = self.dense(x)  # (batch, seq, hidden_dim*2)
         x1, x2 = tf.split(x_proj, num_or_size_splits=2, axis=-1)
         x = tf.nn.silu(x1) * x2  # SwiGLU activation
         return self.output_proj(x)
 
+# 동적 시퀀스 길이 지원하는 S4Core 레이어
 class S4Core(tf.keras.layers.Layer):
-    def __init__(self, d_model, seq_len=None):
+    def __init__(self, d_model):
         super().__init__()
         self.d_model = d_model
-        self.seq_len = seq_len
 
+        # 복소수 파라미터들 (실수부/허수부)
         self.A_real = self.add_weight(shape=(d_model,), initializer='random_normal', trainable=True, name='A_real')
         self.A_imag = self.add_weight(shape=(d_model,), initializer='random_normal', trainable=True, name='A_imag')
 
@@ -149,6 +153,7 @@ class S4Core(tf.keras.layers.Layer):
         self.C_real = self.add_weight(shape=(d_model,), initializer='random_normal', trainable=True, name='C_real')
         self.C_imag = self.add_weight(shape=(d_model,), initializer='random_normal', trainable=True, name='C_imag')
 
+        # skip connection 파라미터
         self.D = self.add_weight(shape=(d_model,), initializer='zeros', dtype=tf.float32, trainable=True)
 
     def call(self, u):
@@ -157,84 +162,85 @@ class S4Core(tf.keras.layers.Layer):
         seq_len = tf.shape(u)[1]
         d_model = tf.shape(u)[2]
 
-        # causal FFT 길이 및 padding
+        # causal FFT 길이 계산 및 패딩
         fft_len_float = tf.math.log(tf.cast(2 * seq_len - 1, tf.float32)) / tf.math.log(2.0)
         fft_len = tf.cast(tf.math.pow(2.0, tf.math.ceil(fft_len_float)), tf.int32)
         pad_len = fft_len - seq_len
 
-        # 시간축
+        # 시간 인덱스
         t = tf.cast(tf.range(seq_len), tf.complex64)  # (seq_len,)
 
         # 복소수 파라미터
-        A_c = tf.complex(self.A_real, self.A_imag)
+        A_c = tf.complex(self.A_real, self.A_imag)  # (d_model,)
         B_c = tf.complex(self.B_real, self.B_imag)
         C_c = tf.complex(self.C_real, self.C_imag)
 
-        # A^t
+        # A^t 계산
         A_t = tf.pow(tf.expand_dims(A_c, 0), tf.expand_dims(t, 1))  # (seq_len, d_model)
         kernel = tf.expand_dims(C_c, 0) * A_t * tf.expand_dims(B_c, 0)  # (seq_len, d_model)
         kernel = tf.transpose(kernel, [1, 0])  # (d_model, seq_len)
 
-        # causal zero padding (right-side only)
+        # 오른쪽에 zero padding
         kernel = tf.pad(kernel, [[0, 0], [0, pad_len]])  # (d_model, fft_len)
 
         kernel_fft = tf.signal.fft(kernel)  # (d_model, fft_len)
 
-        # 입력 padding 및 FFT
+        # 입력 u FFT 준비
         u_t = tf.transpose(u, [0, 2, 1])  # (batch, d_model, seq_len)
         u_padded = tf.pad(u_t, [[0, 0], [0, 0], [0, pad_len]])  # (batch, d_model, fft_len)
         U_f = tf.signal.fft(tf.cast(u_padded, tf.complex64))
 
-        # pointwise 곱셈 후 IFFT
+        # FFT 곱셈 후 IFFT
         Y_f = U_f * tf.expand_dims(kernel_fft, 0)  # (batch, d_model, fft_len)
         y_full = tf.signal.ifft(Y_f)[..., :seq_len]  # (batch, d_model, seq_len)
         y = tf.math.real(y_full)
         y = tf.transpose(y, [0, 2, 1])  # (batch, seq_len, d_model)
 
+        # skip connection + D 파라미터 곱
         return y + self.D[None, None, :] * u_orig
 
-
+# Cobra 블록 (S4Core + SwiGLU FFN + LayerNorm, Dropout)
 class Cobrablock(tf.keras.layers.Layer):
-    def __init__(self, d_model, seq_len, dropout_rate=0.1):
+    def __init__(self, d_model, dropout_rate=0.1):
         super().__init__()
         self.norm1 = layers.LayerNormalization(epsilon=1e-5)
-        self.core = S4Core(d_model, seq_len=seq_len)
+        self.core = S4Core(d_model)
         self.dropout1 = layers.Dropout(dropout_rate)
-        
+
         self.norm2 = layers.LayerNormalization(epsilon=1e-5)
         self.ffn = SwiGLUFFN(d_model)
         self.dropout2 = layers.Dropout(dropout_rate)
 
     def call(self, x, training=False):
-        # PreNorm + Residual (Core)
         x_norm = self.norm1(x)
         x_core = self.core(x_norm)
         x = x + self.dropout1(x_core, training=training)
 
-        # PreNorm + Residual (FFN)
         x_norm = self.norm2(x)
         x_ffn = self.ffn(x_norm)
         x = x + self.dropout2(x_ffn, training=training)
-
         return x
-        
-# ======================= CobraModel ======================
+
+# CobraModel: 토큰 임베딩 + 여러 개 Cobrablock + 최종 LayerNorm + 출력 projection
 class CobraModel(tf.keras.Model):
     def __init__(self, vocab_size, d_model, n_layers, dropout_rate=0.1):
         super().__init__()
         self.token_embedding = layers.Embedding(vocab_size, d_model)
-        self.blocks = [Cobrablock(d_model, seq_len=100, dropout_rate=dropout_rate) for _ in range(n_layers)]
+        self.blocks = [Cobrablock(d_model, dropout_rate=dropout_rate) for _ in range(n_layers)]
         self.ln_f = layers.LayerNormalization(epsilon=1e-5)
 
     def call(self, x, training=False):
-        x = self.token_embedding(x)
+        x = self.token_embedding(x)  # (batch, seq_len, d_model)
 
         for block in self.blocks:
             x = block(x, training=training)
 
-        x = self.ln_f(x)
-        logits = tf.matmul(x, self.token_embedding.embeddings, transpose_b=True)
+        x = self.ln_f(x)  # (batch, seq_len, d_model)
+
+        # 토큰 임베딩 행렬로 logits 계산 (tie weights)
+        logits = tf.matmul(x, self.token_embedding.embeddings, transpose_b=True)  # (batch, seq_len, vocab_size)
         return logits
+
         
 # 손실 함수 및 메트릭 정의
 loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True, reduction='none')
