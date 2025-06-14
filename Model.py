@@ -121,9 +121,6 @@ dataset = dataset.repeat()
 
 print("✅ TF Dataset 생성 완료!")
 
-import tensorflow as tf
-from tensorflow.keras import layers
-
 class SwiGLUFFN(tf.keras.layers.Layer):
     def __init__(self, hidden_dim):
         super().__init__()
@@ -132,26 +129,19 @@ class SwiGLUFFN(tf.keras.layers.Layer):
         self.output_proj = layers.Dense(hidden_dim, use_bias=True)
 
     def call(self, x):
-        # Dense로 한 번에 projection
+        # 병렬 연산으로 projection 한 번에
         x_proj = self.dense(x)  # (batch, seq, hidden_dim*2)
         x1, x2 = tf.split(x_proj, num_or_size_splits=2, axis=-1)
-        return self.output_proj(tf.nn.silu(x1) * x2)  # SwiGLU
-
-
-def create_causal_mask(seq_len):
-    """Lower triangular matrix for causal masking"""
-    mask = tf.linalg.band_part(tf.ones((seq_len, seq_len)), -1, 0)
-    return mask  # (seq_len, seq_len)
-
+        x = tf.nn.silu(x1) * x2  # SwiGLU activation
+        return self.output_proj(x)
 
 class S4Core(tf.keras.layers.Layer):
-    def __init__(self, d_model, seq_len=None, use_causal_mask=True):
+    def __init__(self, d_model, seq_len=None):
         super().__init__()
         self.d_model = d_model
-        self.seq_len = seq_len
-        self.use_causal_mask = use_causal_mask
+        self.seq_len = seq_len  # seq_len은 실험용으로 고정했으니 그대로 사용 가능
 
-        # 파라미터 정의
+        # 복소수 파라미터: 실수부(real)와 허수부(imag)로 나누어 선언
         self.A_real = self.add_weight(shape=(d_model,), initializer='random_normal', trainable=True, name='A_real')
         self.A_imag = self.add_weight(shape=(d_model,), initializer='random_normal', trainable=True, name='A_imag')
 
@@ -161,53 +151,54 @@ class S4Core(tf.keras.layers.Layer):
         self.C_real = self.add_weight(shape=(d_model,), initializer='random_normal', trainable=True, name='C_real')
         self.C_imag = self.add_weight(shape=(d_model,), initializer='random_normal', trainable=True, name='C_imag')
 
+        # D parameter: skip connection용 float32
         self.D = self.add_weight(shape=(d_model,), initializer='zeros', dtype=tf.float32, trainable=True)
 
-        if seq_len is not None:
-            self.fft_len = int(2 ** tf.math.ceil(tf.math.log(tf.cast(2 * seq_len - 1, tf.float32)) / tf.math.log(2.0)))
-        else:
-            self.fft_len = None
-
-    def call(self, u, mask=None, training=False):
+    def call(self, u):
+        u_orig = u  # residual connection 용 원본 저장
         batch, seq_len, d_model = tf.unstack(tf.shape(u))
-        u_orig = u
 
-        fft_len = self.fft_len or int(2 ** tf.math.ceil(tf.math.log(tf.cast(2 * seq_len - 1, tf.float32)) / tf.math.log(2.0)))
+        # FFT 길이 계산
+        fft_len = 2 ** tf.cast(tf.math.ceil(tf.math.log(tf.cast(2 * seq_len - 1, tf.float32)) / tf.math.log(2.0)), tf.int32)
         pad_len = fft_len - seq_len
 
-        t = tf.range(seq_len, dtype=tf.complex64)
+        # 시간축 t 정의
+        t = tf.cast(tf.range(seq_len), tf.complex64)  # (seq_len,)
 
-        A_c = tf.complex(self.A_real, self.A_imag)
+        # 복소수 파라미터 생성
+        A_c = tf.complex(self.A_real, self.A_imag)  # (d_model,)
         B_c = tf.complex(self.B_real, self.B_imag)
         C_c = tf.complex(self.C_real, self.C_imag)
 
-        A_t = tf.pow(tf.expand_dims(A_c, 0), tf.expand_dims(t, 1))  # (seq_len, d_model)
-        kernel = tf.expand_dims(C_c, 0) * A_t * tf.expand_dims(B_c, 0)
+        # A^t 계산 (seq_len, d_model)
+        A_t = tf.math.pow(tf.expand_dims(A_c, 0), tf.expand_dims(t, 1))  # (seq_len, d_model)
+
+        # kernel k(t) = C * A^t * B
+        kernel = tf.expand_dims(C_c, 0) * A_t * tf.expand_dims(B_c, 0)  # (seq_len, d_model)
         kernel = tf.transpose(kernel, [1, 0])  # (d_model, seq_len)
-        kernel = tf.pad(kernel, [[0, 0], [0, pad_len]])
 
-        kernel_fft = tf.signal.fft(kernel)
+        # zero padding to fft_len
+        kernel = tf.pad(kernel, [[0, 0], [0, pad_len]])  # (d_model, fft_len)
 
+        # kernel FFT
+        kernel_fft = tf.signal.fft(kernel)  # (d_model, fft_len)
+
+        # 입력 u FFT 준비: (batch, d_model, seq_len)
         u_t = tf.transpose(u, [0, 2, 1])
-        u_padded = tf.pad(tf.cast(u_t, tf.complex64), [[0, 0], [0, 0], [0, pad_len]])
-        U_f = tf.signal.fft(u_padded)
+        u_padded = tf.pad(u_t, [[0, 0], [0, 0], [0, pad_len]])  # (batch, d_model, fft_len)
+        U_f = tf.signal.fft(tf.cast(u_padded, tf.complex64))  # (batch, d_model, fft_len)
 
-        Y_f = U_f * tf.expand_dims(kernel_fft, 0)
-        y_full = tf.signal.ifft(Y_f)[..., :seq_len]
-        y = tf.math.real(y_full)
+        # 곱셈 후 IFFT
+        Y_f = U_f * tf.expand_dims(kernel_fft, 0)  # (batch, d_model, fft_len)
+        y_full = tf.signal.ifft(Y_f)[..., :seq_len]  # (batch, d_model, seq_len)
+        y = tf.math.real(y_full)  # (batch, d_model, seq_len)
 
+        # 원래 모양으로 복귀 (batch, seq_len, d_model)
         y = tf.transpose(y, [0, 2, 1])
+        y = tf.cast(y, tf.float32)
 
-        # 🔥 마스크 적용
-        if self.use_causal_mask and mask is None:
-            causal_mask = create_causal_mask(seq_len)
-            y = y * causal_mask[tf.newaxis, :, :]  # (1, seq_len, seq_len)
-
-        elif mask is not None:
-            y = y * tf.cast(mask[:, :, tf.newaxis], tf.float32)
-
-        return y + self.D[tf.newaxis, tf.newaxis, :] * u_orig
-
+        # Residual with D param
+        return y + self.D[None, None, :] * u_orig
 
 class Cobrablock(tf.keras.layers.Layer):
     def __init__(self, d_model, seq_len, dropout_rate=0.1):
@@ -215,15 +206,15 @@ class Cobrablock(tf.keras.layers.Layer):
         self.norm1 = layers.LayerNormalization(epsilon=1e-5)
         self.core = S4Core(d_model, seq_len=seq_len)
         self.dropout1 = layers.Dropout(dropout_rate)
-
+        
         self.norm2 = layers.LayerNormalization(epsilon=1e-5)
         self.ffn = SwiGLUFFN(d_model)
         self.dropout2 = layers.Dropout(dropout_rate)
 
     def call(self, x, training=False):
-        # PreNorm + Residual (S4 Core)
+        # PreNorm + Residual (Core)
         x_norm = self.norm1(x)
-        x_core = self.core(x_norm, training=training)
+        x_core = self.core(x_norm)
         x = x + self.dropout1(x_core, training=training)
 
         # PreNorm + Residual (FFN)
@@ -232,8 +223,7 @@ class Cobrablock(tf.keras.layers.Layer):
         x = x + self.dropout2(x_ffn, training=training)
 
         return x
-
-
+        
 # ======================= CobraModel ======================
 class CobraModel(tf.keras.Model):
     def __init__(self, vocab_size, d_model, n_layers, dropout_rate=0.1):
@@ -251,8 +241,7 @@ class CobraModel(tf.keras.Model):
         x = self.ln_f(x)
         logits = tf.matmul(x, self.token_embedding.embeddings, transpose_b=True)
         return logits
-
-
+        
 # 손실 함수 및 메트릭 정의
 loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True, reduction='none')
 
