@@ -145,7 +145,7 @@ def create_causal_mask(seq_len):
     return mask  # shape: (seq_len, seq_len)
 
 class S4Core(tf.keras.layers.Layer):
-    def __init__(self, d_model, seq_len=None, use_causal_mask=True):
+    def __init__(self, d_model, seq_len=100, use_causal_mask=True):
         super().__init__()
         self.d_model = d_model
         self.seq_len = seq_len
