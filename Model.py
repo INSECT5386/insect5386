@@ -124,22 +124,6 @@ import tensorflow as tf
 from tensorflow.keras import layers, Model
 import numpy as np # 더미 인풋을 위한 임포트
 
-# SwiGLU FFN 구현 추가
-class SwiGLUFFN(tf.keras.layers.Layer):
-    def __init__(self, dim):
-        super().__init__()
-        self.gate_proj = layers.Dense(dim)
-        self.up_proj = layers.Dense(dim)
-        self.down_proj = layers.Dense(dim)
-
-    def call(self, x):
-        gate = tf.nn.silu(self.gate_proj(x))
-        up = self.up_proj(x)
-        return self.down_proj(gate * up)
-
-
-
-
 # ==================== RealMambaCore =====================
 class RealMambaCore(tf.keras.layers.Layer):
     def __init__(self, hidden_dim):
@@ -161,8 +145,6 @@ class RealMambaCore(tf.keras.layers.Layer):
         self.D = self.add_weight(shape=(hidden_dim,),
                                  initializer='zeros',
                                  trainable=True, name="D")
-
-        self.ffn = SwiGLUFFN(hidden_dim)
 
         self.norm = layers.LayerNormalization()
         self.output_proj = layers.Dense(hidden_dim)
