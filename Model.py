@@ -120,18 +120,18 @@ dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
 print("✅ TF Dataset 생성 완료!")
 
-class SimpleFFN(tf.keras.layers.Layer):
-    def __init__(self, dim, expansion_factor=2, activation='relu'):
+
+class SinpleFFN(tf.keras.layers.Layer):
+    def __init__(self, dim):
         super().__init__()
-        self.up_proj = layers.Dense(dim * expansion_factor)
+        self.gate_proj = layers.Dense(dim)
+        self.up_proj = layers.Dense(dim)
         self.down_proj = layers.Dense(dim)
-        self.activation = tf.keras.activations.get(activation)
 
     def call(self, x):
-        x = self.up_proj(x)
-        x = self.activation(x)
-        x = self.down_proj(x)
-        return x
+        gate = tf.nn.silu(self.gate_proj(x))
+        up = self.up_proj(x)
+        return self.down_proj(gate * up)
 
 # ==================== RealMambaCore =====================
 class RealMambaCore(tf.keras.layers.Layer):
