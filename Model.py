@@ -137,56 +137,51 @@ class SwiGLUFFN(tf.keras.layers.Layer):
         up = self.up_proj(x)
         return self.down_proj(gate * up)
 
-# RoPE(Positional Encoding) 적용 함수
-def apply_rope(x):
-    batch_size, seq_len, hidden_dim = tf.shape(x)[0], tf.shape(x)[1], tf.shape(x)[2]
-    half_dim = hidden_dim // 2
 
-    # 수정된 부분: position과 freq를 tf.float32로 명시하되, tf.range의 스텝 인수는 정수형을 유지
-    position = tf.cast(tf.range(seq_len), dtype=tf.float32)  # (T,)
-    freq = 1.0 / (10000 ** (tf.cast(tf.range(half_dim), dtype=tf.float32) / tf.cast(half_dim, dtype=tf.float32)))  # (D/2,)
+# ======================= RoPE ==========================
+def apply_rope(x):
+    seq_len = tf.shape(x)[1]
+    dim = tf.shape(x)[2]
+    half_dim = dim // 2
+
+    position = tf.cast(tf.range(seq_len), tf.float32)  # (T,)  <-- 이게 핵심!
+    freq = tf.pow(10000.0, -tf.range(half_dim, dtype=tf.float32) / tf.cast(half_dim, tf.float32))  # (D/2,)
     angles = tf.einsum('i,j->ij', position, freq)  # (T, D/2)
 
-    sin = tf.sin(angles)[None, None, :, :]  # (1, 1, T, D/2)
-    cos = tf.cos(angles)[None, None, :, :]
+    sin = tf.sin(angles)[None, :, :]  # (1, T, D/2)
+    cos = tf.cos(angles)[None, :, :]  # (1, T, D/2)
 
-    x1, x2 = tf.split(x, 2, axis=-1)  # (B, T, D/2)
-
-    x1_rot = x1 * cos - x2 * sin
-    x2_rot = x1 * sin + x2 * cos
-
-    return tf.concat([x1_rot, x2_rot], axis=-1)  # (B, T, D)
+    x1 = x[:, :, :half_dim]
+    x2 = x[:, :, half_dim:]
+    x_rot = tf.concat([x1 * cos - x2 * sin, x1 * sin + x2 * cos], axis=-1)
+    return x_rot
 
 # ==================== RealMambaCore =====================
-class MambaCore(tf.keras.layers.Layer):
+class RealMambaCore(tf.keras.layers.Layer):
     def __init__(self, hidden_dim):
         super().__init__()
         self.hidden_dim = hidden_dim
 
-        self.A = self.add_weight(
-            shape=(hidden_dim,),
-            initializer=tf.keras.initializers.RandomNormal(mean=-5.0, stddev=0.1),
-            trainable=True,
-            name="A"
-        )
-        self.B = self.add_weight(
-            shape=(hidden_dim,),
-            initializer='random_normal',
-            trainable=True,
-            name="B"
-        )
-        self.C = self.add_weight(
-            shape=(hidden_dim,),
-            initializer='random_normal',
-            trainable=True,
-            name="C"
-        )
-        self.D = self.add_weight(
-            shape=(hidden_dim,),
-            initializer='zeros',
-            trainable=True,
-            name="D"
-        )
+        self.gate_proj = layers.Dense(hidden_dim)
+        self.input_proj = layers.Dense(hidden_dim)
+
+        self.A = self.add_weight(shape=(hidden_dim,),
+                                 initializer=tf.keras.initializers.RandomNormal(mean=-0.5, stddev=0.1),
+                                 trainable=True, name="A")
+        self.B = self.add_weight(shape=(hidden_dim,),
+                                 initializer='random_normal',
+                                 trainable=True, name="B")
+        self.C = self.add_weight(shape=(hidden_dim,),
+                                 initializer='random_normal',
+                                 trainable=True, name="C")
+        self.D = self.add_weight(shape=(hidden_dim,),
+                                 initializer='zeros',
+                                 trainable=True, name="D")
+
+        self.ffn = SwiGLUFFN(hidden_dim)
+
+        self.norm = layers.LayerNormalization()
+        self.output_proj = layers.Dense(hidden_dim)
 
     def fft_convolve(self, u_t, kernel_t, T):
         pad_len = T - 1
@@ -212,59 +207,66 @@ class MambaCore(tf.keras.layers.Layer):
         T = tf.shape(x)[1]
         D = self.hidden_dim
 
-        # A와 time_idx의 dtype을 일치시키고, time_idx는 정수 범위로 유지
-        time_idx = tf.cast(tf.range(T), dtype=self.A.dtype)[:, None]  # (T, 1)
-        A_pow = tf.pow(tf.expand_dims(self.A, 0), tf.cast(time_idx, dtype=self.A.dtype))  # (T, D)
-        kernel = self.B * A_pow  # (T, D)
+        gate = tf.nn.silu(self.gate_proj(x))
+        x_proj = self.input_proj(x)
+        u = gate * x_proj
 
-        u_t = tf.transpose(x, [0, 2, 1])  # (B, D, T)
-        kernel_t = tf.transpose(kernel, [1, 0])  # (D, T)
+        time_idx = tf.cast(tf.range(T), dtype=self.A.dtype)[:, None]
+        A_pow = tf.pow(tf.expand_dims(self.A, 0), time_idx)
+        kernel = self.B * A_pow
 
-        y_real = self.fft_convolve(u_t, kernel_t, T)  # (B, D, T)
-        y = tf.transpose(y_real, [0, 2, 1])  # (B, T, D)
+        u_t = tf.transpose(u, [0, 2, 1])
+        kernel_t = tf.transpose(kernel, [1, 0])
 
-        y = self.C * y + self.D * x
+        y_real = self.fft_convolve(u_t, kernel_t, T)
+        y = tf.transpose(y_real, [0, 2, 1])
+
+        y = self.C * y + self.D * u
+
+        y = self.ffn(y)
+        y = self.norm(y)
+        y = self.output_proj(y)
+
         return y
-
 
 # ======================= Cobrablock ======================
 class Cobrablock(tf.keras.layers.Layer):
     def __init__(self, d_model, dropout_rate=0.1):
         super().__init__()
         self.norm1 = layers.LayerNormalization(epsilon=1e-5)
-        self.mamba = MambaCore(d_model)
+        self.mamba = RealMambaCore(d_model)
         self.dropout1 = layers.Dropout(dropout_rate)
 
         self.norm2 = layers.LayerNormalization(epsilon=1e-5)
-        self.ffn = SwiGLUFFN(d_model)
         self.dropout2 = layers.Dropout(dropout_rate)
 
-    def call(self, x, training=False, mask=None):
+    def call(self, x, training=False):
         residual = x
         x = self.norm1(x)
-        x = self.mamba(x, mask=mask)
+        x = self.mamba(x)
         x = residual + self.dropout1(x, training=training)
 
         residual = x
         x = self.norm2(x)
-        x = self.ffn(x)
-        x = residual + self.dropout2(x, training=training)
+        x = self.dropout2(x, training=training)
+        x = residual + x
 
         return x
 
 # ======================= CobraModel ======================
-class CobraModel(Model):
+class CobraModel(tf.keras.Model):
     def __init__(self, vocab_size, d_model, n_layers, dropout_rate=0.1):
         super().__init__()
         self.token_embedding = layers.Embedding(vocab_size, d_model)
         self.blocks = [Cobrablock(d_model, dropout_rate) for _ in range(n_layers)]
         self.ln_f = layers.LayerNormalization(epsilon=1e-5)
 
-    def call(self, x, training=False, mask=None):
+    def call(self, x, training=False):
         x = self.token_embedding(x)
+        x = apply_rope(x)
 
         for block in self.blocks:
-            x = block(x, training=training, mask=mask)
+            x = block(x, training=training)
 
         x = self.ln_f(x)
         logits = tf.matmul(x, self.token_embedding.embeddings, transpose_b=True)
