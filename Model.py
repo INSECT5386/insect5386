@@ -120,15 +120,26 @@ dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
 print("✅ TF Dataset 생성 완료!")
 
-import tensorflow as tf
-from tensorflow.keras import layers, Model
-import numpy as np # 더미 인풋을 위한 임포트
+class SimpleFFN(tf.keras.layers.Layer):
+    def __init__(self, dim, expansion_factor=2, activation='relu'):
+        super().__init__()
+        self.up_proj = layers.Dense(dim * expansion_factor)
+        self.down_proj = layers.Dense(dim)
+        self.activation = tf.keras.activations.get(activation)
+
+    def call(self, x):
+        x = self.up_proj(x)
+        x = self.activation(x)
+        x = self.down_proj(x)
+        return x
 
 # ==================== RealMambaCore =====================
 class RealMambaCore(tf.keras.layers.Layer):
     def __init__(self, hidden_dim):
         super().__init__()
         self.hidden_dim = hidden_dim
+        
+        self.ffn = SimpleFFN(hidden_dim, activation='relu')  # 또는 'tanh'
 
         self.gate_proj = layers.Dense(hidden_dim)
         self.input_proj = layers.Dense(hidden_dim)
@@ -190,6 +201,7 @@ class RealMambaCore(tf.keras.layers.Layer):
         y = self.C * y + self.D * u
 
         y = self.norm(y)
+        y = ffn(y)
         y = self.output_proj(y)
 
         return y
