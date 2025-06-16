@@ -121,12 +121,8 @@ dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 print("✅ TF Dataset 생성 완료!")
 
 import tensorflow as tf
-from tensorflow.keras import layers
-
-
-# ======================= RoPE ==========================
-import tensorflow as tf
 from tensorflow.keras import layers, Model
+import numpy as np # 더미 인풋을 위한 임포트
 
 # SwiGLU FFN 구현 추가
 class SwiGLUFFN(tf.keras.layers.Layer):
@@ -146,8 +142,9 @@ def apply_rope(x):
     batch_size, seq_len, hidden_dim = tf.shape(x)[0], tf.shape(x)[1], tf.shape(x)[2]
     half_dim = hidden_dim // 2
 
-    position = tf.range(seq_len, dtype=tf.float32)  # (T,)
-    freq = 1.0 / (10000 ** (tf.range(half_dim, dtype=tf.float32) / half_dim))  # (D/2,)
+    # 수정된 부분: position과 freq를 tf.float32로 명시하되, tf.range의 스텝 인수는 정수형을 유지
+    position = tf.cast(tf.range(seq_len), dtype=tf.float32)  # (T,)
+    freq = 1.0 / (10000 ** (tf.cast(tf.range(half_dim), dtype=tf.float32) / tf.cast(half_dim, dtype=tf.float32)))  # (D/2,)
     angles = tf.einsum('i,j->ij', position, freq)  # (T, D/2)
 
     sin = tf.sin(angles)[None, None, :, :]  # (1, 1, T, D/2)
@@ -215,8 +212,9 @@ class MambaCore(tf.keras.layers.Layer):
         T = tf.shape(x)[1]
         D = self.hidden_dim
 
+        # A와 time_idx의 dtype을 일치시키고, time_idx는 정수 범위로 유지
         time_idx = tf.cast(tf.range(T), dtype=self.A.dtype)[:, None]  # (T, 1)
-        A_pow = tf.pow(tf.expand_dims(self.A, 0), time_idx)  # (T, D)
+        A_pow = tf.pow(tf.expand_dims(self.A, 0), tf.cast(time_idx, dtype=self.A.dtype))  # (T, D)
         kernel = self.B * A_pow  # (T, D)
 
         u_t = tf.transpose(x, [0, 2, 1])  # (B, D, T)
@@ -304,6 +302,7 @@ class CobraModel(Model):
         x = self.ln_f(x)
         logits = tf.matmul(x, self.token_embedding.embeddings, transpose_b=True)
         return logits
+
 
 # 손실 함수 및 메트릭 정의
 loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True, reduction='none')
