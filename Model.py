@@ -342,34 +342,118 @@ from google.colab import files
 files.download('Cobra.weights.h5')  # 여기에 다운로드할 파일명을 넣어줘
 
 
-def generate_text_topp(model, prompt, max_len=100, max_gen=98, p=0.9, temperature=0.8, min_len=20):
+def advanced_generate_text(
+    model, 
+    prompt, 
+    max_len=256, 
+    max_gen=200, 
+    temperature=0.8,
+    top_p=0.9,
+    top_k=50,
+    repetition_penalty=1.1,
+    min_len=20
+):
+    """고급 텍스트 생성 함수"""
+    
     model_input = text_to_ids(f"<start> {prompt} <sep>")
     model_input = model_input[:max_len]
     generated = list(model_input)
+    
+    # 반복 방지를 위한 n-gram 추적
+    seen_ngrams = set()
+    ngram_size = 4
+    
     for step in range(max_gen):
+        # 입력 준비
         if len(generated) > max_len:
             input_seq = generated[-max_len:]
         else:
             input_seq = generated
-        input_padded = np.pad(input_seq, (0, max_len - len(input_seq)), constant_values=pad_id)
+            
+        input_padded = np.pad(
+            input_seq, 
+            (0, max_len - len(input_seq)), 
+            constant_values=pad_id
+        )
         input_tensor = tf.convert_to_tensor([input_padded])
+        
+        # 예측
         logits = model(input_tensor, training=False)
         next_token_logits = logits[0, len(input_seq) - 1].numpy()
-        next_token_logits[end_id] -= 5.0
+        
+        # 반복 페널티 적용
+        for i, token_id in enumerate(generated[-50:]):  # 최근 50개 토큰에 페널티
+            if token_id < len(next_token_logits):
+                next_token_logits[token_id] /= repetition_penalty
+        
+        # 특수 토큰 조정
         next_token_logits[pad_id] -= 10.0
-        probs = tf.nn.softmax(next_token_logits / temperature).numpy()
+        if len(generated) < min_len:
+            next_token_logits[end_id] -= 5.0
+            
+        # 온도 적용
+        next_token_logits = next_token_logits / temperature
+        
+        # Top-k 필터링
+        if top_k > 0:
+            top_k_indices = np.argpartition(next_token_logits, -top_k)[-top_k:]
+            top_k_logits = next_token_logits[top_k_indices]
+            filtered_logits = np.full_like(next_token_logits, -np.inf)
+            filtered_logits[top_k_indices] = top_k_logits
+            next_token_logits = filtered_logits
+        
+        # Top-p 필터링
+        probs = tf.nn.softmax(next_token_logits).numpy()
         sorted_indices = np.argsort(probs)[::-1]
         sorted_probs = probs[sorted_indices]
         cumulative_probs = np.cumsum(sorted_probs)
-        cutoff = np.searchsorted(cumulative_probs, p)
+        
+        cutoff = np.searchsorted(cumulative_probs, top_p)
         top_indices = sorted_indices[:cutoff + 1]
         top_probs = sorted_probs[:cutoff + 1]
         top_probs /= np.sum(top_probs)
+        
+        # 토큰 선택
         next_token_id = np.random.choice(top_indices, p=top_probs)
+        
+        # N-gram 반복 체크
+        if len(generated) >= ngram_size:
+            current_ngram = tuple(generated[-(ngram_size-1):] + [next_token_id])
+            if current_ngram in seen_ngrams:
+                # 반복되는 n-gram이면 다른 토큰 선택
+                remaining_indices = [idx for idx in top_indices if idx != next_token_id]
+                if remaining_indices:
+                    remaining_probs = probs[remaining_indices]
+                    remaining_probs /= np.sum(remaining_probs)
+                    next_token_id = np.random.choice(remaining_indices, p=remaining_probs)
+            seen_ngrams.add(current_ngram)
+        
+        # 종료 조건
         if next_token_id == end_id and len(generated) >= min_len:
             break
+            
         generated.append(int(next_token_id))
+    
     return ids_to_text(generated)
 
-print("\n\n===== 생성 결과 =====")  
-print(generate_text_topp(model, "안녕", p=0.9))
+
+# ======================= 테스트 ======================
+print("\n\n===== 개선된 모델 생성 결과 =====")
+test_prompts = [
+    "안녕하세요",
+    "파이썬으로 웹 크롤링을 하려면",
+    "건강한 식단을 위한 조언",
+    "인공지능의 미래는"
+]
+
+for prompt in test_prompts:
+    print(f"\n프롬프트: {prompt}")
+    result = advanced_generate_text(
+        model, 
+        prompt, 
+        temperature=0.7,
+        top_p=0.9,
+        repetition_penalty=1.1
+    )
+    print(f"응답: {result}")
+    print("-" * 50)
