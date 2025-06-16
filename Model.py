@@ -342,104 +342,89 @@ from google.colab import files
 files.download('Cobra.weights.h5')  # 여기에 다운로드할 파일명을 넣어줘
 
 
-import tensorflow as tf
-import numpy as np
+import sys
 
-# Assuming these are defined elsewhere in your code:
-# text_to_ids, ids_to_text, pad_id, end_id, model
 
-def advanced_generate_text(
-    model, 
-    prompt, 
-    max_len=256,   # Keep max_len from original advanced_generate_text
-    max_gen=200,   # Keep max_gen from original advanced_generate_text
+def advanced_generate_text_stream_sys_write(
+    model,
+    prompt,
+    max_len=256,
+    max_gen=200,
     temperature=0.8,
-    top_p=0.9,     # Use 'p' as top_p for consistency with generate_text_topp
-    repetition_penalty=1.1, # Keep repetition_penalty from original advanced_generate_text
-    min_len=20     # Keep min_len from original advanced_generate_text
+    top_p=0.9,
+    repetition_penalty=1.1,
+    min_len=20
 ):
     """
     고급 텍스트 생성 함수를 generate_text_topp 함수의 핵심 로직과 유사하게 간소화한 버전.
-    top_k 필터링 및 n-gram 반복 방지 로직을 제거하고 top_p 샘플링에 집중합니다.
+    sys.stdout.write를 사용하여 스트리밍 출력합니다.
     """
-    
+
     model_input = text_to_ids(f"<start> {prompt} <sep>")
     model_input = model_input[:max_len]
     generated = list(model_input)
-    
+
+    # 프롬프트 부분은 일반적으로 출력하지 않거나, 초기 로딩 메시지 등으로 대체합니다.
+    # 만약 프롬프트 자체를 스트리밍 시작 시점에 출력하고 싶다면 아래 주석을 해제하세요.
+    # sys.stdout.write(ids_to_text(model_input))
+    # sys.stdout.flush() # 버퍼 비우기
+
     for step in range(max_gen):
-        # 입력 준비 (generate_text_topp와 동일)
         if len(generated) > max_len:
             input_seq = generated[-max_len:]
         else:
             input_seq = generated
-            
+
         input_padded = np.pad(
-            input_seq, 
-            (0, max_len - len(input_seq)), 
+            input_seq,
+            (0, max_len - len(input_seq)),
             constant_values=pad_id
         )
         input_tensor = tf.convert_to_tensor([input_padded])
-        
-        # 예측 (generate_text_topp와 동일)
+
         logits = model(input_tensor, training=False)
+        # 마지막 시퀀스 토큰에 대한 로짓을 가져옵니다.
         next_token_logits = logits[0, len(input_seq) - 1].numpy()
-        
-        # 반복 페널티 적용 (advanced_generate_text의 유용한 기능이므로 유지)
-        # generate_text_topp에는 없지만, 텍스트 품질을 위해 유지합니다.
-        for i, token_id in enumerate(generated[-50:]):  # 최근 50개 토큰에 페널티
+
+        for i, token_id in enumerate(generated[-50:]):
             if token_id < len(next_token_logits):
                 next_token_logits[token_id] /= repetition_penalty
-        
-        # 특수 토큰 조정 (generate_text_topp와 유사하게 조정)
+
         next_token_logits[pad_id] -= 10.0
-        # min_len 조건에 따른 end_id 조정은 advanced_generate_text의 논리 유지
         if len(generated) < min_len:
-            next_token_logits[end_id] -= 5.0 # 이 부분은 generate_text_topp에 있었지만,
-                                            # advanced_generate_text의 min_len과 더 잘 맞음
-            
-        # 온도 적용 및 Top-p 필터링 (generate_text_topp의 핵심 로직)
+            next_token_logits[end_id] -= 5.0
+
         probs = tf.nn.softmax(next_token_logits / temperature).numpy()
         sorted_indices = np.argsort(probs)[::-1]
         sorted_probs = probs[sorted_indices]
         cumulative_probs = np.cumsum(sorted_probs)
-        
-        cutoff = np.searchsorted(cumulative_probs, top_p) # top_p 파라미터 사용
+
+        cutoff = np.searchsorted(cumulative_probs, top_p)
         top_indices = sorted_indices[:cutoff + 1]
         top_probs = sorted_probs[:cutoff + 1]
-        
-        # 확률 정규화 (generate_text_topp와 동일)
+
         top_probs /= np.sum(top_probs)
-        
-        # 토큰 선택 (generate_text_topp와 동일)
+
         next_token_id = np.random.choice(top_indices, p=top_probs)
-        
-        # 종료 조건 (generate_text_topp와 동일)
+
+        # 생성된 다음 토큰을 바로 출력합니다.
+        sys.stdout.write(ids_to_text([next_token_id]))
+        sys.stdout.flush() # 버퍼를 비워 바로 출력되도록 합니다.
+
         if next_token_id == end_id and len(generated) >= min_len:
             break
-            
+
         generated.append(int(next_token_id))
-    
-    return ids_to_text(generated)
 
+    # 생성 완료 후 줄 바꿈
+    sys.stdout.write("\n")
+    sys.stdout.flush()
 
-# ======================= 테스트 ======================
-print("\n\n===== 간소화된 모델 생성 결과 =====")
-test_prompts = [
-    "안녕하세요",
-    "파이썬으로 웹 크롤링을 하려면",
-    "건강한 식단을 위한 조언",
-    "인공지능의 미래는"
-]
-
-for prompt in test_prompts:
-    print(f"\n프롬프트: {prompt}")
-    result = advanced_generate_text(
-        model, 
-        prompt, 
-        temperature=0.7,
-        top_p=0.9,
-        repetition_penalty=1.1
-    )
-    print(f"응답: {result}")
-    print("-" * 50)
+# --- 사용 예시 ---
+print("텍스트 생성 시작:")
+advanced_generate_text_stream_sys_write(
+    model=CobraModel, # 실제 모델 인스턴스로 교체
+    prompt="안녕하세요",
+    max_gen=50 # 생성할 최대 토큰 수
+)
+print("텍스트 생성 완료!")
