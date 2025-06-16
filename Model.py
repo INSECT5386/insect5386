@@ -143,7 +143,7 @@ def apply_rope(x):
     return x_rot
 
 # ==================== RealMambaCore =====================
-class RealMambaCore(tf.keras.layers.Layer):
+class MambaCore(tf.keras.layers.Layer):
     def __init__(self, hidden_dim):
         super().__init__()
         self.hidden_dim = hidden_dim
@@ -229,6 +229,7 @@ class CMSMA(tf.keras.layers.Layer):
     
     def call(self, q, k, v, mask):
         # 1) 중요도 계산
+        q = k = v = x
         importance_scores = tf.norm(self.s4core(q), axis=-1)  # (batch, seq_len)
         
         # 2) boosting_factor 동적 계산 (batch, seq_len, 1)
@@ -252,7 +253,7 @@ class CMSMA(tf.keras.layers.Layer):
         attn_weights /= tf.reduce_sum(attn_weights, axis=-1, keepdims=True)  # 정규화
         output = tf.matmul(attn_weights, v)
         
-        return output 이렇게 바꿨어
+        return output
 
 # ======================= Cobrablock ======================
 class Cobrablock(tf.keras.layers.Layer):
