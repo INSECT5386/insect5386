@@ -215,12 +215,51 @@ class RealMambaCore(tf.keras.layers.Layer):
 
         return y
 
+class CMSMA(tf.keras.layers.Layer):
+    def __init__(self, dim):
+        super().__init__()
+        self.dim = dim
+        self.s4core = MambaCore(dim)
+        
+        # boosting_factor를 동적으로 계산할 MLP (scalar 출력)
+        self.boost_mlp = tf.keras.Sequential([
+            tf.keras.layers.Dense(dim // 4, activation='relu'),
+            tf.keras.layers.Dense(1, activation='sigmoid')  # 0~1 사이 값 반환
+        ])
+    
+    def call(self, q, k, v, mask):
+        # 1) 중요도 계산
+        importance_scores = tf.norm(self.s4core(q), axis=-1)  # (batch, seq_len)
+        
+        # 2) boosting_factor 동적 계산 (batch, seq_len, 1)
+        boosting_factor = self.boost_mlp(q)  # (batch, seq_len, 1), 0~1 스케일
+        
+        # 3) importance_scores * boosting_factor로 어텐션 스케일링
+        scaled_importance = importance_scores[..., tf.newaxis] * boosting_factor  # (batch, seq_len, 1)
+        scaled_importance = tf.squeeze(scaled_importance, axis=-1)  # (batch, seq_len)
+        
+        # 4) RoPE 적용
+        q_pos = apply_rope(q)
+        k_pos = apply_rope(k)
+        
+        # 5) 어텐션 로짓 계산 + 중요도 부스트
+        attn_logits = tf.matmul(q_pos, k_pos, transpose_b=True)  # (batch, seq_len, seq_len)
+        attn_logits += scaled_importance[:, tf.newaxis, :]  # (batch, 1, seq_len)로 broadcast
+        
+        attn_logits += mask
+        
+        attn_weights = tf.nn.sigmoid(attn_logits)  # 0~1 사이로 스케일링
+        attn_weights /= tf.reduce_sum(attn_weights, axis=-1, keepdims=True)  # 정규화
+        output = tf.matmul(attn_weights, v)
+        
+        return output 이렇게 바꿨어
+
 # ======================= Cobrablock ======================
 class Cobrablock(tf.keras.layers.Layer):
     def __init__(self, d_model, dropout_rate=0.1):
         super().__init__()
         self.norm1 = layers.LayerNormalization(epsilon=1e-5)
-        self.mamba = RealMambaCore(d_model)
+        self.mamba = CMSMA(d_model)
         self.dropout1 = layers.Dropout(dropout_rate)
 
         self.norm2 = layers.LayerNormalization(epsilon=1e-5)
