@@ -33,7 +33,7 @@ for conversations in df["conversations"]:
             response = item2.get("value", "").strip().replace("\n", " ")
             full = f"<start> {prompt} <sep> {response} <end>"
             train_sentences.append(full)
-train_sentences = train_sentences[:50]
+train_sentences = train_sentences[:300000]
 print(f"총 문장 개수: {len(train_sentences)}")
 
 # ⬇️ 토크나이저 불러오기
@@ -121,7 +121,7 @@ dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 print("✅ TF Dataset 생성 완료!")
 
 
-class SinpleFFN(tf.keras.layers.Layer):
+class SimpleFFN(tf.keras.layers.Layer):
     def __init__(self, dim):
         super().__init__()
         self.gate_proj = layers.Dense(dim)
@@ -139,7 +139,7 @@ class RealMambaCore(tf.keras.layers.Layer):
         super().__init__()
         self.hidden_dim = hidden_dim
         
-        self.ffn = SimpleFFN(hidden_dim, activation='relu')  # 또는 'tanh'
+        self.ffn = SimpleFFN(hidden_dim)  # 또는 'tanh'
 
         self.gate_proj = layers.Dense(hidden_dim)
         self.input_proj = layers.Dense(hidden_dim)
