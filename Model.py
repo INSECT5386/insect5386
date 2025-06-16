@@ -150,6 +150,9 @@ class SwiGLUFFN(tf.keras.layers.Layer):
         hidden = self.dropout(hidden, training=training)
         return self.down_proj(hidden)
 
+import tensorflow as tf
+from tensorflow.keras import layers
+
 class ImprovedMambaCore(tf.keras.layers.Layer):
     """tf.scan을 사용한 더 효율적인 구현"""
     def __init__(self, hidden_dim, state_size=16, conv_kernel=4, expand_factor=2):
@@ -198,34 +201,102 @@ class ImprovedMambaCore(tf.keras.layers.Layer):
         # Normalization
         self.norm = layers.LayerNormalization(epsilon=1e-5)
 
-    def selective_scan(self, x, delta, A, B, C, D):
+    def selective_scan_v2(self, x, delta, A_log_param, B, C, D): # A_log는 self.A_log와 이름 충돌 방지
         """tf.scan을 사용한 selective scan"""
         batch_size = tf.shape(x)[0]
         
         # Discretization
         delta = tf.nn.softplus(delta)
-        A = -tf.exp(self.A_log)  # (inner_dim, state_size)
+        # A는 self.A_log를 사용해야 함
+        A = -tf.exp(A_log_param)  # (inner_dim, state_size)
         
-        # Discretize A and B
-        A_discrete = tf.exp(tf.einsum('bld,dn->bldn', delta, A))
-        B_discrete = tf.einsum('bld,bln->bldn', delta, B)
+        # Discretize A and B (einsum 순서 변경: (batch, seq, inner_dim, state_size)로 만들기 위함)
+        # tf.einsum('bld,dn->bldn', delta, A)에서 delta는 (b,l,d), A는 (d,n)이므로 결과는 (b,l,d,n)
+        # 여기서는 A_discrete의 (batch, seq, inner_dim, state_size) 형태가 필요합니다.
+        # A는 (inner_dim, state_size) 이므로, delta(batch, seq, inner_dim)와 연산하려면
+        # delta를 (batch, seq, inner_dim, 1)으로 확장하여 A를 브로드캐스트 할 수 있습니다.
+        # 그러나 실제 Mamba의 Selective Scan 구현에서는 A가 x와 독립적으로 작동합니다.
+        # A_discrete는 A (inner_dim, state_size)와 delta (batch, seq, inner_dim)의 관계를 표현해야 합니다.
+        # Mamba의 A는 시퀀스 길이에 따라 변하지 않는 고정된 파라미터입니다.
+        # A_discrete = tf.exp(tf.einsum('bld,dn->bldn', delta, A))
+        # 위 라인은 A를 (inner_dim, state_size)에서 (b,l,inner_dim, state_size)로 확장하려는 시도인데,
+        # A는 시퀀스 차원(l)을 가지지 않습니다.
+        # Mamba에서 A는 (D, N) 형태이며, delta (B, L, D)와 결합하여 A_bar = exp(delta * A) 가 됩니다.
         
+        # A_discrete 계산 수정: (batch, seq, inner_dim, state_size)
+        # A_log_param: (inner_dim, state_size)
+        # delta: (batch, seq, inner_dim)
+        # A_discrete = exp(delta * A)
+        # tf.einsum('bld,dn->bldn', delta, A)는 delta의 마지막 차원과 A의 첫 차원을 곱합니다.
+        # 이는 A가 (inner_dim, state_size)이고 delta가 (batch, seq, inner_dim)일 때 적합하지 않습니다.
+        # 올바른 A_discrete는 (batch, seq, inner_dim, state_size) 형태여야 합니다.
+        # Mamba의 Selective Scan의 A_bar는 delta * A_prime 이고, A_prime은 A의 파생 버전입니다.
+        # 여기서는 `A`가 이미 `self.A_log`에서 온 `(inner_dim, state_size)` 형태이므로,
+        # `delta`와 `A`를 직접 곱하려면 차원을 맞춰줘야 합니다.
+        # delta를 (batch, seq, inner_dim, 1)으로 확장하고, A를 (1, 1, inner_dim, state_size)로 확장하여 브로드캐스트 곱셈을 수행합니다.
+        A_expanded = tf.expand_dims(A, axis=0) # (1, inner_dim, state_size)
+        A_expanded = tf.expand_dims(A_expanded, axis=0) # (1, 1, inner_dim, state_size)
+        delta_expanded = tf.expand_dims(delta, axis=-1) # (batch, seq, inner_dim, 1)
+        A_discrete = tf.exp(delta_expanded * A_expanded) # (batch, seq, inner_dim, state_size)
+
+        # B_discrete 계산 수정: (batch, seq, inner_dim, state_size)
+        # B는 (batch, seq, state_size)
+        # delta는 (batch, seq, inner_dim)
+        # B_discrete = delta * B
+        # tf.einsum('bld,bln->bldn', delta, B)는 올바르지 않습니다.
+        # delta는 (batch, seq, inner_dim), B는 (batch, seq, state_size)
+        # Mamba의 B_bar는 delta * B 이며, B는 (B, L, N) 형태입니다.
+        # 따라서 delta와 B를 브로드캐스트 곱셈하기 위해 차원을 맞춰야 합니다.
+        # delta_expanded는 (batch, seq, inner_dim, 1)
+        # B_expanded = tf.expand_dims(B, axis=-2) # (batch, seq, 1, state_size)
+        # B_discrete = delta_expanded * B_expanded # (batch, seq, inner_dim, state_size)
+        # Mamba 오리지널 구현에 가깝게, B는 (batch, seq, state_size)이고 이를 inner_dim 만큼 반복하여
+        # (batch, seq, inner_dim, state_size) 형태로 만듭니다.
+        # tf.einsum('bld,bln->bldn', delta, B) 대신 `tf.tile`을 사용하거나 차원을 조정하여 곱해야 합니다.
+        # 여기서는 B의 차원이 이미 (batch, seq, state_size)이므로, delta와 브로드캐스트 하려면
+        # delta (batch, seq, inner_dim)를 (batch, seq, inner_dim, 1)으로 확장하고
+        # B (batch, seq, state_size)를 (batch, seq, 1, state_size)으로 확장하여
+        # 곱한 후 inner_dim 차원으로 다시 확장하는 형태가 되어야 합니다.
+        # B_discrete = tf.einsum('bln,bld->bldn', B, delta) -> B의 차원 (b,l,n), delta의 차원 (b,l,d) 이므로 (b,l,d,n)
+
+        # Mamba 구현 방식에 따라 B_discrete 계산:
+        # B (batch, seq, state_size)를 inner_dim으로 확장
+        B_expanded_for_mul = tf.expand_dims(B, axis=-2) # (batch, seq, 1, state_size)
+        # delta (batch, seq, inner_dim)를 (batch, seq, inner_dim, 1)으로 확장
+        delta_expanded_for_mul = tf.expand_dims(delta, axis=-1) # (batch, seq, inner_dim, 1)
+        B_discrete = delta_expanded_for_mul * B_expanded_for_mul # (batch, seq, inner_dim, state_size)
+
+
         def scan_fn(carry, inputs):
             h_prev = carry
-            x_t, A_t, B_t = inputs
+            x_t, A_t, B_t = inputs # x_t는 (batch, inner_dim)
+            # A_t는 (batch, inner_dim, state_size)
+            # B_t는 (batch, inner_dim, state_size)
+            
+            # h_new = A_t * h_prev + B_t * tf.expand_dims(x_t, -1)
+            # h_prev: (batch, inner_dim, state_size)
+            # x_t: (batch, inner_dim) -> tf.expand_dims(x_t, -1): (batch, inner_dim, 1)
+            # B_t * tf.expand_dims(x_t, -1) : (batch, inner_dim, state_size) * (batch, inner_dim, 1) = (batch, inner_dim, state_size)
+            # A_t * h_prev : (batch, inner_dim, state_size) * (batch, inner_dim, state_size) = (batch, inner_dim, state_size)
             h_new = A_t * h_prev + B_t * tf.expand_dims(x_t, -1)
-            return h_new, h_new
+            
+            return h_new # <--- 이제 단일 텐서만 반환합니다.
         
         # Prepare inputs for scan (transpose to put sequence dimension first)
         x_scan = tf.transpose(x, [1, 0, 2])  # (seq, batch, inner_dim)
+        # A_discrete, B_discrete의 shape: (batch, seq, inner_dim, state_size)
         A_scan = tf.transpose(A_discrete, [1, 0, 2, 3])  # (seq, batch, inner_dim, state_size)
         B_scan = tf.transpose(B_discrete, [1, 0, 2, 3])  # (seq, batch, inner_dim, state_size)
         
-        # Initial state
-        initial_state = tf.zeros([batch_size, self.inner_dim, self.state_size])
+        # Initial state (batch, inner_dim, state_size)
+        initial_state = tf.zeros([batch_size, self.inner_dim, self.state_size], dtype=x.dtype)
         
         # Run scan
-        final_state, states = tf.scan(
+        # tf.scan은 scan_fn이 반환하는 첫 번째 값을 다음 carry로 사용하고,
+        # 반환하는 모든 값을 모아 최종 출력을 만듭니다.
+        # 따라서 scan_fn이 h_new 하나만 반환하면, final_state는 마지막 h_new가 되고,
+        # states는 모든 h_new를 모은 텐서가 됩니다.
+        states = tf.scan(
             scan_fn,
             (x_scan, A_scan, B_scan),
             initializer=initial_state
@@ -235,8 +306,15 @@ class ImprovedMambaCore(tf.keras.layers.Layer):
         states = tf.transpose(states, [1, 0, 2, 3])
         
         # Output computation
+        # y = tf.einsum('blds,bls->bld', states, C)
+        # C의 차원: (batch, seq, state_size)
+        # states의 차원: (batch, seq, inner_dim, state_size)
+        # 'blds,bls->bld'는 (batch, seq, inner_dim, state_size) * (batch, seq, state_size) -> (batch, seq, inner_dim)
+        # 이는 올바른 einsum입니다.
         y = tf.einsum('blds,bls->bld', states, C)
-        y = y + D * x
+        
+        # D는 (inner_dim,) 이므로 x (batch, seq, inner_dim)와 브로드캐스트 곱셈
+        y = y + D * x # D는 (inner_dim,)이므로 x (batch, seq, inner_dim)와 브로드캐스트됨
         
         return y
 
