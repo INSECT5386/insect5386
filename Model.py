@@ -226,46 +226,13 @@ class MambaCore(tf.keras.layers.Layer):
         y = self.C * y + self.D * x
         return y
 
-# CMSMA 어텐션 레이어
-class CMSMA(tf.keras.layers.Layer):
-    def __init__(self, dim):
-        super().__init__()
-        self.dim = dim
-        self.s4core = MambaCore(dim)
-
-        # boosting_factor를 동적으로 계산할 MLP (scalar 출력)
-        self.boost_mlp = tf.keras.Sequential([
-            tf.keras.layers.Dense(dim // 4, activation='relu'),
-            tf.keras.layers.Dense(1, activation='sigmoid')  # 0~1 사이 값 반환
-        ])
-
-    def call(self, x, mask=None):
-        # x: (batch_size, seq_len, dim)
-        importance_scores = tf.norm(self.s4core(x), axis=-1)  # (batch, seq_len)
-
-        boosting_factor = self.boost_mlp(x)  # (batch, seq_len, 1)
-        scaled_importance = importance_scores[..., tf.newaxis] * boosting_factor
-        scaled_importance = tf.squeeze(scaled_importance, axis=-1)
-
-        x_pos = apply_rope(x)
-
-        attn_logits = tf.matmul(x_pos, x_pos, transpose_b=True)  # (batch, seq_len, seq_len)
-        attn_logits += scaled_importance[:, tf.newaxis, :]  # broadcasting
-
-        if mask is not None:
-            attn_logits += mask
-
-        attn_weights = tf.nn.softmax(attn_logits, axis=-1)
-        output = tf.matmul(attn_weights, x)  # value로 x 사용
-
-        return output
 
 # ======================= Cobrablock ======================
 class Cobrablock(tf.keras.layers.Layer):
     def __init__(self, d_model, dropout_rate=0.1):
         super().__init__()
         self.norm1 = layers.LayerNormalization(epsilon=1e-5)
-        self.mamba = CMSMA(d_model)
+        self.mamba = MambaCore(d_model)
         self.dropout1 = layers.Dropout(dropout_rate)
 
         self.norm2 = layers.LayerNormalization(epsilon=1e-5)
