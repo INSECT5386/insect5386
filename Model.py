@@ -33,7 +33,7 @@ for conversations in df["conversations"]:
             response = item2.get("value", "").strip().replace("\n", " ")
             full = f"<start> {prompt} <sep> {response} <end>"
             train_sentences.append(full)
-train_sentences = train_sentences[:300000]
+train_sentences = train_sentences[:300]
 print(f"총 문장 개수: {len(train_sentences)}")
 
 # ⬇️ 토크나이저 불러오기
@@ -297,8 +297,8 @@ def create_lr_schedule(initial_lr=5e-5, decay_steps=10000, decay_rate=0.9):
 # 모델 생성
 model = CobraModel(
     vocab_size=vocab_size,
-    d_model=384,
-    n_layers=12
+    d_model=192,
+    n_layers=10
 )
 
 # 옵티마이저 설정
@@ -431,9 +431,6 @@ test_prompts = [
     "건강한 식단을 위한 조언",
     "인공지능의 미래는"
 ]
-
-
-model = MockModel() # Instantiate your actual model here
 
 for prompt in test_prompts:
     print(f"\n프롬프트: {prompt}")
