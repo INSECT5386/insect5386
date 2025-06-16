@@ -67,6 +67,9 @@ n_layers = 12  # 증가된 레이어 수
 state_size = 16  # Mamba state 크기
 
 # ⬇️ 개선된 데이터 전처리 함수
+import tensorflow as tf
+
+
 def create_efficient_dataset(sentences, batch_size, max_len):
     """메모리 효율적인 데이터셋 생성"""
     
@@ -75,7 +78,9 @@ def create_efficient_dataset(sentences, batch_size, max_len):
         batch_targets = []
         batch_masks = []
         
-        for sentence in batch_sentences:
+        for sentence in batch_sentences.numpy(): # tf.string 텐서를 numpy 배열로 변환하여 파이썬 문자열로 사용
+            sentence = sentence.decode('utf-8') # 바이트 문자열을 유니코드 문자열로 디코딩
+            
             if "<sep>" not in sentence:
                 continue
                 
@@ -83,6 +88,7 @@ def create_efficient_dataset(sentences, batch_size, max_len):
             input_text = sentence[:sep_index + len("<sep>")].strip()
             target_text = sentence[sep_index + len("<sep>"):].strip()
             
+            # 여기서 text_to_ids는 실제 토크나이저 함수여야 합니다 (예: SentencePiece 모델)
             input_ids = text_to_ids(input_text)
             target_ids = text_to_ids(target_text + " <end>")
             
@@ -99,6 +105,13 @@ def create_efficient_dataset(sentences, batch_size, max_len):
                 full_input += [pad_id] * pad_len
                 target_mask += [0] * pad_len
             
+            # Mamba는 일반적으로 `[CLS] token_ids [SEP] target_token_ids` 형태로 사용됩니다.
+            # 여기서 `target_seq` 로직은 다음 토큰 예측을 위한 것인데,
+            # Mamba는 일반적으로 시퀀스 전체를 한 번에 처리하고 자기회귀적으로 예측합니다.
+            # 만약 `target_seq`가 특정 목적 (예: 교사 강요)을 위한 것이라면 그대로 유지합니다.
+            # 여기서는 Mamba 모델 입력과 타겟의 일반적인 구성을 가정하고 `full_input` 그대로 타겟으로 사용하거나,
+            # 다음 토큰 예측을 위한 shift를 적용할 수 있습니다.
+            # 현재 코드의 `target_seq`는 다음 토큰을 예측하는 전통적인 Seq2Seq 방식에 가깝습니다.
             target_seq = full_input[1:] + [end_id]
             target_seq = target_seq[:max_len]
             
@@ -111,6 +124,7 @@ def create_efficient_dataset(sentences, batch_size, max_len):
             batch_targets.append(masked_target)
             batch_masks.append(target_mask)
         
+        # tf.constant로 변환 시 바로 변환
         return (
             tf.constant(batch_inputs, dtype=tf.int32),
             tf.constant(batch_targets, dtype=tf.int32),
@@ -120,15 +134,49 @@ def create_efficient_dataset(sentences, batch_size, max_len):
     # 배치 단위로 처리
     dataset = tf.data.Dataset.from_tensor_slices(sentences)
     dataset = dataset.batch(batch_size)
+    
+    # tf.py_function의 Tout 인자에 쉐이프 정보 추가
+    # 각 텐서의 첫 번째 차원(배치 크기)은 None으로 두어 가변 배치 크기를 허용합니다.
+    # 두 번째 차원(시퀀스 길이)은 max_len으로 고정됩니다.
+    output_shapes = [
+        tf.TensorSpec(shape=(None, max_len), dtype=tf.int32),    # batch_inputs
+        tf.TensorSpec(shape=(None, max_len), dtype=tf.int32),    # batch_targets
+        tf.TensorSpec(shape=(None, max_len), dtype=tf.float32)   # batch_masks
+    ]
+    
     dataset = dataset.map(
         lambda x: tf.py_function(
             preprocess_batch, [x], 
-            [tf.int32, tf.int32, tf.float32]
+            output_shapes # <-- 여기서 쉐이프 정보를 전달합니다.
         ),
         num_parallel_calls=tf.data.AUTOTUNE
     )
     
     return dataset.prefetch(tf.data.AUTOTUNE)
+
+# 예시 사용법 (실제 데이터와 토크나이저로 대체 필요)
+# sentences = [
+#     "안녕하세요 <sep> 반갑습니다.",
+#     "점심 뭐 먹지 <sep> 김치찌개 먹을까?",
+#     "오늘 날씨 어때 <sep> 맑아요."
+# ]
+# batch_size = 2
+# max_len = 10
+#
+# # 실제 토크나이저와 ID 필요
+# # def text_to_ids(text):
+# #     # 여기에 실제 SentencePiece 또는 다른 토크나이저 로직 추가
+# #     return [int(c) for c in text.encode('utf-8')] # 예시
+# # pad_id = 0
+# # end_id = 1
+#
+# efficient_dataset = create_efficient_dataset(sentences, batch_size, max_len)
+#
+# for inputs, targets, masks in efficient_dataset.take(1):
+#     print("Inputs:", inputs.shape)
+#     print("Targets:", targets.shape)
+#     print("Masks:", masks.shape)
+
 
 
 # ======================= 개선된 SwiGLU FFN ======================
