@@ -5,6 +5,7 @@ import tensorflow as tf
 from tensorflow.keras import layers 
 import sentencepiece as spm  
 import requests
+import math
 
 # ⬇️ 파일 다운로드 함수
 def download_file(url, save_path):
@@ -33,6 +34,7 @@ for conversations in df["conversations"]:
             response = item2.get("value", "").strip().replace("\n", " ")
             full = f"<start> {prompt} <sep> {response} <end>"
             train_sentences.append(full)
+
 train_sentences = train_sentences[:300000]
 print(f"총 문장 개수: {len(train_sentences)}")
 
@@ -57,319 +59,600 @@ def text_to_ids(text):
 def ids_to_text(ids):
     return sp.decode(ids)
 
-# ⬇️ 전처리 하이퍼파라미터
-max_len = 100
-batch_size = 80
+# ⬇️ 개선된 하이퍼파라미터
+max_len = 256  # 증가된 시퀀스 길이
+batch_size = 32  # 조정된 배치 크기
+d_model = 384  # 증가된 모델 차원
+n_layers = 12  # 증가된 레이어 수
+state_size = 16  # Mamba state 크기
 
-# ⬇️ 인풋과 타겟 마스킹 포함된 전처리
-encoded_inputs = []
-targets = []
-
-for sentence in train_sentences:
-    if "<sep>" not in sentence:
-        continue
-
-    sep_index = sentence.index("<sep>")
-    input_text = sentence[:sep_index + len("<sep>")].strip()
-    target_text = sentence[sep_index + len("<sep>"):].strip()
-
-    input_ids = text_to_ids(input_text)
-    target_ids = text_to_ids(target_text + " <end>")
-
-    full_input = input_ids + target_ids
-    full_input = full_input[:max_len]
-
-    target_mask = [0] * len(input_ids) + [1] * len(target_ids)
-    target_mask = target_mask[:max_len]
-
-    if len(full_input) < max_len:
-        pad_len = max_len - len(full_input)
-        full_input += [pad_id] * pad_len
-        target_mask += [0] * pad_len
-
-    encoded_inputs.append(full_input)
-
-    target_seq = full_input[1:] + [end_id]
-    target_seq = target_seq[:max_len]
-
-    masked_target = [
-        t if m == 1 else pad_id
-        for t, m in zip(target_seq, target_mask)
-    ]
-
-    targets.append(masked_target)
-
-# ⬇️ 넘파이 변환
-encoded_inputs = np.array(encoded_inputs)
-targets = np.array(targets)
-
-# ⬇️ TensorFlow Dataset 생성
-def data_generator():
-    for input_seq, target_seq in zip(encoded_inputs, targets):
-        yield input_seq, target_seq
-
-dataset = tf.data.Dataset.from_generator(
-    data_generator,
-    output_signature=(
-        tf.TensorSpec(shape=(max_len,), dtype=tf.int32),
-        tf.TensorSpec(shape=(max_len,), dtype=tf.int32)
+# ⬇️ 개선된 데이터 전처리 함수
+def create_efficient_dataset(sentences, batch_size, max_len):
+    """메모리 효율적인 데이터셋 생성"""
+    
+    def preprocess_batch(batch_sentences):
+        batch_inputs = []
+        batch_targets = []
+        batch_masks = []
+        
+        for sentence in batch_sentences:
+            if "<sep>" not in sentence:
+                continue
+                
+            sep_index = sentence.index("<sep>")
+            input_text = sentence[:sep_index + len("<sep>")].strip()
+            target_text = sentence[sep_index + len("<sep>"):].strip()
+            
+            input_ids = text_to_ids(input_text)
+            target_ids = text_to_ids(target_text + " <end>")
+            
+            full_input = input_ids + target_ids
+            full_input = full_input[:max_len]
+            
+            # 동적 마스킹
+            target_mask = [0] * len(input_ids) + [1] * len(target_ids)
+            target_mask = target_mask[:max_len]
+            
+            # 패딩
+            if len(full_input) < max_len:
+                pad_len = max_len - len(full_input)
+                full_input += [pad_id] * pad_len
+                target_mask += [0] * pad_len
+            
+            target_seq = full_input[1:] + [end_id]
+            target_seq = target_seq[:max_len]
+            
+            masked_target = [
+                t if m == 1 else pad_id
+                for t, m in zip(target_seq, target_mask)
+            ]
+            
+            batch_inputs.append(full_input)
+            batch_targets.append(masked_target)
+            batch_masks.append(target_mask)
+        
+        return (
+            tf.constant(batch_inputs, dtype=tf.int32),
+            tf.constant(batch_targets, dtype=tf.int32),
+            tf.constant(batch_masks, dtype=tf.float32)
+        )
+    
+    # 배치 단위로 처리
+    dataset = tf.data.Dataset.from_tensor_slices(sentences)
+    dataset = dataset.batch(batch_size)
+    dataset = dataset.map(
+        lambda x: tf.py_function(
+            preprocess_batch, [x], 
+            [tf.int32, tf.int32, tf.float32]
+        ),
+        num_parallel_calls=tf.data.AUTOTUNE
     )
-)
-
-dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
-
-print("✅ TF Dataset 생성 완료!")
+    
+    return dataset.prefetch(tf.data.AUTOTUNE)
 
 
-class SimpleFFN(tf.keras.layers.Layer):
-    def __init__(self, dim):
+# ======================= 개선된 SwiGLU FFN ======================
+class SwiGLUFFN(tf.keras.layers.Layer):
+    """SwiGLU activation을 사용한 개선된 FFN"""
+    def __init__(self, dim, hidden_dim=None, dropout_rate=0.1):
         super().__init__()
-        self.gate_proj = layers.Dense(dim)
-        self.up_proj = layers.Dense(dim)
-        self.down_proj = layers.Dense(dim)
+        hidden_dim = hidden_dim or int(dim * 8/3)  # SwiGLU 표준 비율
+        
+        self.gate_proj = layers.Dense(hidden_dim, use_bias=False)
+        self.up_proj = layers.Dense(hidden_dim, use_bias=False)
+        self.down_proj = layers.Dense(dim, use_bias=False)
+        self.dropout = layers.Dropout(dropout_rate)
 
-    def call(self, x):
-        gate = tf.nn.silu(self.gate_proj(x))
+    def call(self, x, training=False):
+        gate = self.gate_proj(x)
         up = self.up_proj(x)
-        return self.down_proj(gate * up)
+        hidden = tf.nn.silu(gate) * up
+        hidden = self.dropout(hidden, training=training)
+        return self.down_proj(hidden)
 
-# ==================== RealMambaCore =====================
-class RealMambaCore(tf.keras.layers.Layer):
-    def __init__(self, hidden_dim):
+class ImprovedMambaCore(tf.keras.layers.Layer):
+    """tf.scan을 사용한 더 효율적인 구현"""
+    def __init__(self, hidden_dim, state_size=16, conv_kernel=4, expand_factor=2):
         super().__init__()
         self.hidden_dim = hidden_dim
+        self.state_size = state_size
+        self.conv_kernel = conv_kernel
+        self.expand_factor = expand_factor
+        self.inner_dim = hidden_dim * expand_factor
         
-        self.ffn = SimpleFFN(hidden_dim)  # 또는 'tanh'
+        # Input projections
+        self.in_proj = layers.Dense(self.inner_dim * 2, use_bias=False)
+        
+        # Convolution layer
+        self.conv1d = layers.Conv1D(
+            filters=self.inner_dim,
+            kernel_size=conv_kernel,
+            padding='same',
+            use_bias=True
+        )
+        
+        # SSM parameters projection
+        self.x_proj = layers.Dense(state_size * 2, use_bias=False)
+        self.dt_proj = layers.Dense(self.inner_dim, use_bias=True)
+        
+        # SSM parameters
+        self.A_log = self.add_weight(
+            shape=(self.inner_dim, state_size),
+            initializer=lambda shape, dtype: tf.math.log(
+                tf.random.uniform(shape, 1, 16, dtype=dtype)
+            ),
+            trainable=True,
+            name="A_log"
+        )
+        
+        self.D = self.add_weight(
+            shape=(self.inner_dim,),
+            initializer='ones',
+            trainable=True,
+            name="D"
+        )
+        
+        # Output projection
+        self.out_proj = layers.Dense(hidden_dim, use_bias=False)
+        
+        # Normalization
+        self.norm = layers.LayerNormalization(epsilon=1e-5)
 
-        self.gate_proj = layers.Dense(hidden_dim)
-        self.input_proj = layers.Dense(hidden_dim)
-
-        self.A = self.add_weight(shape=(hidden_dim,),
-                                 initializer=tf.keras.initializers.RandomNormal(mean=-0.5, stddev=0.1),
-                                 trainable=True, name="A")
-        self.B = self.add_weight(shape=(hidden_dim,),
-                                 initializer='random_normal',
-                                 trainable=True, name="B")
-        self.C = self.add_weight(shape=(hidden_dim,),
-                                 initializer='random_normal',
-                                 trainable=True, name="C")
-        self.D = self.add_weight(shape=(hidden_dim,),
-                                 initializer='zeros',
-                                 trainable=True, name="D")
-
-        self.norm = layers.LayerNormalization()
-        self.output_proj = layers.Dense(hidden_dim)
-
-    def fft_convolve(self, u_t, kernel_t, T):
-        pad_len = T - 1
-        seq_len = T + pad_len
-
-        fft_len_float = tf.math.ceil(tf.math.log(tf.cast(seq_len, tf.float32)) / tf.math.log(2.0))
-        fft_len = tf.cast(2 ** fft_len_float, tf.int32)
-
-        u_padded = tf.pad(u_t, [[0, 0], [0, 0], [pad_len, fft_len - seq_len]])
-        K_padded = tf.pad(kernel_t, [[0, 0], [0, fft_len - T]])
-
-        U_f = tf.signal.fft(tf.cast(tf.complex(u_padded, 0.0), tf.complex64))
-        K_f = tf.signal.fft(tf.cast(tf.complex(K_padded, 0.0), tf.complex64))
-
-        Y_f = U_f * tf.expand_dims(K_f, 0)
-        y_full = tf.signal.ifft(Y_f)
-        y_real = tf.math.real(y_full)[..., pad_len:pad_len + T]
-
-        return y_real
-
-    def call(self, x):
-        B = tf.shape(x)[0]
-        T = tf.shape(x)[1]
-        D = self.hidden_dim
-
-        gate = tf.nn.silu(self.gate_proj(x))
-        x_proj = self.input_proj(x)
-        u = gate * x_proj
-
-        time_idx = tf.cast(tf.range(T), dtype=self.A.dtype)[:, None]
-        A_pow = tf.pow(tf.expand_dims(self.A, 0), time_idx)
-        kernel = self.B * A_pow
-
-        u_t = tf.transpose(u, [0, 2, 1])
-        kernel_t = tf.transpose(kernel, [1, 0])
-
-        y_real = self.fft_convolve(u_t, kernel_t, T)
-        y = tf.transpose(y_real, [0, 2, 1])
-
-        y = self.C * y + self.D * u
-
-        y = self.norm(y)
-        y = self.ffn(y)
-        y = self.output_proj(y)
-
+    def selective_scan(self, x, delta, A, B, C, D):
+        """tf.scan을 사용한 selective scan"""
+        batch_size = tf.shape(x)[0]
+        
+        # Discretization
+        delta = tf.nn.softplus(delta)
+        A = -tf.exp(self.A_log)  # (inner_dim, state_size)
+        
+        # Discretize A and B
+        A_discrete = tf.exp(tf.einsum('bld,dn->bldn', delta, A))
+        B_discrete = tf.einsum('bld,bln->bldn', delta, B)
+        
+        def scan_fn(carry, inputs):
+            h_prev = carry
+            x_t, A_t, B_t = inputs
+            h_new = A_t * h_prev + B_t * tf.expand_dims(x_t, -1)
+            return h_new, h_new
+        
+        # Prepare inputs for scan (transpose to put sequence dimension first)
+        x_scan = tf.transpose(x, [1, 0, 2])  # (seq, batch, inner_dim)
+        A_scan = tf.transpose(A_discrete, [1, 0, 2, 3])  # (seq, batch, inner_dim, state_size)
+        B_scan = tf.transpose(B_discrete, [1, 0, 2, 3])  # (seq, batch, inner_dim, state_size)
+        
+        # Initial state
+        initial_state = tf.zeros([batch_size, self.inner_dim, self.state_size])
+        
+        # Run scan
+        final_state, states = tf.scan(
+            scan_fn,
+            (x_scan, A_scan, B_scan),
+            initializer=initial_state
+        )
+        
+        # Transpose back to (batch, seq, inner_dim, state_size)
+        states = tf.transpose(states, [1, 0, 2, 3])
+        
+        # Output computation
+        y = tf.einsum('blds,bls->bld', states, C)
+        y = y + D * x
+        
         return y
 
-# ======================= Cobrablock ======================
-class Cobrablock(tf.keras.layers.Layer):
-    def __init__(self, d_model, dropout_rate=0.1):
-        super().__init__()
-        self.norm1 = layers.LayerNormalization(epsilon=1e-5)
-        self.mamba = RealMambaCore(d_model)
-        self.dropout1 = layers.Dropout(dropout_rate)
+    def call(self, x):
+        # Input projection and split
+        xz = self.in_proj(x)  # (batch, seq, inner_dim * 2)
+        x_inner, z = tf.split(xz, 2, axis=-1)
+        
+        # Convolution
+        x_conv = self.conv1d(x_inner)
+        x_conv = tf.nn.silu(x_conv)
+        
+        # SSM parameters
+        x_ssm = self.x_proj(x_conv)  # (batch, seq, state_size * 2)
+        B, C = tf.split(x_ssm, 2, axis=-1)  # Each (batch, seq, state_size)
+        
+        # Delta projection
+        delta = self.dt_proj(x_conv)  # (batch, seq, inner_dim)
+        
+        # Selective scan
+        y = self.selective_scan_v2(
+            x_conv, delta, self.A_log, B, C, self.D
+        )
+        
+        # Gate and output projection
+        y = y * tf.nn.silu(z)
+        output = self.out_proj(y)
+        
+        return self.norm(output)
 
-        self.norm2 = layers.LayerNormalization(epsilon=1e-5)
+
+# ======================= 개선된 Cobrablock ======================
+class ImprovedCobrablock(tf.keras.layers.Layer):
+    """개선된 Cobra 블록 with RMSNorm and better residuals"""
+    def __init__(self, d_model, dropout_rate=0.1, use_rms_norm=True):
+        super().__init__()
+        self.use_rms_norm = use_rms_norm
+        
+        if use_rms_norm:
+            self.norm1 = RMSNorm(d_model)
+            self.norm2 = RMSNorm(d_model)
+        else:
+            self.norm1 = layers.LayerNormalization(epsilon=1e-5)
+            self.norm2 = layers.LayerNormalization(epsilon=1e-5)
+            
+        self.mamba = ImprovedMambaCore(d_model)
+        self.ffn = SwiGLUFFN(d_model, dropout_rate=dropout_rate)
+        
+        self.dropout1 = layers.Dropout(dropout_rate)
         self.dropout2 = layers.Dropout(dropout_rate)
 
     def call(self, x, training=False):
+        # Mamba block with pre-norm
         residual = x
         x = self.norm1(x)
         x = self.mamba(x)
         x = residual + self.dropout1(x, training=training)
-
+        
+        # FFN block with pre-norm
         residual = x
         x = self.norm2(x)
-        x = self.dropout2(x, training=training)
-        x = residual + x
-
+        x = self.ffn(x, training=training)
+        x = residual + self.dropout2(x, training=training)
+        
         return x
 
-# ======================= CobraModel ======================
-class CobraModel(tf.keras.Model):
-    def __init__(self, vocab_size, d_model, n_layers, dropout_rate=0.1):
+
+# ======================= RMSNorm Implementation ======================
+class RMSNorm(tf.keras.layers.Layer):
+    """Root Mean Square Layer Normalization"""
+    def __init__(self, dim, eps=1e-6):
         super().__init__()
+        self.eps = eps
+        self.weight = self.add_weight(
+            shape=(dim,),
+            initializer='ones',
+            trainable=True,
+            name='weight'
+        )
+
+    def call(self, x):
+        norm = tf.sqrt(tf.reduce_mean(tf.square(x), axis=-1, keepdims=True) + self.eps)
+        return x / norm * self.weight
+
+
+# ======================= 개선된 CobraModel ======================
+class ImprovedCobraModel(tf.keras.Model):
+    """개선된 Cobra 모델"""
+    def __init__(self, vocab_size, d_model, n_layers, dropout_rate=0.1, use_rms_norm=True):
+        super().__init__()
+        self.d_model = d_model
         self.token_embedding = layers.Embedding(vocab_size, d_model)
-        self.blocks = [Cobrablock(d_model, dropout_rate) for _ in range(n_layers)]
-        self.ln_f = layers.LayerNormalization(epsilon=1e-5)
+        
+        # Positional encoding (learnable)
+        self.pos_embedding = self.add_weight(
+            shape=(max_len, d_model),
+            initializer='random_normal',
+            trainable=True,
+            name='pos_embedding'
+        )
+        
+        self.blocks = [
+            ImprovedCobrablock(d_model, dropout_rate, use_rms_norm) 
+            for _ in range(n_layers)
+        ]
+        
+        if use_rms_norm:
+            self.ln_f = RMSNorm(d_model)
+        else:
+            self.ln_f = layers.LayerNormalization(epsilon=1e-5)
+            
+        self.dropout = layers.Dropout(dropout_rate)
 
     def call(self, x, training=False):
-        x = self.token_embedding(x)
-
+        seq_len = tf.shape(x)[1]
+        
+        # Token + positional embeddings
+        token_emb = self.token_embedding(x)
+        pos_emb = self.pos_embedding[:seq_len]
+        x = token_emb + pos_emb
+        x = self.dropout(x, training=training)
+        
+        # Transformer blocks
         for block in self.blocks:
             x = block(x, training=training)
-
+        
+        # Final layer norm
         x = self.ln_f(x)
+        
+        # Output projection (tied embeddings)
         logits = tf.matmul(x, self.token_embedding.embeddings, transpose_b=True)
         return logits
 
 
-# 손실 함수 및 메트릭 정의
-loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True, reduction='none')
+# ======================= 개선된 손실 함수 및 메트릭 ======================
+class ImprovedMetrics:
+    @staticmethod
+    def focal_loss(y_true, y_pred, alpha=0.25, gamma=2.0):
+        """Focal loss for handling class imbalance"""
+        ce_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(
+            labels=y_true, logits=y_pred
+        )
+        p_t = tf.exp(-ce_loss)
+        focal_loss = alpha * tf.pow(1 - p_t, gamma) * ce_loss
+        return focal_loss
+    
+    @staticmethod
+    def label_smoothing_loss(y_true, y_pred, smoothing=0.1):
+        """Label smoothing cross entropy"""
+        vocab_size = tf.shape(y_pred)[-1]
+        confidence = 1.0 - smoothing
+        
+        # One-hot encode with smoothing
+        smooth_labels = tf.one_hot(y_true, vocab_size, dtype=tf.float32)
+        smooth_labels = smooth_labels * confidence + smoothing / tf.cast(vocab_size, tf.float32)
+        
+        return tf.nn.softmax_cross_entropy_with_logits(
+            labels=smooth_labels, logits=y_pred
+        )
 
-def masked_loss(y_true, y_pred):
-    loss = loss_fn(y_true, y_pred)
+# 개선된 손실 함수
+def improved_masked_loss(y_true, y_pred, use_focal=False, use_label_smoothing=False):
+    if use_focal:
+        loss = ImprovedMetrics.focal_loss(y_true, y_pred)
+    elif use_label_smoothing:
+        loss = ImprovedMetrics.label_smoothing_loss(y_true, y_pred)
+    else:
+        loss = tf.nn.sparse_softmax_cross_entropy_with_logits(
+            labels=y_true, logits=y_pred
+        )
+    
     mask = tf.cast(tf.not_equal(y_true, pad_id), tf.float32)
-    masked_loss = tf.reduce_sum(loss * mask) / tf.reduce_sum(mask)
+    masked_loss = tf.reduce_sum(loss * mask) / (tf.reduce_sum(mask) + 1e-8)
     return masked_loss
 
-def masked_accuracy(y_true, y_pred):
+def improved_masked_accuracy(y_true, y_pred):
     preds = tf.argmax(y_pred, axis=-1, output_type=y_true.dtype)
     matches = tf.cast(tf.equal(y_true, preds), tf.float32)
     mask = tf.cast(tf.not_equal(y_true, pad_id), tf.float32)
-    return tf.reduce_sum(matches * mask) / tf.reduce_sum(mask)
+    return tf.reduce_sum(matches * mask) / (tf.reduce_sum(mask) + 1e-8)
 
-def masked_perplexity(y_true, y_pred):
-    loss = loss_fn(y_true, y_pred)
+def improved_masked_perplexity(y_true, y_pred):
+    loss = tf.nn.sparse_softmax_cross_entropy_with_logits(
+        labels=y_true, logits=y_pred
+    )
     mask = tf.cast(tf.not_equal(y_true, pad_id), tf.float32)
-    avg_loss = tf.reduce_sum(loss * mask) / tf.reduce_sum(mask)
-    return tf.exp(tf.minimum(avg_loss, 10.0))  # 수치 안정성 확보
+    avg_loss = tf.reduce_sum(loss * mask) / (tf.reduce_sum(mask) + 1e-8)
+    return tf.exp(tf.minimum(avg_loss, 10.0))
 
-def masked_top5_accuracy(y_true, y_pred):
+def improved_top5_accuracy(y_true, y_pred):
     top5_preds = tf.nn.top_k(y_pred, k=5).indices
-    top5_preds = tf.cast(top5_preds, dtype=y_true.dtype)  # <-- 이 줄 추가
+    top5_preds = tf.cast(top5_preds, dtype=y_true.dtype)
     y_true_expanded = tf.expand_dims(y_true, axis=-1)
     matches = tf.reduce_any(tf.equal(y_true_expanded, top5_preds), axis=-1)
     matches = tf.cast(matches, tf.float32)
     mask = tf.cast(tf.not_equal(y_true, pad_id), tf.float32)
-    return tf.reduce_sum(matches * mask) / tf.reduce_sum(mask)
+    return tf.reduce_sum(matches * mask) / (tf.reduce_sum(mask) + 1e-8)
 
 
-def token_level_loss(y_true, y_pred):
-    loss = loss_fn(y_true, y_pred)
-    mask = tf.cast(tf.not_equal(y_true, pad_id), tf.float32)
-    return tf.reduce_mean(loss * mask)
+# ======================= 개선된 학습률 스케줄러 ======================
+def create_cosine_schedule(initial_lr=1e-4, min_lr=1e-6, warmup_steps=2000, total_steps=50000):
+    """Cosine annealing with warmup"""
+    def schedule(step):
+        step = tf.cast(step, tf.float32)
+        
+        if step < warmup_steps:
+            # Linear warmup
+            return initial_lr * step / warmup_steps
+        else:
+            # Cosine annealing
+            progress = (step - warmup_steps) / (total_steps - warmup_steps)
+            progress = tf.minimum(progress, 1.0)
+            cosine_decay = 0.5 * (1 + tf.cos(math.pi * progress))
+            return min_lr + (initial_lr - min_lr) * cosine_decay
+    
+    return schedule
 
-def create_lr_schedule(initial_lr=5e-5, decay_steps=10000, decay_rate=0.9):
-    return tf.keras.optimizers.schedules.ExponentialDecay(
-        initial_learning_rate=initial_lr,
-        decay_steps=decay_steps,
-        decay_rate=decay_rate,
-        staircase=False
-    )
 
+# ======================= 데이터셋 생성 ======================
+print("🔄 데이터셋 생성 중...")
+dataset = create_efficient_dataset(train_sentences, batch_size, max_len)
 
-# 모델 생성
-model = CobraModel(
+# ======================= 모델 생성 및 설정 ======================
+print("🏗️ 모델 생성 중...")
+model = ImprovedCobraModel(
     vocab_size=vocab_size,
-    d_model=192,
-    n_layers=10
+    d_model=d_model,
+    n_layers=n_layers,
+    dropout_rate=0.1,
+    use_rms_norm=True
 )
 
-# 옵티마이저 설정
-optimizer = tf.keras.optimizers.Adam(
-    learning_rate=create_lr_schedule(),
+# 개선된 옵티마이저 설정
+total_steps = (len(train_sentences) // batch_size) * 3  # 3 epochs
+optimizer = tf.keras.optimizers.AdamW(
+    learning_rate=create_cosine_schedule(
+        initial_lr=1e-4,
+        min_lr=1e-6,
+        warmup_steps=2000,
+        total_steps=total_steps
+    ),
     beta_1=0.9,
     beta_2=0.95,
     epsilon=1e-8,
+    weight_decay=0.01,
     clipnorm=1.0
 )
 
 # 모델 컴파일
 model.compile(
     optimizer=optimizer,
-    loss=masked_loss,
+    loss=improved_masked_loss,
     metrics=[
-        masked_accuracy,
-        masked_perplexity,
-        masked_top5_accuracy,
-        token_level_loss
+        improved_masked_accuracy,
+        improved_masked_perplexity,
+        improved_top5_accuracy
     ]
 )
 
 # 더미 인풋으로 모델 초기화
-dummy_input = np.zeros((1, max_len), dtype=np.int32)
+dummy_input = tf.zeros((1, max_len), dtype=tf.int32)
 model(dummy_input)
 model.summary()
 
-# 학습 시작
+# ======================= 콜백 설정 ======================
+callbacks = [
+    tf.keras.callbacks.ReduceLROnPlateau(
+        monitor='loss',
+        factor=0.5,
+        patience=2,
+        min_lr=1e-7,
+        verbose=1
+    ),
+    tf.keras.callbacks.EarlyStopping(
+        monitor='loss',
+        patience=5,
+        restore_best_weights=True,
+        verbose=1
+    )
+]
+
+# ======================= 학습 시작 ======================
+print("🚀 학습 시작!")
 history = model.fit(
     dataset,
-    epochs=1,
-    steps_per_epoch = encoded_inputs.shape[0] // batch_size,
+    epochs=3,
+    steps_per_epoch=len(train_sentences) // batch_size,
+    callbacks=callbacks,
     verbose=1
 )
 
-# 가중치 저장
-model.save_weights("Cobra.weights.h5")
-print("모델 가중치 저장 완료!")
-from google.colab import files
-files.download('Cobra.weights.h5')  # 여기에 다운로드할 파일명을 넣어줘
+# ======================= 모델 저장 ======================
+model.save_weights("ImprovedCobra.weights.h5")
+print("✅ 개선된 모델 가중치 저장 완료!")
+
+# Colab 다운로드 (필요시)
+try:
+    from google.colab import files
+    files.download('ImprovedCobra.weights.h5')
+except:
+    print("Colab 환경이 아닙니다. 로컬에 저장되었습니다.")
 
 
-def generate_text_topp(model, prompt, max_len=100, max_gen=98, p=0.9, temperature=0.8, min_len=20):
+# ======================= 개선된 생성 함수 ======================
+def advanced_generate_text(
+    model, 
+    prompt, 
+    max_len=256, 
+    max_gen=200, 
+    temperature=0.8,
+    top_p=0.9,
+    top_k=50,
+    repetition_penalty=1.1,
+    min_len=20
+):
+    """고급 텍스트 생성 함수"""
+    
     model_input = text_to_ids(f"<start> {prompt} <sep>")
     model_input = model_input[:max_len]
     generated = list(model_input)
+    
+    # 반복 방지를 위한 n-gram 추적
+    seen_ngrams = set()
+    ngram_size = 4
+    
     for step in range(max_gen):
+        # 입력 준비
         if len(generated) > max_len:
             input_seq = generated[-max_len:]
         else:
             input_seq = generated
-        input_padded = np.pad(input_seq, (0, max_len - len(input_seq)), constant_values=pad_id)
+            
+        input_padded = np.pad(
+            input_seq, 
+            (0, max_len - len(input_seq)), 
+            constant_values=pad_id
+        )
         input_tensor = tf.convert_to_tensor([input_padded])
+        
+        # 예측
         logits = model(input_tensor, training=False)
         next_token_logits = logits[0, len(input_seq) - 1].numpy()
-        next_token_logits[end_id] -= 5.0
+        
+        # 반복 페널티 적용
+        for i, token_id in enumerate(generated[-50:]):  # 최근 50개 토큰에 페널티
+            if token_id < len(next_token_logits):
+                next_token_logits[token_id] /= repetition_penalty
+        
+        # 특수 토큰 조정
         next_token_logits[pad_id] -= 10.0
-        probs = tf.nn.softmax(next_token_logits / temperature).numpy()
+        if len(generated) < min_len:
+            next_token_logits[end_id] -= 5.0
+            
+        # 온도 적용
+        next_token_logits = next_token_logits / temperature
+        
+        # Top-k 필터링
+        if top_k > 0:
+            top_k_indices = np.argpartition(next_token_logits, -top_k)[-top_k:]
+            top_k_logits = next_token_logits[top_k_indices]
+            filtered_logits = np.full_like(next_token_logits, -np.inf)
+            filtered_logits[top_k_indices] = top_k_logits
+            next_token_logits = filtered_logits
+        
+        # Top-p 필터링
+        probs = tf.nn.softmax(next_token_logits).numpy()
         sorted_indices = np.argsort(probs)[::-1]
         sorted_probs = probs[sorted_indices]
         cumulative_probs = np.cumsum(sorted_probs)
-        cutoff = np.searchsorted(cumulative_probs, p)
+        
+        cutoff = np.searchsorted(cumulative_probs, top_p)
         top_indices = sorted_indices[:cutoff + 1]
         top_probs = sorted_probs[:cutoff + 1]
         top_probs /= np.sum(top_probs)
+        
+        # 토큰 선택
         next_token_id = np.random.choice(top_indices, p=top_probs)
+        
+        # N-gram 반복 체크
+        if len(generated) >= ngram_size:
+            current_ngram = tuple(generated[-(ngram_size-1):] + [next_token_id])
+            if current_ngram in seen_ngrams:
+                # 반복되는 n-gram이면 다른 토큰 선택
+                remaining_indices = [idx for idx in top_indices if idx != next_token_id]
+                if remaining_indices:
+                    remaining_probs = probs[remaining_indices]
+                    remaining_probs /= np.sum(remaining_probs)
+                    next_token_id = np.random.choice(remaining_indices, p=remaining_probs)
+            seen_ngrams.add(current_ngram)
+        
+        # 종료 조건
         if next_token_id == end_id and len(generated) >= min_len:
             break
+            
         generated.append(int(next_token_id))
+    
     return ids_to_text(generated)
 
-print("\n\n===== 생성 결과 =====")  
-print(generate_text_topp(model, "안녕", p=0.9))
+
+# ======================= 테스트 ======================
+print("\n\n===== 개선된 모델 생성 결과 =====")
+test_prompts = [
+    "안녕하세요",
+    "파이썬으로 웹 크롤링을 하려면",
+    "건강한 식단을 위한 조언",
+    "인공지능의 미래는"
+]
+
+for prompt in test_prompts:
+    print(f"\n프롬프트: {prompt}")
+    result = advanced_generate_text(
+        model, 
+        prompt, 
+        temperature=0.7,
+        top_p=0.9,
+        repetition_penalty=1.1
+    )
+    print(f"응답: {result}")
+    print("-" * 50)
