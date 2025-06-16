@@ -342,29 +342,33 @@ from google.colab import files
 files.download('Cobra.weights.h5')  # 여기에 다운로드할 파일명을 넣어줘
 
 
+import tensorflow as tf
+import numpy as np
+
+# Assuming these are defined elsewhere in your code:
+# text_to_ids, ids_to_text, pad_id, end_id, model
+
 def advanced_generate_text(
     model, 
     prompt, 
-    max_len=256, 
-    max_gen=200, 
+    max_len=256,   # Keep max_len from original advanced_generate_text
+    max_gen=200,   # Keep max_gen from original advanced_generate_text
     temperature=0.8,
-    top_p=0.9,
-    top_k=50,
-    repetition_penalty=1.1,
-    min_len=20
+    top_p=0.9,     # Use 'p' as top_p for consistency with generate_text_topp
+    repetition_penalty=1.1, # Keep repetition_penalty from original advanced_generate_text
+    min_len=20     # Keep min_len from original advanced_generate_text
 ):
-    """고급 텍스트 생성 함수"""
+    """
+    고급 텍스트 생성 함수를 generate_text_topp 함수의 핵심 로직과 유사하게 간소화한 버전.
+    top_k 필터링 및 n-gram 반복 방지 로직을 제거하고 top_p 샘플링에 집중합니다.
+    """
     
     model_input = text_to_ids(f"<start> {prompt} <sep>")
     model_input = model_input[:max_len]
     generated = list(model_input)
     
-    # 반복 방지를 위한 n-gram 추적
-    seen_ngrams = set()
-    ngram_size = 4
-    
     for step in range(max_gen):
-        # 입력 준비
+        # 입력 준비 (generate_text_topp와 동일)
         if len(generated) > max_len:
             input_seq = generated[-max_len:]
         else:
@@ -377,58 +381,40 @@ def advanced_generate_text(
         )
         input_tensor = tf.convert_to_tensor([input_padded])
         
-        # 예측
+        # 예측 (generate_text_topp와 동일)
         logits = model(input_tensor, training=False)
         next_token_logits = logits[0, len(input_seq) - 1].numpy()
         
-        # 반복 페널티 적용
+        # 반복 페널티 적용 (advanced_generate_text의 유용한 기능이므로 유지)
+        # generate_text_topp에는 없지만, 텍스트 품질을 위해 유지합니다.
         for i, token_id in enumerate(generated[-50:]):  # 최근 50개 토큰에 페널티
             if token_id < len(next_token_logits):
                 next_token_logits[token_id] /= repetition_penalty
         
-        # 특수 토큰 조정
+        # 특수 토큰 조정 (generate_text_topp와 유사하게 조정)
         next_token_logits[pad_id] -= 10.0
+        # min_len 조건에 따른 end_id 조정은 advanced_generate_text의 논리 유지
         if len(generated) < min_len:
-            next_token_logits[end_id] -= 5.0
+            next_token_logits[end_id] -= 5.0 # 이 부분은 generate_text_topp에 있었지만,
+                                            # advanced_generate_text의 min_len과 더 잘 맞음
             
-        # 온도 적용
-        next_token_logits = next_token_logits / temperature
-        
-        # Top-k 필터링
-        if top_k > 0:
-            top_k_indices = np.argpartition(next_token_logits, -top_k)[-top_k:]
-            top_k_logits = next_token_logits[top_k_indices]
-            filtered_logits = np.full_like(next_token_logits, -np.inf)
-            filtered_logits[top_k_indices] = top_k_logits
-            next_token_logits = filtered_logits
-        
-        # Top-p 필터링
-        probs = tf.nn.softmax(next_token_logits).numpy()
+        # 온도 적용 및 Top-p 필터링 (generate_text_topp의 핵심 로직)
+        probs = tf.nn.softmax(next_token_logits / temperature).numpy()
         sorted_indices = np.argsort(probs)[::-1]
         sorted_probs = probs[sorted_indices]
         cumulative_probs = np.cumsum(sorted_probs)
         
-        cutoff = np.searchsorted(cumulative_probs, top_p)
+        cutoff = np.searchsorted(cumulative_probs, top_p) # top_p 파라미터 사용
         top_indices = sorted_indices[:cutoff + 1]
         top_probs = sorted_probs[:cutoff + 1]
+        
+        # 확률 정규화 (generate_text_topp와 동일)
         top_probs /= np.sum(top_probs)
         
-        # 토큰 선택
+        # 토큰 선택 (generate_text_topp와 동일)
         next_token_id = np.random.choice(top_indices, p=top_probs)
         
-        # N-gram 반복 체크
-        if len(generated) >= ngram_size:
-            current_ngram = tuple(generated[-(ngram_size-1):] + [next_token_id])
-            if current_ngram in seen_ngrams:
-                # 반복되는 n-gram이면 다른 토큰 선택
-                remaining_indices = [idx for idx in top_indices if idx != next_token_id]
-                if remaining_indices:
-                    remaining_probs = probs[remaining_indices]
-                    remaining_probs /= np.sum(remaining_probs)
-                    next_token_id = np.random.choice(remaining_indices, p=remaining_probs)
-            seen_ngrams.add(current_ngram)
-        
-        # 종료 조건
+        # 종료 조건 (generate_text_topp와 동일)
         if next_token_id == end_id and len(generated) >= min_len:
             break
             
@@ -438,13 +424,16 @@ def advanced_generate_text(
 
 
 # ======================= 테스트 ======================
-print("\n\n===== 개선된 모델 생성 결과 =====")
+print("\n\n===== 간소화된 모델 생성 결과 =====")
 test_prompts = [
     "안녕하세요",
     "파이썬으로 웹 크롤링을 하려면",
     "건강한 식단을 위한 조언",
     "인공지능의 미래는"
 ]
+
+
+model = MockModel() # Instantiate your actual model here
 
 for prompt in test_prompts:
     print(f"\n프롬프트: {prompt}")
