@@ -138,23 +138,7 @@ class SwiGLUFFN(tf.keras.layers.Layer):
         return self.down_proj(gate * up)
 
 
-# ======================= RoPE ==========================
-def apply_rope(x):
-    seq_len = tf.shape(x)[1]
-    dim = tf.shape(x)[2]
-    half_dim = dim // 2
 
-    position = tf.cast(tf.range(seq_len), tf.float32)  # (T,)  <-- 이게 핵심!
-    freq = tf.pow(10000.0, -tf.range(half_dim, dtype=tf.float32) / tf.cast(half_dim, tf.float32))  # (D/2,)
-    angles = tf.einsum('i,j->ij', position, freq)  # (T, D/2)
-
-    sin = tf.sin(angles)[None, :, :]  # (1, T, D/2)
-    cos = tf.cos(angles)[None, :, :]  # (1, T, D/2)
-
-    x1 = x[:, :, :half_dim]
-    x2 = x[:, :, half_dim:]
-    x_rot = tf.concat([x1 * cos - x2 * sin, x1 * sin + x2 * cos], axis=-1)
-    return x_rot
 
 # ==================== RealMambaCore =====================
 class RealMambaCore(tf.keras.layers.Layer):
@@ -263,7 +247,6 @@ class CobraModel(tf.keras.Model):
 
     def call(self, x, training=False):
         x = self.token_embedding(x)
-        x = apply_rope(x)
 
         for block in self.blocks:
             x = block(x, training=training)
