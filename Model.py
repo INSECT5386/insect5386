@@ -201,7 +201,7 @@ class RealMambaCore(tf.keras.layers.Layer):
         y = self.C * y + self.D * u
 
         y = self.norm(y)
-        y = ffn(y)
+        y = self.ffn(y)
         y = self.output_proj(y)
 
         return y
