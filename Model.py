@@ -352,68 +352,48 @@ def advanced_generate_text_yield(
     repetition_penalty=1.1,
     min_len=20
 ):
-    """
-    고급 텍스트 생성 함수를 generate_text_topp와 유사하게 간소화한 버전이며,
-    각 생성된 토큰을 yield를 통해 순차적으로 반환합니다.
-    """
-    
-    # 초기 입력 처리
     model_input = text_to_ids(f"<start> {prompt} <sep>")
     model_input = model_input[:max_len]
     generated = list(model_input)
     
     for step in range(max_gen):
-        # 입력 시퀀스 관리
         if len(generated) > max_len:
             input_seq = generated[-max_len:]
         else:
             input_seq = generated
 
-        input_padded = np.pad(
-            input_seq, 
-            (0, max_len - len(input_seq)), 
-            constant_values=pad_id
-        )
+        input_padded = np.pad(input_seq, (0, max_len - len(input_seq)), constant_values=pad_id)
         input_tensor = tf.convert_to_tensor([input_padded])
-        
-        # 예측 수행
+
         logits = model(input_tensor, training=False)
-        next_token_logits = logits[0, len(input_seq) - 1].numpy()
-        
-        # 반복 페널티 적용
-        for i, token_id in enumerate(generated[-50:]):  # 최근 50개 토큰에 페널티
+        next_token_logits = logits[0, len(input_seq)-1].numpy()
+
+        # 반복 패널티 적용
+        for i, token_id in enumerate(generated[-50:]):
             if token_id < len(next_token_logits):
                 next_token_logits[token_id] /= repetition_penalty
-        
-        # 특수 토큰 보정
+
         next_token_logits[pad_id] -= 10.0
         if len(generated) < min_len:
             next_token_logits[end_id] -= 5.0
-            
-        # 온도 적용 및 Top-p 샘플링
+
         probs = tf.nn.softmax(next_token_logits / temperature).numpy()
         sorted_indices = np.argsort(probs)[::-1]
         sorted_probs = probs[sorted_indices]
         cumulative_probs = np.cumsum(sorted_probs)
-        
+
         cutoff = np.searchsorted(cumulative_probs, top_p)
         top_indices = sorted_indices[:cutoff + 1]
         top_probs = sorted_probs[:cutoff + 1]
-        
-        # 확률 정규화
         top_probs /= np.sum(top_probs)
-        
-        # 다음 토큰 선택
+
         next_token_id = np.random.choice(top_indices, p=top_probs)
-        
-        # 종료 조건 체크
+
         if next_token_id == end_id and len(generated) >= min_len:
             break
-        
-        # 토큰 추가 및 yield
-        generated.append(int(next_token_id))
-        yield ids_to_text([next_token_id])  # 하나의 토큰을 string으로 반환
 
+        generated.append(int(next_token_id))
+        yield int(next_token_id)  # ID만 yield
 
 def decode_sp_tokens(tokens):
     """
@@ -431,44 +411,25 @@ def decode_sp_tokens(tokens):
 
 
 def generate_full_text(model, prompt, decode_fn=None, **kwargs):
-    """
-    advanced_generate_text_yield 제너레이터를 소비하여
-    전체 텍스트 응답을 반환합니다.
-    
-    Args:
-        model: 텍스트 생성 모델
-        prompt (str): 입력 프롬프트
-        decode_fn (function): 토큰 디코딩 함수 (예: decode_sp_tokens)
-        **kwargs: advanced_generate_text_yield에 전달할 추가 파라미터
-    
-    Returns:
-        str: 생성된 전체 텍스트
-    """
     generator = advanced_generate_text_yield(model, prompt, **kwargs)
 
-    tokens = []
-    for token in generator:
-        tokens.append(token)
+    token_ids = []
+    for token_id in generator:
+        token_ids.append(token_id)
 
-    full_text = ''.join(tokens)
+    # 전체 디코딩
+    full_text = ids_to_text(token_ids)
 
     if decode_fn:
-        return decode_fn(full_text.split())  # split()으로 토큰 단위 복원 가능
+        return decode_fn([t for t in full_text])  # 필요시 토큰 단위 처리
     else:
         return full_text
 
-prompt = "안녕하세요"
 response = generate_full_text(
     model,
-    prompt,
-    decode_fn=decode_sp_tokens,
-    max_len=256,
-    max_gen=200,
-    temperature=0.8,
-    top_p=0.9,
-    repetition_penalty=1.1,
-    min_len=20
+    "안녕하세요",
+    decode_fn=lambda x: ''.join(x).replace('▁', ' ').strip(),
+    max_gen=100
 )
 
-print(f"프롬프트: {prompt}")
-print(f"응답: {response}")
+print(response)
