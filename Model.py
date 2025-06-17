@@ -416,22 +416,59 @@ def advanced_generate_text(
 
     # 전체 결과는 필요시 별도로 반환하거나 외부에서 모으도록 함
 
-print("\n\n===== 간소화된 모델 생성 결과 =====")
-test_prompts = [
-    "안녕하세요",
-    "파이썬으로 웹 크롤링을 하려면",
-    "건강한 식단을 위한 조언",
-    "인공지능의 미래는"
-]
+def decode_sp_tokens(tokens):
+    """
+    SentencePiece 기반의 토큰 리스트를 사람이 읽을 수 있는 텍스트로 디코딩합니다.
+    '▁' (underscore)는 공백으로 대체하고, 전체 문자열은 양쪽 공백을 제거합니다.
+    
+    Args:
+        tokens (list of str): 각 요소가 하나의 토큰인 리스트
+        
+    Returns:
+        str: 디코딩된 텍스트
+    """
+    text = ''.join(tokens).replace('▁', ' ').strip()
+    return text
+def generate_full_text(model, prompt, decode_fn=None, **kwargs):
+    """
+    advanced_generate_text_yield 제너레이터를 소비하여
+    전체 텍스트 응답을 반환합니다.
+    
+    Args:
+        model: 텍스트 생성 모델
+        prompt (str): 입력 프롬프트
+        decode_fn (function): 토큰 디코딩 함수 (예: decode_sp_tokens)
+        **kwargs: advanced_generate_text_yield에 전달할 추가 파라미터
+    
+    Returns:
+        str: 생성된 전체 텍스트
+    """
+    generator = advanced_generate_text(model, prompt, **kwargs)
+    
+    tokens = []
+    for token in generator:
+        tokens.append(token)
+    
+    if decode_fn:
+        return decode_fn(tokens)
+    else:
+        return ''.join(tokens)
 
-for prompt in test_prompts:
-    print(f"\n프롬프트: {prompt}")
-    result = advanced_generate_text(
-        model, 
-        prompt, 
-        temperature=0.7,
-        top_p=0.9,
-        repetition_penalty=1.1
-    )
-    print(f"응답: {result}")
-    print("-" * 50)
+# 예시 프롬프트
+prompt = "안녕하세요"
+
+# 전체 텍스트 생성
+response = generate_full_text(
+    model,
+    prompt,
+    decode_fn=decode_sp_tokens,
+    max_len=256,
+    max_gen=200,
+    temperature=0.8,
+    top_p=0.9,
+    repetition_penalty=1.1,
+    min_len=20
+)
+
+print(f"프롬프트: {prompt}")
+print(f"응답: {response}")
