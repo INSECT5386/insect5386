@@ -344,29 +344,31 @@ files.download('Cobra.weights.h5')  # 여기에 다운로드할 파일명을 넣
 def advanced_generate_text(
     model, 
     prompt, 
-    max_len=256,   # Keep max_len from original advanced_generate_text
-    max_gen=200,   # Keep max_gen from original advanced_generate_text
+    max_len=256, 
+    max_gen=200, 
     temperature=0.8,
-    top_p=0.9,     # Use 'p' as top_p for consistency with generate_text_topp
-    repetition_penalty=1.1, # Keep repetition_penalty from original advanced_generate_text
-    min_len=20     # Keep min_len from original advanced_generate_text
+    top_p=0.9,
+    repetition_penalty=1.1,
+    min_len=20
 ):
     """
-    고급 텍스트 생성 함수를 generate_text_topp 함수의 핵심 로직과 유사하게 간소화한 버전.
-    top_k 필터링 및 n-gram 반복 방지 로직을 제거하고 top_p 샘플링에 집중합니다.
+    고급 텍스트 생성 함수를 generate_text_topp와 유사하게 간소화한 버전이며,
+    각 생성된 토큰을 yield를 통해 순차적으로 반환합니다.
     """
     
+    # 초기 입력 처리
     model_input = text_to_ids(f"<start> {prompt} <sep>")
     model_input = model_input[:max_len]
     generated = list(model_input)
     
+    # 최초의 생성된 토큰 (프롬프트 + 시작 토큰)은 yield하지 않음 (필요시 추가 가능)
     for step in range(max_gen):
-        # 입력 준비 (generate_text_topp와 동일)
+        # 입력 시퀀스 관리
         if len(generated) > max_len:
             input_seq = generated[-max_len:]
         else:
             input_seq = generated
-            
+
         input_padded = np.pad(
             input_seq, 
             (0, max_len - len(input_seq)), 
@@ -374,46 +376,45 @@ def advanced_generate_text(
         )
         input_tensor = tf.convert_to_tensor([input_padded])
         
-        # 예측 (generate_text_topp와 동일)
+        # 예측 수행
         logits = model(input_tensor, training=False)
         next_token_logits = logits[0, len(input_seq) - 1].numpy()
         
-        # 반복 페널티 적용 (advanced_generate_text의 유용한 기능이므로 유지)
-        # generate_text_topp에는 없지만, 텍스트 품질을 위해 유지합니다.
+        # 반복 페널티 적용
         for i, token_id in enumerate(generated[-50:]):  # 최근 50개 토큰에 페널티
             if token_id < len(next_token_logits):
                 next_token_logits[token_id] /= repetition_penalty
         
-        # 특수 토큰 조정 (generate_text_topp와 유사하게 조정)
+        # 특수 토큰 보정
         next_token_logits[pad_id] -= 10.0
-        # min_len 조건에 따른 end_id 조정은 advanced_generate_text의 논리 유지
         if len(generated) < min_len:
-            next_token_logits[end_id] -= 5.0 # 이 부분은 generate_text_topp에 있었지만,
-                                            # advanced_generate_text의 min_len과 더 잘 맞음
+            next_token_logits[end_id] -= 5.0
             
-        # 온도 적용 및 Top-p 필터링 (generate_text_topp의 핵심 로직)
+        # 온도 적용 및 Top-p 샘플링
         probs = tf.nn.softmax(next_token_logits / temperature).numpy()
         sorted_indices = np.argsort(probs)[::-1]
         sorted_probs = probs[sorted_indices]
         cumulative_probs = np.cumsum(sorted_probs)
         
-        cutoff = np.searchsorted(cumulative_probs, top_p) # top_p 파라미터 사용
+        cutoff = np.searchsorted(cumulative_probs, top_p)
         top_indices = sorted_indices[:cutoff + 1]
         top_probs = sorted_probs[:cutoff + 1]
         
-        # 확률 정규화 (generate_text_topp와 동일)
+        # 확률 정규화
         top_probs /= np.sum(top_probs)
         
-        # 토큰 선택 (generate_text_topp와 동일)
+        # 다음 토큰 선택
         next_token_id = np.random.choice(top_indices, p=top_probs)
         
-        # 종료 조건 (generate_text_topp와 동일)
+        # 종료 조건 체크
         if next_token_id == end_id and len(generated) >= min_len:
             break
-            
+        
+        # 토큰 추가 및 yield
         generated.append(int(next_token_id))
-    
-    return ids_to_text(generated)
+        yield ids_to_text([next_token_id])  # 하나의 토큰만 반환
+
+    # 전체 결과는 필요시 별도로 반환하거나 외부에서 모으도록 함
 
 print("\n\n===== 간소화된 모델 생성 결과 =====")
 test_prompts = [
