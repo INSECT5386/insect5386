@@ -341,7 +341,8 @@ print("모델 가중치 저장 완료!")
 from google.colab import files
 files.download('Cobra.weights.h5')  # 여기에 다운로드할 파일명을 넣어줘
 
-def advanced_generate_text(
+
+def advanced_generate_text_yield(
     model, 
     prompt, 
     max_len=256, 
@@ -361,7 +362,6 @@ def advanced_generate_text(
     model_input = model_input[:max_len]
     generated = list(model_input)
     
-    # 최초의 생성된 토큰 (프롬프트 + 시작 토큰)은 yield하지 않음 (필요시 추가 가능)
     for step in range(max_gen):
         # 입력 시퀀스 관리
         if len(generated) > max_len:
@@ -412,9 +412,8 @@ def advanced_generate_text(
         
         # 토큰 추가 및 yield
         generated.append(int(next_token_id))
-        yield ids_to_text([next_token_id])  # 하나의 토큰만 반환
+        yield ids_to_text([next_token_id])  # 하나의 토큰을 string으로 반환
 
-    # 전체 결과는 필요시 별도로 반환하거나 외부에서 모으도록 함
 
 def decode_sp_tokens(tokens):
     """
@@ -429,6 +428,8 @@ def decode_sp_tokens(tokens):
     """
     text = ''.join(tokens).replace('▁', ' ').strip()
     return text
+
+
 def generate_full_text(model, prompt, decode_fn=None, **kwargs):
     """
     advanced_generate_text_yield 제너레이터를 소비하여
@@ -443,21 +444,20 @@ def generate_full_text(model, prompt, decode_fn=None, **kwargs):
     Returns:
         str: 생성된 전체 텍스트
     """
-    generator = advanced_generate_text(model, prompt, **kwargs)
-    
+    generator = advanced_generate_text_yield(model, prompt, **kwargs)
+
     tokens = []
     for token in generator:
         tokens.append(token)
-    
+
+    full_text = ''.join(tokens)
+
     if decode_fn:
-        return decode_fn(tokens)
+        return decode_fn(full_text.split())  # split()으로 토큰 단위 복원 가능
     else:
-        return ''.join(tokens)
+        return full_text
 
-# 예시 프롬프트
 prompt = "안녕하세요"
-
-# 전체 텍스트 생성
 response = generate_full_text(
     model,
     prompt,
