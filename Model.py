@@ -149,7 +149,7 @@ class RealMambaCore(layers.Layer):
 
         def step(state, inputs):
             delta_i, B_i, C_i = inputs  # (B, N)
-            A_d = tf.exp(A * delta_i)       # (N,)
+            A_d = tf.expand_dims(tf.exp(A * delta_i), axis=0)  # (1, N)       # (N,)
             B_d = delta_i * B_i             # (B, N)
             state = A_d * state + B_d
             y = tf.reduce_sum(state * C_i, axis=-1)  # (B,)
