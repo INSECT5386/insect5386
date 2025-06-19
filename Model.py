@@ -151,12 +151,12 @@ class RealMambaCore(layers.Layer):
         def step(state, inputs):
             delta_i, B_i, C_i = inputs
 
-            # Shape 통일
+        # Shape 통일
             delta_i = tf.reshape(delta_i, (batch_size, -1))  # (B, N)
             B_i = tf.reshape(B_i, (batch_size, -1))          # (B, N)
             C_i = tf.reshape(C_i, (batch_size, -1))          # (B, N)
 
-            # Discretization
+        # Discretization
             A_d = tf.exp(A * delta_i)                        # (B, N)
             state = A_d * state + B_i                        # (B, N)
             y = tf.reduce_sum(state * C_i, axis=-1)          # (B,)
@@ -172,13 +172,14 @@ class RealMambaCore(layers.Layer):
         Cs = tf.unstack(C, axis=1)
 
         states, ys = tf.scan(
-            fn=lambda s, i: step(s, (deltas[i], Bs[i], Cs[i])),
-            elems=tf.range(seq_len),
-            initializer=(initial_state, initial_y),
+        fn=lambda s, i: step(s, (deltas[i], Bs[i], Cs[i])),
+        elems=tf.range(seq_len),
+        initializer=(initial_state, initial_y),
+        parallel_iterations=1  # 👈 매우 중요! 안정성 향상
         )
 
-        # ys: list of (B, 1) → (B, T)
-        y = tf.concat(tf.unstack(ys, axis=0), axis=1)  # (B, T)
+    # ys: list of (B, 1) → (B, T)
+        y = tf.concat(ys, axis=1)  # (B, T)
         return y
 
     def call(self, x):
@@ -445,5 +446,4 @@ response = generate_full_text(
 )
 
 print(response)
-
 
