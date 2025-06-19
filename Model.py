@@ -148,24 +148,37 @@ class RealMambaCore(layers.Layer):
     def _selective_scan(self, x, delta, A, B, C):
         batch_size, seq_len, _ = tf.shape(x)
 
-        def step(state, inputs):
-            delta_i, B_i, C_i = inputs
+        def body(t, state, outputs):
+            delta_i = delta[:, t, :]   # (B, N)
+            B_i = B[:, t, :]           # (B, N)
+            C_i = C[:, t, :]           # (B, N)
 
-        # Shape 통일
-            delta_i = tf.reshape(delta_i, (batch_size, -1))  # (B, N)
-            B_i = tf.reshape(B_i, (batch_size, -1))          # (B, N)
-            C_i = tf.reshape(C_i, (batch_size, -1))          # (B, N)
+            A_d = tf.exp(A * delta_i)  # (B, N)
+            state_new = A_d * state + B_i  # (B, N)
+            y = tf.reduce_sum(state_new * C_i, axis=-1)  # (B,)
+            outputs = outputs.write(t, tf.expand_dims(y, axis=1))  # (B, 1)
 
-        # Discretization
-            A_d = tf.exp(A * delta_i)                        # (B, N)
-            state = A_d * state + B_i                        # (B, N)
-            y = tf.reduce_sum(state * C_i, axis=-1)          # (B,)
-            y = tf.reshape(y, (batch_size, 1))               # (B, 1)
-            y_expanded = tf.tile(y, [1, self.state_dim])     # (B, N)
+            return t + 1, state_new, outputs
 
-    # state와 y를 하나로 합침
-            combined = tf.concat([state, y_expanded], axis=0)  # (2B, N) → 안 좋은 방법...
-            return state, y
+        def cond(t, state, outputs):
+            return t < seq_len
+
+        initial_t = tf.constant(0)
+        initial_state = tf.zeros((batch_size, self.state_dim), dtype=x.dtype)
+        initial_outputs = tf.TensorArray(dtype=x.dtype, size=seq_len)
+
+        _, final_state, outputs = tf.while_loop(
+        cond=cond,
+        body=body,
+        loop_vars=(initial_t, initial_state, initial_outputs),
+        parallel_iterations=1
+        )
+
+        y = outputs.stack()  # (T, B, 1)
+        y = tf.transpose(y, [1, 0, 2])  # (B, T, 1)
+        y = tf.squeeze(y, axis=-1)  # (B, T)
+
+        return y
 
         initial_state = tf.zeros((batch_size, self.state_dim), dtype=x.dtype)
         initial_y = tf.zeros((batch_size, 1))
