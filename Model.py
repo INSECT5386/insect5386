@@ -133,99 +133,92 @@ class SimpleFFN(tf.keras.layers.Layer):
         up = self.up_proj(x)
         return self.down_proj(gate * up)
 
-class RealMambaCore(tf.keras.layers.Layer):
-    def __init__(self, hidden_dim, state_dim=None):
+
+import tensorflow as tf
+from tensorflow.keras import layers, Model, initializers
+
+class RealMambaCore(layers.Layer):
+    def __init__(self, hidden_dim, state_dim=16):
         super().__init__()
         self.hidden_dim = hidden_dim
-        self.state_dim = state_dim or hidden_dim  # 기본값으로 hidden_dim 사용
-        
-        self.ffn = SimpleFFN(hidden_dim)  # 또는 'tanh'
+        self.state_dim = state_dim
 
-        self.gate_proj = layers.Dense(hidden_dim)
-        self.input_proj = layers.Dense(hidden_dim)
+        # Input projection
+        self.in_proj = layers.Dense(2 * hidden_dim)
 
-        # A: (hidden_dim,)
-        self.A = self.add_weight(shape=(hidden_dim,),
-                                 initializer=tf.keras.initializers.RandomNormal(mean=-0.5, stddev=0.1),
-                                 trainable=True, name="A")
+        # SSM parameters
+        self.A_log = self.add_weight(
+            shape=(state_dim,),
+            initializer=initializers.RandomNormal(mean=-5, stddev=0.1),
+            trainable=True,
+            name="A_log"
+        )
 
-        # B: (state_dim,)
-        self.B = self.add_weight(shape=(self.state_dim,),
-                                 initializer='random_normal',
-                                 trainable=True, name="B")
+        self.D = self.add_weight(
+            shape=(hidden_dim,),
+            initializer='ones',
+            trainable=True,
+            name="D"
+        )
 
-        # C: (state_dim,)
-        self.C = self.add_weight(shape=(self.state_dim,),
-                                 initializer='random_normal',
-                                 trainable=True, name="C")
+        # B, C: (H, N)
+        self.B_proj = layers.Dense(state_dim, use_bias=False)
+        self.C_proj = layers.Dense(state_dim, use_bias=False)
 
-        self.D = self.add_weight(shape=(hidden_dim,),
-                                 initializer='zeros',
-                                 trainable=True, name="D")
+        # Output projection
+        self.out_proj = layers.Dense(hidden_dim)
 
-        self.norm = layers.LayerNormalization()
-        self.output_proj = layers.Dense(hidden_dim)
+    def _ssm(self, x):
+        A = -tf.exp(self.A_log)  # (N,)
+        B = self.B_proj(x)       # (B, T, N)
+        C = self.C_proj(x)       # (B, T, N)
 
-    def fft_convolve(self, u_t, kernel_t, T):
-        pad_len = T - 1
-        seq_len = T + pad_len
+        delta = tf.nn.softplus(self.D)  # (H,) or (N,)
+        delta_tiled = tf.reshape(delta, [1, 1, -1])  # (1, 1, N)
 
-        fft_len_float = tf.math.ceil(tf.math.log(tf.cast(seq_len, tf.float32)) / tf.math.log(2.0))
-        fft_len = tf.cast(2 ** fft_len_float, tf.int32)
+    # Discretized A_d = exp(A * delta)
+        A_d = tf.exp(A[None, None, :] * delta_tiled)  # (1, 1, N)
 
-        u_padded = tf.pad(u_t, [[0, 0], [0, 0], [pad_len, fft_len - seq_len]])
-        K_padded = tf.pad(kernel_t, [[0, 0], [0, fft_len - T]])
+    # B_d = B * delta
+        B_d = B * delta_tiled  # (B, T, N)
 
-        U_f = tf.signal.fft(tf.cast(tf.complex(u_padded, 0.0), tf.complex64))
-        K_f = tf.signal.fft(tf.cast(tf.complex(K_padded, 0.0), tf.complex64))
+        def step(s, inputs):
+            A_d_t, B_d_t = inputs
+            s_new = A_d_t * s + B_d_t
+            return s_new
 
-        Y_f = U_f * tf.expand_dims(K_f, 0)
-        y_full = tf.signal.ifft(Y_f)
-        y_real = tf.math.real(y_full)[..., pad_len:pad_len + T]
+    # Prepare inputs for scan
+        scan_inputs = (A_d[0], B_d)  # (T, N), (B, T, N)
 
-        return y_real
+    # Initial state
+        batch_size = tf.shape(x)[0]
+        initial_state = tf.zeros((batch_size, self.state_dim), dtype=x.dtype)
+
+    # Scan over time
+        states = tf.scan(fn=step, elems=scan_inputs, initializer=initial_state)
+
+    # Output projection using C
+        y = tf.reduce_sum(states * C, axis=-1)  # (B, T)
+        return y
 
     def call(self, x):
-        B = tf.shape(x)[0]
-        T = tf.shape(x)[1]
-        D = self.hidden_dim
-        S = self.state_dim
+        """
+        x: (B, T, D)
+        returns: (B, T, D)
+        """
+        B, T, D = tf.shape(x)[0], tf.shape(x)[1], self.hidden_dim
 
-    # Gating & Projection
-        gate = tf.nn.silu(self.gate_proj(x))  # (B, T, D)
-        x_proj = self.input_proj(x)          # (B, T, D)
-        u = gate * x_proj                     # (B, T, D)
+        # Project input to 2*H
+        xz = self.in_proj(x)
+        x, z = tf.split(xz, 2, axis=-1)
 
-    # A^t: 시간 지남에 따른 decay
-        time_idx = tf.cast(tf.range(T), dtype=self.A.dtype)[:, None]  # (T, 1)
-        A_pow = tf.pow(tf.expand_dims(self.A, 0), time_idx)           # (T, D)
+        # Apply SSM
+        y = self._ssm(x)
 
-    # 커널 생성: K[t, d, s] = A^t[d] * B[s]
-        kernel = tf.einsum('t d, s -> t d s', A_pow, self.B)  # (T, D, S)
-
-    # 입력 텐서 전치: (B, D, T)
-        u_t = tf.transpose(u, [0, 2, 1])
-
-    # 커널 전치: (D, S, T)
-        kernel_t = tf.transpose(kernel, [1, 2, 0])  # (D, S, T)
-
-    # 컨볼루션 대체: u_t (B, D, T) × kernel_t (D, S, T) → (B, D, S)
-        y_states = tf.einsum('b d t, d s t -> b d s', u_t, kernel_t)
-
-    # C 가중합: (B, D, S) × (S,) → (B, D)
-        y = tf.einsum('b d s, s -> b d', y_states, self.C)
-
-    # 다시 시퀀스 형태로 확장 (T 차원 복구): (B, D) → (B, T, D)
-        y = tf.expand_dims(y, axis=1)  # (B, 1, D)
-        y = tf.tile(y, [1, T, 1])      # (B, T, D)
-
-    # Skip connection
-        y = y + self.D * u
-
-    # FFN 및 정규화
-        y = self.norm(y)
-        y = self.ffn(y)
-        y = self.output_proj(y)
+        # Apply nonlinearity and output projection
+        y = y * tf.nn.gelu(z)
+        y = tf.expand_dims(y, axis=-1) * self.D
+        y = self.out_proj(y)
 
         return y
 
