@@ -180,7 +180,7 @@ class RealMambaCore(layers.Layer):
 
         return y
 
-
+    @tf.function
     def call(self, x):
         batch_size, seq_len, _ = tf.shape(x)
 
