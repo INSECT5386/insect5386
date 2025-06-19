@@ -133,26 +133,32 @@ class SimpleFFN(tf.keras.layers.Layer):
         up = self.up_proj(x)
         return self.down_proj(gate * up)
 
-# ==================== RealMambaCore =====================
 class RealMambaCore(tf.keras.layers.Layer):
-    def __init__(self, hidden_dim):
+    def __init__(self, hidden_dim, state_dim=None):
         super().__init__()
         self.hidden_dim = hidden_dim
+        self.state_dim = state_dim or hidden_dim  # 기본값으로 hidden_dim 사용
         
         self.ffn = SimpleFFN(hidden_dim)  # 또는 'tanh'
 
         self.gate_proj = layers.Dense(hidden_dim)
         self.input_proj = layers.Dense(hidden_dim)
 
+        # A: (hidden_dim,)
         self.A = self.add_weight(shape=(hidden_dim,),
                                  initializer=tf.keras.initializers.RandomNormal(mean=-0.5, stddev=0.1),
                                  trainable=True, name="A")
-        self.B = self.add_weight(shape=(hidden_dim,),
+
+        # B: (state_dim,)
+        self.B = self.add_weight(shape=(self.state_dim,),
                                  initializer='random_normal',
                                  trainable=True, name="B")
-        self.C = self.add_weight(shape=(hidden_dim,),
+
+        # C: (state_dim,)
+        self.C = self.add_weight(shape=(self.state_dim,),
                                  initializer='random_normal',
                                  trainable=True, name="C")
+
         self.D = self.add_weight(shape=(hidden_dim,),
                                  initializer='zeros',
                                  trainable=True, name="D")
@@ -179,32 +185,50 @@ class RealMambaCore(tf.keras.layers.Layer):
 
         return y_real
 
-    def call(self, x):
-        B = tf.shape(x)[0]
-        T = tf.shape(x)[1]
-        D = self.hidden_dim
+def call(self, x):
+    B = tf.shape(x)[0]
+    T = tf.shape(x)[1]
+    D = self.hidden_dim
+    S = self.state_dim
 
-        gate = tf.nn.silu(self.gate_proj(x))
-        x_proj = self.input_proj(x)
-        u = gate * x_proj
+    # Gating & Projection
+    gate = tf.nn.silu(self.gate_proj(x))  # (B, T, D)
+    x_proj = self.input_proj(x)          # (B, T, D)
+    u = gate * x_proj                     # (B, T, D)
 
-        time_idx = tf.cast(tf.range(T), dtype=self.A.dtype)[:, None]
-        A_pow = tf.pow(tf.expand_dims(self.A, 0), time_idx)
-        kernel = self.B * A_pow
+    # A^t: 시간 지남에 따른 decay
+    time_idx = tf.cast(tf.range(T), dtype=self.A.dtype)[:, None]  # (T, 1)
+    A_pow = tf.pow(tf.expand_dims(self.A, 0), time_idx)           # (T, D)
 
-        u_t = tf.transpose(u, [0, 2, 1])
-        kernel_t = tf.transpose(kernel, [1, 0])
+    # 커널 생성: K[t, d, s] = A^t[d] * B[s]
+    kernel = tf.einsum('t d, s -> t d s', A_pow, self.B)  # (T, D, S)
 
-        y_real = self.fft_convolve(u_t, kernel_t, T)
-        y = tf.transpose(y_real, [0, 2, 1])
+    # 입력 텐서 전치: (B, D, T)
+    u_t = tf.transpose(u, [0, 2, 1])
 
-        y = self.C * y + self.D * u
+    # 커널 전치: (D, S, T)
+    kernel_t = tf.transpose(kernel, [1, 2, 0])  # (D, S, T)
 
-        y = self.norm(y)
-        y = self.ffn(y)
-        y = self.output_proj(y)
+    # 컨볼루션 대체: u_t (B, D, T) × kernel_t (D, S, T) → (B, D, S)
+    y_states = tf.einsum('b d t, d s t -> b d s', u_t, kernel_t)
 
-        return y
+    # C 가중합: (B, D, S) × (S,) → (B, D)
+    y = tf.einsum('b d s, s -> b d', y_states, self.C)
+
+    # 다시 시퀀스 형태로 확장 (T 차원 복구): (B, D) → (B, T, D)
+    y = tf.expand_dims(y, axis=1)  # (B, 1, D)
+    y = tf.tile(y, [1, T, 1])      # (B, T, D)
+
+    # Skip connection
+    y = y + self.D * u
+
+    # FFN 및 정규화
+    y = self.norm(y)
+    y = self.ffn(y)
+    y = self.output_proj(y)
+
+    return y
+
 
 # ======================= Cobrablock ======================
 class Cobrablock(tf.keras.layers.Layer):
