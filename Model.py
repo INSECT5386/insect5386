@@ -121,7 +121,7 @@ dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 print("✅ TF Dataset 생성 완료!")
 
 import tensorflow as tf
-from tensorflow.keras import layers, initializers
+from tensorflow.keras import layers, initializers, Model
 
 class RealMambaCore(layers.Layer):
     def __init__(self, hidden_dim, state_dim=16, **kwargs):
@@ -139,6 +139,7 @@ class RealMambaCore(layers.Layer):
             trainable=True,
             name="A_log"
         )
+
         # Projections for B, C, delta
         self.B_proj = layers.Dense(state_dim, use_bias=False, name="B_proj")
         self.C_proj = layers.Dense(state_dim, use_bias=False, name="C_proj")
@@ -147,65 +148,62 @@ class RealMambaCore(layers.Layer):
         # Output projection
         self.out_proj = layers.Dense(hidden_dim, name="out_proj")
 
-    def _ssm(self, x):
-
+    def _ssm_parallel(self, x):
+        """
+        Parallelized SSM using cumsum & exp instead of scan.
+        Input: x (B, T, H)
+        Output: y (B, T)
+        """
         A = -tf.exp(self.A_log)  # (N,)
         B = self.B_proj(x)       # (B, T, N)
         C = self.C_proj(x)       # (B, T, N)
         delta = self.delta_proj(x)  # (B, T, N)
-        delta = tf.nn.softplus(delta)  # (B, T, N)
+        delta = tf.nn.softplus(delta)
 
-        A_d = tf.exp(A[None, None, :] * delta)  # (B, T, N)
-        B_d = B * delta  # (B, T, N)
+        batch_size, seq_len = tf.shape(x)[0], tf.shape(x)[1]
 
-    # scan용 inputs 준비: (T, B, N) or (B, T, N) -> scan(fn, elems=(T, ...))
-    # TensorFlow는 기본적으로 시간 축(T)에 대해 scan 수행
-        A_d_t = tf.transpose(A_d, [1, 0, 2])  # (T, B, N)
-        B_d_t = tf.transpose(B_d, [1, 0, 2])  # (T, B, N)
-        C_t = tf.transpose(C, [1, 0, 2])      # (T, B, N)
+        # Reshape A for broadcasting
+        A = tf.reshape(A, [1, 1, -1])  # (1, 1, N)
+        delta_A = delta * A          # (B, T, N)
 
-        def step(s, inputs):
-            A_t, B_t, C_t = inputs  # 각각 (B, N)
-            s_new = A_t * s + B_t
-            return s_new
+        # Cumulative sum over time
+        cumsum_A = tf.cumsum(delta_A, axis=1)  # (B, T, N)
 
-        batch_size = tf.shape(x)[0]
-        initial_state = tf.zeros((batch_size, self.state_dim), dtype=x.dtype)
+        # exp_A_prev: exp(integral up to t-1)
+        exp_A = tf.exp(cumsum_A)
+        exp_A_prev = tf.concat([
+            tf.ones([batch_size, 1, self.state_dim], dtype=x.dtype),
+            exp_A[:, :-1]
+        ], axis=1)  # (B, T, N)
 
-    # scan 실행
-        states = tf.scan(
-            fn=step,
-            elems=(A_d_t, B_d_t, C_t),
-            initializer=initial_state
-        )  # (T, B, N)
+        dB = B * delta * exp_A_prev  # (B, T, N)
+        states = tf.cumsum(dB, axis=1) / exp_A_prev  # (B, T, N)
 
-    # Output 계산: (T, B, N), C_t -> (T, B, N) → element-wise 곱 후 sum
-        y = tf.reduce_sum(states * C_t, axis=-1)  # (T, B)
-        y = tf.transpose(y, [1, 0])  # (B, T)
+        y = tf.reduce_sum(states * C, axis=-1)  # (B, T)
 
         return y
 
     def call(self, x):
+        batch_size, seq_len = tf.shape(x)[0], tf.shape(x)[1]
 
-        batch_size, seq_len, _ = tf.shape(x)[0], tf.shape(x)[1], self.hidden_dim
-
-    # Project input to 2*H
+        # Project input to 2*H
         xz = self.in_proj(x)  # (B, T, 2H)
         x, z = tf.split(xz, 2, axis=-1)  # (B, T, H), (B, T, H)
 
-    # Apply SSM
-        y = self._ssm(x)  # (B, T)
+        # Apply parallel SSM
+        y = self._ssm_parallel(x)  # (B, T)
 
-    # Expand dimension for broadcasting
+        # Expand dimension for broadcasting
         y = tf.expand_dims(y, axis=-1)  # (B, T, 1)
 
-    # Gating & scaling
+        # Gating & scaling
         y = y * tf.nn.gelu(z)  # (B, T, H)
 
-    # Final output projection
+        # Final output projection
         y = self.out_proj(y)  # (B, T, H)
 
         return y
+
 
 # ======================= Cobrablock ======================
 class Cobrablock(tf.keras.layers.Layer):
@@ -230,6 +228,7 @@ class Cobrablock(tf.keras.layers.Layer):
         x = residual + x
 
         return x
+
 
 # ======================= CobraModel ======================
 class CobraModel(tf.keras.Model):
