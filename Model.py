@@ -120,20 +120,6 @@ dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
 print("✅ TF Dataset 생성 완료!")
 
-
-class SimpleFFN(tf.keras.layers.Layer):
-    def __init__(self, dim):
-        super().__init__()
-        self.gate_proj = layers.Dense(dim)
-        self.up_proj = layers.Dense(dim)
-        self.down_proj = layers.Dense(dim)
-
-    def call(self, x):
-        gate = tf.nn.silu(self.gate_proj(x))
-        up = self.up_proj(x)
-        return self.down_proj(gate * up)
-
-
 import tensorflow as tf
 from tensorflow.keras import layers, Model, initializers
 
@@ -142,7 +128,6 @@ class RealMambaCore(layers.Layer):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.state_dim = state_dim
-
         # Input projection
         self.in_proj = layers.Dense(2 * hidden_dim)
 
