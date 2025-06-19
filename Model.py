@@ -144,25 +144,53 @@ class RealMambaCore(tf.keras.layers.Layer):
     def __init__(self, hidden_dim, state_dim=None):
         super().__init__()
         self.hidden_dim = hidden_dim
-        self.state_dim = state_dim or hidden_dim // 2
+        self.state_dim = state_dim or hidden_dim  # 기본값으로 hidden_dim 사용
+        
+        self.ffn = SimpleFFN(hidden_dim)  # 또는 'tanh'
 
-        # A decay
-        self.A_log_decay = self.add_weight(
-            shape=(hidden_dim,),
-            initializer=tf.keras.initializers.RandomNormal(mean=0., stddev=0.1),
-            trainable=True,
-            name="A_log_decay"
-        )
-        self.B = self.add_weight(shape=(self.state_dim,), initializer='random_normal', trainable=True, name="B")
-        self.C = self.add_weight(shape=(self.state_dim,), initializer='random_normal', trainable=True, name="C")
-        self.D = self.add_weight(shape=(hidden_dim,), initializer='zeros', trainable=True, name="D")
+        self.gate_proj = layers.Dense(hidden_dim)
+        self.input_proj = layers.Dense(hidden_dim)
 
-        self.input_proj = tf.keras.layers.Dense(hidden_dim)
-        self.gate_proj = tf.keras.layers.Dense(hidden_dim)
-        self.output_proj = tf.keras.layers.Dense(hidden_dim)
+        # A: (hidden_dim,)
+        self.A = self.add_weight(shape=(hidden_dim,),
+                                 initializer=tf.keras.initializers.RandomNormal(mean=-0.5, stddev=0.1),
+                                 trainable=True, name="A")
 
-        self.norm = tf.keras.layers.LayerNormalization()
-        self.ffn = SimpleFFN(hidden_dim)
+        # B: (state_dim,)
+        self.B = self.add_weight(shape=(self.state_dim,),
+                                 initializer='random_normal',
+                                 trainable=True, name="B")
+
+        # C: (state_dim,)
+        self.C = self.add_weight(shape=(self.state_dim,),
+                                 initializer='random_normal',
+                                 trainable=True, name="C")
+
+        self.D = self.add_weight(shape=(hidden_dim,),
+                                 initializer='zeros',
+                                 trainable=True, name="D")
+
+        self.norm = layers.LayerNormalization()
+        self.output_proj = layers.Dense(hidden_dim)
+
+    def fft_convolve(self, u_t, kernel_t, T):
+        pad_len = T - 1
+        seq_len = T + pad_len
+
+        fft_len_float = tf.math.ceil(tf.math.log(tf.cast(seq_len, tf.float32)) / tf.math.log(2.0))
+        fft_len = tf.cast(2 ** fft_len_float, tf.int32)
+
+        u_padded = tf.pad(u_t, [[0, 0], [0, 0], [pad_len, fft_len - seq_len]])
+        K_padded = tf.pad(kernel_t, [[0, 0], [0, fft_len - T]])
+
+        U_f = tf.signal.fft(tf.cast(tf.complex(u_padded, 0.0), tf.complex64))
+        K_f = tf.signal.fft(tf.cast(tf.complex(K_padded, 0.0), tf.complex64))
+
+        Y_f = U_f * tf.expand_dims(K_f, 0)
+        y_full = tf.signal.ifft(Y_f)
+        y_real = tf.math.real(y_full)[..., pad_len:pad_len + T]
+
+        return y_real
 
     def call(self, x):
         B = tf.shape(x)[0]
@@ -170,35 +198,38 @@ class RealMambaCore(tf.keras.layers.Layer):
         D = self.hidden_dim
         S = self.state_dim
 
-        # Gating
+    # Gating & Projection
         gate = tf.nn.silu(self.gate_proj(x))  # (B, T, D)
         x_proj = self.input_proj(x)          # (B, T, D)
-        u = gate * x_proj                    # (B, T, D)
+        u = gate * x_proj                     # (B, T, D)
 
-        # A decay: exp(-softplus(A))
-        A_t = tf.exp(-tf.nn.softplus(self.A_log_decay))  # (D,)
-        A_pow = tf.pow(A_t[None, None, :], tf.range(T, dtype=A_t.dtype)[None, :, None])  # (1, T, D)
+    # A^t: 시간 지남에 따른 decay
+        time_idx = tf.cast(tf.range(T), dtype=self.A.dtype)[:, None]  # (T, 1)
+        A_pow = tf.pow(tf.expand_dims(self.A, 0), time_idx)           # (T, D)
 
-        # B & C 확장
-        B_expanded = tf.reshape(self.B, (1, 1, S))       # (1, 1, S)
-        C_expanded = tf.reshape(self.C, (1, 1, S))       # (1, 1, S)
+    # 커널 생성: K[t, d, s] = A^t[d] * B[s]
+        kernel = tf.einsum('t d, s -> t d s', A_pow, self.B)  # (T, D, S)
 
-        # Broadcast u -> (B, T, D, 1)
-        u_expanded = u[:, :, :, None]  # (B, T, D, 1)
+    # 입력 텐서 전치: (B, D, T)
+        u_t = tf.transpose(u, [0, 2, 1])
 
-        # State 계산: cumprod 기반
-        delta = A_pow  # (1, T, D)
-        cumprod = tf.math.cumprod(delta, axis=1)  # (1, T, D)
+    # 커널 전치: (D, S, T)
+        kernel_t = tf.transpose(kernel, [1, 2, 0])  # (D, S, T)
 
-        # Broadcasting을 통한 convolution-like 연산
-        intermediate = u_expanded * B_expanded  # (B, T, D, S)
-        states = tf.math.cumsum(intermediate * cumprod[None, :, :, None], axis=1)  # (B, T, D, S)
+    # 컨볼루션 대체: u_t (B, D, T) × kernel_t (D, S, T) → (B, D, S)
+        y_states = tf.einsum('b d t, d s t -> b d s', u_t, kernel_t)
 
-        # Output projection
-        y = tf.reduce_sum(states * C_expanded[None, :, :, :], axis=-1)  # (B, T, D)
+    # C 가중합: (B, D, S) × (S,) → (B, D)
+        y = tf.einsum('b d s, s -> b d', y_states, self.C)
+
+    # 다시 시퀀스 형태로 확장 (T 차원 복구): (B, D) → (B, T, D)
+        y = tf.expand_dims(y, axis=1)  # (B, 1, D)
+        y = tf.tile(y, [1, T, 1])      # (B, T, D)
+
+    # Skip connection
         y = y + self.D * u
 
-        # FFN
+    # FFN 및 정규화
         y = self.norm(y)
         y = self.ffn(y)
         y = self.output_proj(y)
