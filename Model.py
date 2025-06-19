@@ -148,10 +148,16 @@ class RealMambaCore(layers.Layer):
         batch_size, seq_len, _ = tf.shape(x)
 
         def step(state, inputs):
-            delta_i, B_i, C_i = inputs  # (B, N)
-            A_d = tf.expand_dims(tf.exp(A * delta_i), axis=0)  # (1, N)       # (N,)
-            B_d = delta_i * B_i             # (B, N)
-            state = A_d * state + B_d
+            delta_i, B_i, C_i = inputs
+
+        # Shape 통일
+            delta_i = tf.reshape(delta_i, (batch_size, -1))  # (B, N)
+            B_i = tf.reshape(B_i, (batch_size, -1))          # (B, N)
+            C_i = tf.reshape(C_i, (batch_size, -1))          # (B, N)
+
+        # Discretization
+            A_d = tf.exp(A * delta_i)              # (B, N)
+            state = A_d * state + B_i              # (B, N)
             y = tf.reduce_sum(state * C_i, axis=-1)  # (B,)
             return state, y
 
@@ -161,9 +167,11 @@ class RealMambaCore(layers.Layer):
         Bs = tf.unstack(B, axis=1)
         Cs = tf.unstack(C, axis=1)
 
-        states, ys = tf.scan(fn=lambda s, i: step(s, (deltas[i], Bs[i], Cs[i])),
-                             elems=tf.range(seq_len),
-                             initializer=(initial_state, tf.zeros((batch_size,))))
+        states, ys = tf.scan(
+        fn=lambda s, i: step(s, (deltas[i], Bs[i], Cs[i])),
+        elems=tf.range(seq_len),
+        initializer=(initial_state, tf.zeros((batch_size,))),
+        )
 
         y = tf.stack(ys, axis=1)  # (B, T)
         return y
@@ -431,3 +439,5 @@ response = generate_full_text(
 )
 
 print(response)
+
+
