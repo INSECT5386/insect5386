@@ -200,7 +200,7 @@ class RealMambaCore(layers.Layer):
         delta = tf.nn.softplus(delta)  # (B, T, N)
 
         # Selective scan
-        y = self._selective_scan(x, delta, B, C)
+        y = self._selective_scan(x, delta, A, B, C)
 
         # Expand & Gating
         y = tf.expand_dims(y, axis=-1)  # (B, T, 1)
