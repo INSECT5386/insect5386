@@ -123,6 +123,7 @@ print("✅ TF Dataset 생성 완료!")
 import tensorflow as tf
 from tensorflow.keras import layers, initializers
 
+
 class RealMambaCore(layers.Layer):
     def __init__(self, d_model, state_dim=16, **kwargs):
         super().__init__(**kwargs)
@@ -132,7 +133,7 @@ class RealMambaCore(layers.Layer):
         # Input projections
         self.in_proj = layers.Dense(2 * d_model + 3 * state_dim, name="in_proj")
 
-        # SSM parameters
+        # SSM parameters (A_log)
         A = tf.range(1, state_dim + 1)
         A = tf.cast(A, tf.float32)
         self.A_log = tf.Variable(
@@ -150,68 +151,73 @@ class RealMambaCore(layers.Layer):
         def step(state, inputs):
             delta_i, B_i, C_i = inputs
 
-        # Shape 통일
+            # Shape 통일
             delta_i = tf.reshape(delta_i, (batch_size, -1))  # (B, N)
             B_i = tf.reshape(B_i, (batch_size, -1))          # (B, N)
             C_i = tf.reshape(C_i, (batch_size, -1))          # (B, N)
 
-        # Discretization
-            A_d = tf.exp(A * delta_i)              # (B, N)
-            state = A_d * state + B_i              # (B, N)
-            y = tf.reduce_sum(state * C_i, axis=-1)  # (B,)
+            # Discretization
+            A_d = tf.exp(A * delta_i)                        # (B, N)
+            state = A_d * state + B_i                        # (B, N)
+            y = tf.reduce_sum(state * C_i, axis=-1)          # (B,)
+            y = tf.reshape(y, (batch_size, 1))               # (B, 1)
+
             return state, y
 
         initial_state = tf.zeros((batch_size, self.state_dim), dtype=x.dtype)
+        initial_y = tf.zeros((batch_size, 1))
 
         deltas = tf.unstack(delta, axis=1)
         Bs = tf.unstack(B, axis=1)
         Cs = tf.unstack(C, axis=1)
 
         states, ys = tf.scan(
-        fn=lambda s, i: step(s, (deltas[i], Bs[i], Cs[i])),
-        elems=tf.range(seq_len),
-        initializer=(initial_state, tf.zeros((batch_size,))),
+            fn=lambda s, i: step(s, (deltas[i], Bs[i], Cs[i])),
+            elems=tf.range(seq_len),
+            initializer=(initial_state, initial_y),
         )
 
-        y = tf.stack(ys, axis=1)  # (B, T)
+        # ys: list of (B, 1) → (B, T)
+        y = tf.concat(tf.unstack(ys, axis=0), axis=1)  # (B, T)
         return y
 
     def call(self, x):
         batch_size, seq_len, _ = tf.shape(x)
 
-    # Input projection
+        # Input projection
         xz = self.in_proj(x)  # (B, T, 2D + 3N)
 
-    # Split into components
+        # Split into components
         x, z, B, C, delta = tf.split(
-        xz,
-        num_or_size_splits=[
-            self.d_model,   # x
-            self.d_model,   # z
-            self.state_dim, # B
-            self.state_dim, # C
-            self.state_dim, # delta
-        ],
-        axis=-1
+            xz,
+            num_or_size_splits=[
+                self.d_model,     # x
+                self.d_model,     # z
+                self.state_dim,   # B
+                self.state_dim,   # C
+                self.state_dim,   # delta
+            ],
+            axis=-1
         )
 
-    # Discretization
+        # Discretization
         delta = tf.nn.softplus(delta)  # (B, T, N)
 
-    # SSM parameter A
-        A = -tf.exp(self.A_log)  # ✅ 추가됨
+        # SSM parameter A
+        A = -tf.exp(self.A_log)  # (N,)
 
-    # Selective scan
-        y = self._selective_scan(x, delta, A, B, C)  # ✅ 이제 A 사용 가능
+        # Selective scan
+        y = self._selective_scan(x, delta, A, B, C)
 
-    # Expand & Gating
+        # Expand & Gating
         y = tf.expand_dims(y, axis=-1)  # (B, T, 1)
         y = y * tf.nn.gelu(z)  # (B, T, D)
 
-    # Output projection
+        # Output projection
         y = self.out_proj(y)  # (B, T, D)
 
         return y
+
 # ======================= Cobrablock ======================
 class Cobrablock(tf.keras.layers.Layer):
     def __init__(self, d_model, dropout_rate=0.1):
