@@ -145,23 +145,14 @@ class RealMambaCore(layers.Layer):
         self.out_proj = layers.Dense(d_model, name="out_proj")
 
     def _selective_scan(self, x, delta, A, B, C):
-        """
-        논문의 selective scan 구현 (convolution trick 없이 RNN-style로)
-        """
-        A = -tf.exp(self.A_log)  # (N,)
         batch_size, seq_len, _ = tf.shape(x)
 
         def step(state, inputs):
             delta_i, B_i, C_i = inputs  # (B, N)
-            delta_t = delta_i
-            B_t = B_i
-            C_t = C_i
-
-            A_d = tf.exp(A * delta_t)  # (N,)
-            B_d = delta_t * B_t  # (B, N)
-
+            A_d = tf.exp(A * delta_i)       # (N,)
+            B_d = delta_i * B_i             # (B, N)
             state = A_d * state + B_d
-            y = tf.reduce_sum(state * C_t, axis=-1)  # (B,)
+            y = tf.reduce_sum(state * C_i, axis=-1)  # (B,)
             return state, y
 
         initial_state = tf.zeros((batch_size, self.state_dim), dtype=x.dtype)
