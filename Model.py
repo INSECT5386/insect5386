@@ -139,14 +139,6 @@ class RealMambaCore(layers.Layer):
             trainable=True,
             name="A_log"
         )
-
-        self.D = self.add_weight(
-            shape=(hidden_dim,),
-            initializer='ones',
-            trainable=True,
-            name="D"
-        )
-
         # Projections for B, C, delta
         self.B_proj = layers.Dense(state_dim, use_bias=False, name="B_proj")
         self.C_proj = layers.Dense(state_dim, use_bias=False, name="C_proj")
