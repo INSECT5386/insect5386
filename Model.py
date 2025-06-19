@@ -123,98 +123,87 @@ print("✅ TF Dataset 생성 완료!")
 import tensorflow as tf
 from tensorflow.keras import layers, initializers
 
-
 class RealMambaCore(layers.Layer):
-    def __init__(self, d_model, state_dim=16, **kwargs):
+    def __init__(self, hidden_dim, state_dim=16, **kwargs):
         super().__init__(**kwargs)
-        self.d_model = d_model
+        self.hidden_dim = hidden_dim
         self.state_dim = state_dim
 
-        # Input projections
-        self.in_proj = layers.Dense(2 * d_model + 3 * state_dim, name="in_proj")
+        # Input projection: split into x and z
+        self.in_proj = layers.Dense(2 * hidden_dim, name="in_proj")
 
-        # SSM parameters (A_log)
-        A = tf.range(1, state_dim + 1)
-        A = tf.cast(A, tf.float32)
-        self.A_log = tf.Variable(
-            -tf.math.log(A),
+        # SSM parameters
+        self.A_log = self.add_weight(
+            shape=(state_dim,),
+            initializer=initializers.RandomNormal(mean=-5, stddev=0.1),
             trainable=True,
             name="A_log"
         )
+        # Projections for B, C, delta
+        self.B_proj = layers.Dense(state_dim, use_bias=False, name="B_proj")
+        self.C_proj = layers.Dense(state_dim, use_bias=False, name="C_proj")
+        self.delta_proj = layers.Dense(state_dim, use_bias=True, name="delta_proj")
 
         # Output projection
-        self.out_proj = layers.Dense(d_model, name="out_proj")
+        self.out_proj = layers.Dense(hidden_dim, name="out_proj")
 
-    def _selective_scan(self, x, delta, A, B, C):
-        batch_size, seq_len, _ = tf.shape(x)
+    def _ssm(self, x):
 
-        def body(t, state, outputs):
-            delta_i = delta[:, t, :]   # (B, N)
-            B_i = B[:, t, :]           # (B, N)
-            C_i = C[:, t, :]           # (B, N)
+        A = -tf.exp(self.A_log)  # (N,)
+        B = self.B_proj(x)       # (B, T, N)
+        C = self.C_proj(x)       # (B, T, N)
+        delta = self.delta_proj(x)  # (B, T, N)
+        delta = tf.nn.softplus(delta)  # (B, T, N)
 
-            A_d = tf.exp(A * delta_i)  # (B, N)
-            state_new = A_d * state + B_i  # (B, N)
-            y = tf.reduce_sum(state_new * C_i, axis=-1)  # (B,)
-            outputs = outputs.write(t, tf.expand_dims(y, axis=1))  # (B, 1)
+        A_d = tf.exp(A[None, None, :] * delta)  # (B, T, N)
+        B_d = B * delta  # (B, T, N)
 
-            return t + 1, state_new, outputs
+    # scan용 inputs 준비: (T, B, N) or (B, T, N) -> scan(fn, elems=(T, ...))
+    # TensorFlow는 기본적으로 시간 축(T)에 대해 scan 수행
+        A_d_t = tf.transpose(A_d, [1, 0, 2])  # (T, B, N)
+        B_d_t = tf.transpose(B_d, [1, 0, 2])  # (T, B, N)
+        C_t = tf.transpose(C, [1, 0, 2])      # (T, B, N)
 
-        def cond(t, state, outputs):
-            return t < seq_len
+        def step(s, inputs):
+            A_t, B_t, C_t = inputs  # 각각 (B, N)
+            s_new = A_t * s + B_t
+            return s_new
 
-        initial_t = tf.constant(0)
+        batch_size = tf.shape(x)[0]
         initial_state = tf.zeros((batch_size, self.state_dim), dtype=x.dtype)
-        initial_outputs = tf.TensorArray(dtype=x.dtype, size=seq_len)
 
-        _, final_state, outputs = tf.while_loop(
-        cond=cond,
-        body=body,
-        loop_vars=(initial_t, initial_state, initial_outputs),
-        parallel_iterations=1
-        )
+    # scan 실행
+        states = tf.scan(
+            fn=step,
+            elems=(A_d_t, B_d_t, C_t),
+            initializer=initial_state
+        )  # (T, B, N)
 
-        y = outputs.stack()  # (T, B, 1)
-        y = tf.transpose(y, [1, 0, 2])  # (B, T, 1)
-        y = tf.squeeze(y, axis=-1)  # (B, T)
+    # Output 계산: (T, B, N), C_t -> (T, B, N) → element-wise 곱 후 sum
+        y = tf.reduce_sum(states * C_t, axis=-1)  # (T, B)
+        y = tf.transpose(y, [1, 0])  # (B, T)
 
         return y
 
-    @tf.function
     def call(self, x):
-        batch_size, seq_len, _ = tf.shape(x)
 
-        # Input projection
-        xz = self.in_proj(x)  # (B, T, 2D + 3N)
+        batch_size, seq_len, _ = tf.shape(x)[0], tf.shape(x)[1], self.hidden_dim
 
-        # Split into components
-        x, z, B, C, delta = tf.split(
-            xz,
-            num_or_size_splits=[
-                self.d_model,     # x
-                self.d_model,     # z
-                self.state_dim,   # B
-                self.state_dim,   # C
-                self.state_dim,   # delta
-            ],
-            axis=-1
-        )
+    # Project input to 2*H
+        xz = self.in_proj(x)  # (B, T, 2H)
+        x, z = tf.split(xz, 2, axis=-1)  # (B, T, H), (B, T, H)
 
-        # Discretization
-        delta = tf.nn.softplus(delta)  # (B, T, N)
+    # Apply SSM
+        y = self._ssm(x)  # (B, T)
 
-        # SSM parameter A
-        A = -tf.exp(self.A_log)  # (N,)
-
-        # Selective scan
-        y = self._selective_scan(x, delta, A, B, C)
-
-        # Expand & Gating
+    # Expand dimension for broadcasting
         y = tf.expand_dims(y, axis=-1)  # (B, T, 1)
-        y = y * tf.nn.gelu(z)  # (B, T, D)
 
-        # Output projection
-        y = self.out_proj(y)  # (B, T, D)
+    # Gating & scaling
+        y = y * tf.nn.gelu(z)  # (B, T, H)
+
+    # Final output projection
+        y = self.out_proj(y)  # (B, T, H)
 
         return y
 
