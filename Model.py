@@ -158,52 +158,36 @@ class RealMambaCore(layers.Layer):
         B = self.B_proj(x)       # (B, T, N)
         C = self.C_proj(x)       # (B, T, N)
 
-        delta = tf.nn.softplus(self.D)  # (H,) or (N,)
-        delta_tiled = tf.reshape(delta, [1, 1, -1])  # (1, 1, N)
+        delta = tf.nn.softplus(self.D)  # (H,)
+        delta_tiled = tf.reshape(delta, [1, 1, -1])  # (1, 1, H)
 
-    # Discretized A_d = exp(A * delta)
         A_d = tf.exp(A[None, None, :] * delta_tiled)  # (1, 1, N)
+        B_d = B * delta_tiled                         # (B, T, N)
 
-    # B_d = B * delta
-        B_d = B * delta_tiled  # (B, T, N)
+    batch_size = tf.shape(x)[0]
+        T = tf.shape(x)[1]
+        A_d_tiled = tf.tile(A_d, [batch_size, T, 1])  # (B, T, N)
 
         def step(s, inputs):
             A_d_t, B_d_t = inputs
             s_new = A_d_t * s + B_d_t
             return s_new
 
-    # Prepare inputs for scan
-        scan_inputs = (A_d[0], B_d)  # (T, N), (B, T, N)
-
-    # Initial state
-        batch_size = tf.shape(x)[0]
+        scan_inputs = (A_d_tiled, B_d)
         initial_state = tf.zeros((batch_size, self.state_dim), dtype=x.dtype)
-
-    # Scan over time
         states = tf.scan(fn=step, elems=scan_inputs, initializer=initial_state)
 
-    # Output projection using C
         y = tf.reduce_sum(states * C, axis=-1)  # (B, T)
         return y
 
     def call(self, x):
-        """
-        x: (B, T, D)
-        returns: (B, T, D)
-        """
-        B, T, D = tf.shape(x)[0], tf.shape(x)[1], self.hidden_dim
-
-        # Project input to 2*H
         xz = self.in_proj(x)
         x, z = tf.split(xz, 2, axis=-1)
 
-        # Apply SSM
-        y = self._ssm(x)
-
-        # Apply nonlinearity and output projection
-        y = y * tf.nn.gelu(z)
-        y = tf.expand_dims(y, axis=-1) * self.D
-        y = self.out_proj(y)
+        y = self._ssm(x)                        # (B, T)
+        y = tf.expand_dims(y, axis=-1)          # (B, T, 1)
+        y = y * tf.nn.gelu(z)                   # (B, T, H)
+        y = self.out_proj(y)                    # (B, T, H)
 
         return y
 
