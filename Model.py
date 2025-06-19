@@ -121,15 +121,16 @@ dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 print("✅ TF Dataset 생성 완료!")
 
 import tensorflow as tf
-from tensorflow.keras import layers, Model, initializers
+from tensorflow.keras import layers, initializers
 
 class RealMambaCore(layers.Layer):
-    def __init__(self, hidden_dim, state_dim=16):
-        super().__init__()
+    def __init__(self, hidden_dim, state_dim=16, **kwargs):
+        super().__init__(**kwargs)
         self.hidden_dim = hidden_dim
         self.state_dim = state_dim
-        # Input projection
-        self.in_proj = layers.Dense(2 * hidden_dim)
+
+        # Input projection: split into x and z
+        self.in_proj = layers.Dense(2 * hidden_dim, name="in_proj")
 
         # SSM parameters
         self.A_log = self.add_weight(
@@ -146,51 +147,66 @@ class RealMambaCore(layers.Layer):
             name="D"
         )
 
-        # B, C: (H, N)
-        self.B_proj = layers.Dense(state_dim, use_bias=False)
-        self.C_proj = layers.Dense(state_dim, use_bias=False)
+        # Projections for B, C, delta
+        self.B_proj = layers.Dense(state_dim, use_bias=False, name="B_proj")
+        self.C_proj = layers.Dense(state_dim, use_bias=False, name="C_proj")
+        self.delta_proj = layers.Dense(state_dim, use_bias=True, name="delta_proj")
 
         # Output projection
-        self.out_proj = layers.Dense(hidden_dim)
+        self.out_proj = layers.Dense(hidden_dim, name="out_proj")
 
     def _ssm(self, x):
+        """
+        x: (B, T, H)
+        returns: (B, T, H)
+        """
         A = -tf.exp(self.A_log)  # (N,)
         B = self.B_proj(x)       # (B, T, N)
         C = self.C_proj(x)       # (B, T, N)
+        delta = self.delta_proj(x)  # (B, T, N)
+        delta = tf.nn.softplus(delta)  # (B, T, N)
 
-        delta = tf.nn.softplus(self.D)  # (H,)
-        delta_tiled = tf.reshape(delta, [1, 1, -1])  # (1, 1, H)
-
-        A_d = tf.exp(A[None, None, :] * delta_tiled)  # (1, 1, N)
-        B_d = B * delta_tiled                         # (B, T, N)
-
-    batch_size = tf.shape(x)[0]
-        T = tf.shape(x)[1]
-        A_d_tiled = tf.tile(A_d, [batch_size, T, 1])  # (B, T, N)
+        A_d = tf.exp(A[None, None, :] * delta)  # (B, T, N)
+        B_d = B * delta  # (B, T, N)
 
         def step(s, inputs):
             A_d_t, B_d_t = inputs
             s_new = A_d_t * s + B_d_t
             return s_new
 
-        scan_inputs = (A_d_tiled, B_d)
+        scan_inputs = (A_d, B_d)  # 각각 (B, T, N)
+        batch_size = tf.shape(x)[0]
         initial_state = tf.zeros((batch_size, self.state_dim), dtype=x.dtype)
-        states = tf.scan(fn=step, elems=scan_inputs, initializer=initial_state)
 
-        y = tf.reduce_sum(states * C, axis=-1)  # (B, T)
+        states = tf.scan(fn=step, elems=scan_inputs, initializer=initial_state)  # (B, T, N)
+
+        # Output: contraction over state dimension
+        y = tf.einsum("btn,btn->bt", states, C)  # (B, T)
+        y = tf.expand_dims(y, axis=-1)  # (B, T, 1)
+
         return y
 
     def call(self, x):
-        xz = self.in_proj(x)
-        x, z = tf.split(xz, 2, axis=-1)
+        """
+        x: (B, T, H)
+        returns: (B, T, H)
+        """
+        batch_size, seq_len, _ = tf.shape(x)[0], tf.shape(x)[1], self.hidden_dim
 
-        y = self._ssm(x)                        # (B, T)
-        y = tf.expand_dims(y, axis=-1)          # (B, T, 1)
-        y = y * tf.nn.gelu(z)                   # (B, T, H)
-        y = self.out_proj(y)                    # (B, T, H)
+        # Project input to 2*H
+        xz = self.in_proj(x)  # (B, T, 2H)
+        x, z = tf.split(xz, 2, axis=-1)  # (B, T, H), (B, T, H)
+
+        # Apply SSM
+        y = self._ssm(x)  # (B, T, 1)
+
+        # Gating & scaling
+        y = y * tf.nn.gelu(z)  # (B, T, H)
+
+        # Final output projection
+        y = self.out_proj(y)  # (B, T, H)
 
         return y
-
 
 # ======================= Cobrablock ======================
 class Cobrablock(tf.keras.layers.Layer):
