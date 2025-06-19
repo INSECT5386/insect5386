@@ -161,7 +161,10 @@ class RealMambaCore(layers.Layer):
             state = A_d * state + B_i                        # (B, N)
             y = tf.reduce_sum(state * C_i, axis=-1)          # (B,)
             y = tf.reshape(y, (batch_size, 1))               # (B, 1)
+            y_expanded = tf.tile(y, [1, self.state_dim])     # (B, N)
 
+    # state와 y를 하나로 합침
+            combined = tf.concat([state, y_expanded], axis=0)  # (2B, N) → 안 좋은 방법...
             return state, y
 
         initial_state = tf.zeros((batch_size, self.state_dim), dtype=x.dtype)
