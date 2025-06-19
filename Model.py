@@ -156,10 +156,7 @@ class RealMambaCore(layers.Layer):
         self.out_proj = layers.Dense(hidden_dim, name="out_proj")
 
     def _ssm(self, x):
-        """
-        x: (B, T, H)
-        returns: (B, T, H)
-        """
+
         A = -tf.exp(self.A_log)  # (N,)
         B = self.B_proj(x)       # (B, T, N)
         C = self.C_proj(x)       # (B, T, N)
@@ -169,45 +166,54 @@ class RealMambaCore(layers.Layer):
         A_d = tf.exp(A[None, None, :] * delta)  # (B, T, N)
         B_d = B * delta  # (B, T, N)
 
+    # scan용 inputs 준비: (T, B, N) or (B, T, N) -> scan(fn, elems=(T, ...))
+    # TensorFlow는 기본적으로 시간 축(T)에 대해 scan 수행
+        A_d_t = tf.transpose(A_d, [1, 0, 2])  # (T, B, N)
+        B_d_t = tf.transpose(B_d, [1, 0, 2])  # (T, B, N)
+        C_t = tf.transpose(C, [1, 0, 2])      # (T, B, N)
+
         def step(s, inputs):
-            A_d_t, B_d_t = inputs
-            s_new = A_d_t * s + B_d_t
+            A_t, B_t, C_t = inputs  # 각각 (B, N)
+            s_new = A_t * s + B_t
             return s_new
 
-        scan_inputs = (A_d, B_d)  # 각각 (B, T, N)
         batch_size = tf.shape(x)[0]
         initial_state = tf.zeros((batch_size, self.state_dim), dtype=x.dtype)
 
-        states = tf.scan(fn=step, elems=scan_inputs, initializer=initial_state)  # (B, T, N)
+    # scan 실행
+        states = tf.scan(
+            fn=step,
+            elems=(A_d_t, B_d_t, C_t),
+            initializer=initial_state
+        )  # (T, B, N)
 
-        # Output: contraction over state dimension
-        y = tf.einsum("btn,btn->bt", states, C)  # (B, T)
-        y = tf.expand_dims(y, axis=-1)  # (B, T, 1)
+    # Output 계산: (T, B, N), C_t -> (T, B, N) → element-wise 곱 후 sum
+        y = tf.reduce_sum(states * C_t, axis=-1)  # (T, B)
+        y = tf.transpose(y, [1, 0])  # (B, T)
 
         return y
 
     def call(self, x):
-        """
-        x: (B, T, H)
-        returns: (B, T, H)
-        """
+
         batch_size, seq_len, _ = tf.shape(x)[0], tf.shape(x)[1], self.hidden_dim
 
-        # Project input to 2*H
+    # Project input to 2*H
         xz = self.in_proj(x)  # (B, T, 2H)
         x, z = tf.split(xz, 2, axis=-1)  # (B, T, H), (B, T, H)
 
-        # Apply SSM
-        y = self._ssm(x)  # (B, T, 1)
+    # Apply SSM
+        y = self._ssm(x)  # (B, T)
 
-        # Gating & scaling
+    # Expand dimension for broadcasting
+        y = tf.expand_dims(y, axis=-1)  # (B, T, 1)
+
+    # Gating & scaling
         y = y * tf.nn.gelu(z)  # (B, T, H)
 
-        # Final output projection
+    # Final output projection
         y = self.out_proj(y)  # (B, T, H)
 
         return y
-
 # ======================= Cobrablock ======================
 class Cobrablock(tf.keras.layers.Layer):
     def __init__(self, d_model, dropout_rate=0.1):
