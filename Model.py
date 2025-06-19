@@ -185,49 +185,49 @@ class RealMambaCore(tf.keras.layers.Layer):
 
         return y_real
 
-def call(self, x):
-    B = tf.shape(x)[0]
-    T = tf.shape(x)[1]
-    D = self.hidden_dim
-    S = self.state_dim
+    def call(self, x):
+        B = tf.shape(x)[0]
+        T = tf.shape(x)[1]
+        D = self.hidden_dim
+        S = self.state_dim
 
     # Gating & Projection
-    gate = tf.nn.silu(self.gate_proj(x))  # (B, T, D)
-    x_proj = self.input_proj(x)          # (B, T, D)
-    u = gate * x_proj                     # (B, T, D)
+        gate = tf.nn.silu(self.gate_proj(x))  # (B, T, D)
+        x_proj = self.input_proj(x)          # (B, T, D)
+        u = gate * x_proj                     # (B, T, D)
 
     # A^t: 시간 지남에 따른 decay
-    time_idx = tf.cast(tf.range(T), dtype=self.A.dtype)[:, None]  # (T, 1)
-    A_pow = tf.pow(tf.expand_dims(self.A, 0), time_idx)           # (T, D)
+        time_idx = tf.cast(tf.range(T), dtype=self.A.dtype)[:, None]  # (T, 1)
+        A_pow = tf.pow(tf.expand_dims(self.A, 0), time_idx)           # (T, D)
 
     # 커널 생성: K[t, d, s] = A^t[d] * B[s]
-    kernel = tf.einsum('t d, s -> t d s', A_pow, self.B)  # (T, D, S)
+        kernel = tf.einsum('t d, s -> t d s', A_pow, self.B)  # (T, D, S)
 
     # 입력 텐서 전치: (B, D, T)
-    u_t = tf.transpose(u, [0, 2, 1])
+        u_t = tf.transpose(u, [0, 2, 1])
 
     # 커널 전치: (D, S, T)
-    kernel_t = tf.transpose(kernel, [1, 2, 0])  # (D, S, T)
+        kernel_t = tf.transpose(kernel, [1, 2, 0])  # (D, S, T)
 
     # 컨볼루션 대체: u_t (B, D, T) × kernel_t (D, S, T) → (B, D, S)
-    y_states = tf.einsum('b d t, d s t -> b d s', u_t, kernel_t)
+        y_states = tf.einsum('b d t, d s t -> b d s', u_t, kernel_t)
 
     # C 가중합: (B, D, S) × (S,) → (B, D)
-    y = tf.einsum('b d s, s -> b d', y_states, self.C)
+        y = tf.einsum('b d s, s -> b d', y_states, self.C)
 
     # 다시 시퀀스 형태로 확장 (T 차원 복구): (B, D) → (B, T, D)
-    y = tf.expand_dims(y, axis=1)  # (B, 1, D)
-    y = tf.tile(y, [1, T, 1])      # (B, T, D)
+        y = tf.expand_dims(y, axis=1)  # (B, 1, D)
+        y = tf.tile(y, [1, T, 1])      # (B, T, D)
 
     # Skip connection
-    y = y + self.D * u
+        y = y + self.D * u
 
     # FFN 및 정규화
-    y = self.norm(y)
-    y = self.ffn(y)
-    y = self.output_proj(y)
+        y = self.norm(y)
+        y = self.ffn(y)
+        y = self.output_proj(y)
 
-    return y
+        return y
 
 
 # ======================= Cobrablock ======================
