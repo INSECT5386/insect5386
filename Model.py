@@ -171,33 +171,36 @@ class RealMambaCore(layers.Layer):
     def call(self, x):
         batch_size, seq_len, _ = tf.shape(x)
 
-        # Input projection
+    # Input projection
         xz = self.in_proj(x)  # (B, T, 2D + 3N)
 
-        # Split into components
+    # Split into components
         x, z, B, C, delta = tf.split(
-            xz,
-            num_or_size_splits=[
-                self.d_model,   # x
-                self.d_model,   # z
-                self.state_dim, # B
-                self.state_dim, # C
-                self.state_dim, # delta
-            ],
-            axis=-1
+        xz,
+        num_or_size_splits=[
+            self.d_model,   # x
+            self.d_model,   # z
+            self.state_dim, # B
+            self.state_dim, # C
+            self.state_dim, # delta
+        ],
+        axis=-1
         )
 
-        # Discretization
+    # Discretization
         delta = tf.nn.softplus(delta)  # (B, T, N)
 
-        # Selective scan
-        y = self._selective_scan(x, delta, A, B, C)
+    # SSM parameter A
+        A = -tf.exp(self.A_log)  # ✅ 추가됨
 
-        # Expand & Gating
+    # Selective scan
+        y = self._selective_scan(x, delta, A, B, C)  # ✅ 이제 A 사용 가능
+
+    # Expand & Gating
         y = tf.expand_dims(y, axis=-1)  # (B, T, 1)
         y = y * tf.nn.gelu(z)  # (B, T, D)
 
-        # Output projection
+    # Output projection
         y = self.out_proj(y)  # (B, T, D)
 
         return y
