@@ -180,23 +180,6 @@ class RealMambaCore(layers.Layer):
 
         return y
 
-        initial_state = tf.zeros((batch_size, self.state_dim), dtype=x.dtype)
-        initial_y = tf.zeros((batch_size, 1))
-
-        deltas = tf.unstack(delta, axis=1)
-        Bs = tf.unstack(B, axis=1)
-        Cs = tf.unstack(C, axis=1)
-
-        states, ys = tf.scan(
-        fn=lambda s, i: step(s, (deltas[i], Bs[i], Cs[i])),
-        elems=tf.range(seq_len),
-        initializer=(initial_state, initial_y),
-        parallel_iterations=1  # 👈 매우 중요! 안정성 향상
-        )
-
-    # ys: list of (B, 1) → (B, T)
-        y = tf.concat(ys, axis=1)  # (B, T)
-        return y
 
     def call(self, x):
         batch_size, seq_len, _ = tf.shape(x)
