@@ -120,6 +120,26 @@ dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
 print("✅ TF Dataset 생성 완료!")
 
+
+# ======================= 개선된 SwiGLU FFN ======================
+class SimpleFFN(tf.keras.layers.Layer):
+    """SwiGLU activation을 사용한 개선된 FFN"""
+    def __init__(self, dim, hidden_dim=192, dropout_rate=0.1):
+        super().__init__()
+        hidden_dim = hidden_dim or int(dim * 8/3)  # SwiGLU 표준 비율
+        
+        self.gate_proj = layers.Dense(hidden_dim, use_bias=False)
+        self.up_proj = layers.Dense(hidden_dim, use_bias=False)
+        self.down_proj = layers.Dense(dim, use_bias=False)
+        self.dropout = layers.Dropout(dropout_rate)
+
+    def call(self, x, training=False):
+        gate = self.gate_proj(x)
+        up = self.up_proj(x)
+        hidden = tf.nn.silu(gate) * up
+        hidden = self.dropout(hidden, training=training)
+        return self.down_proj(hidden)
+
 class RealMambaCore(tf.keras.layers.Layer):
     def __init__(self, hidden_dim, state_dim=None):
         super().__init__()
