@@ -120,87 +120,99 @@ dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
 print("✅ TF Dataset 생성 완료!")
 
-import tensorflow as tf
-from tensorflow.keras import layers, initializers, Model
-
-class RealMambaCore(layers.Layer):
-    def __init__(self, hidden_dim, state_dim=16, **kwargs):
-        super().__init__(**kwargs)
+class RealMambaCore(tf.keras.layers.Layer):
+    def __init__(self, hidden_dim, state_dim=None):
+        super().__init__()
         self.hidden_dim = hidden_dim
-        self.state_dim = state_dim
+        self.state_dim = state_dim or hidden_dim  # 기본값으로 hidden_dim 사용
+        
+        self.ffn = SimpleFFN(hidden_dim)  # 또는 'tanh'
 
-        # Input projection: split into x and z
-        self.in_proj = layers.Dense(2 * hidden_dim, name="in_proj")
+        self.gate_proj = layers.Dense(hidden_dim)
+        self.input_proj = layers.Dense(hidden_dim)
 
-        # SSM parameters
-        self.A_log = self.add_weight(
-            shape=(state_dim,),
-            initializer=initializers.RandomNormal(mean=-5, stddev=0.1),
-            trainable=True,
-            name="A_log"
-        )
+        # A: (hidden_dim,)
+        self.A = self.add_weight(shape=(hidden_dim,),
+                                 initializer=tf.keras.initializers.RandomNormal(mean=-0.5, stddev=0.1),
+                                 trainable=True, name="A")
 
-        # Projections for B, C, delta
-        self.B_proj = layers.Dense(state_dim, use_bias=False, name="B_proj")
-        self.C_proj = layers.Dense(state_dim, use_bias=False, name="C_proj")
-        self.delta_proj = layers.Dense(state_dim, use_bias=True, name="delta_proj")
+        # B: (state_dim,)
+        self.B = self.add_weight(shape=(self.state_dim,),
+                                 initializer='random_normal',
+                                 trainable=True, name="B")
 
-        # Output projection
-        self.out_proj = layers.Dense(hidden_dim, name="out_proj")
+        # C: (state_dim,)
+        self.C = self.add_weight(shape=(self.state_dim,),
+                                 initializer='random_normal',
+                                 trainable=True, name="C")
 
-    def _ssm_parallel(self, x):
-        """
-        Parallelized SSM using cumsum & exp instead of scan.
-        Input: x (B, T, H)
-        Output: y (B, T)
-        """
-        A = -tf.exp(self.A_log)  # (N,)
-        B = self.B_proj(x)       # (B, T, N)
-        C = self.C_proj(x)       # (B, T, N)
-        delta = self.delta_proj(x)  # (B, T, N)
-        delta = tf.nn.softplus(delta)
+        self.D = self.add_weight(shape=(hidden_dim,),
+                                 initializer='zeros',
+                                 trainable=True, name="D")
 
-        batch_size, seq_len = tf.shape(x)[0], tf.shape(x)[1]
+        self.norm = layers.LayerNormalization()
+        self.output_proj = layers.Dense(hidden_dim)
 
-        # Reshape A for broadcasting
-        A = tf.reshape(A, [1, 1, -1])  # (1, 1, N)
-        delta_A = delta * A          # (B, T, N)
+    def fft_convolve(self, u_t, kernel_t, T):
+        pad_len = T - 1
+        seq_len = T + pad_len
 
-        # Cumulative sum over time
-        cumsum_A = tf.cumsum(delta_A, axis=1)  # (B, T, N)
+        fft_len_float = tf.math.ceil(tf.math.log(tf.cast(seq_len, tf.float32)) / tf.math.log(2.0))
+        fft_len = tf.cast(2 ** fft_len_float, tf.int32)
 
-        # exp_A_prev: exp(integral up to t-1)
-        exp_A = tf.exp(cumsum_A)
-        exp_A_prev = tf.concat([
-            tf.ones([batch_size, 1, self.state_dim], dtype=x.dtype),
-            exp_A[:, :-1]
-        ], axis=1)  # (B, T, N)
+        u_padded = tf.pad(u_t, [[0, 0], [0, 0], [pad_len, fft_len - seq_len]])
+        K_padded = tf.pad(kernel_t, [[0, 0], [0, fft_len - T]])
 
-        dB = B * delta * exp_A_prev  # (B, T, N)
-        states = tf.cumsum(dB, axis=1) / exp_A_prev  # (B, T, N)
+        U_f = tf.signal.fft(tf.cast(tf.complex(u_padded, 0.0), tf.complex64))
+        K_f = tf.signal.fft(tf.cast(tf.complex(K_padded, 0.0), tf.complex64))
 
-        y = tf.reduce_sum(states * C, axis=-1)  # (B, T)
+        Y_f = U_f * tf.expand_dims(K_f, 0)
+        y_full = tf.signal.ifft(Y_f)
+        y_real = tf.math.real(y_full)[..., pad_len:pad_len + T]
 
-        return y
+        return y_real
 
     def call(self, x):
-        batch_size, seq_len = tf.shape(x)[0], tf.shape(x)[1]
+        B = tf.shape(x)[0]
+        T = tf.shape(x)[1]
+        D = self.hidden_dim
+        S = self.state_dim
 
-        # Project input to 2*H
-        xz = self.in_proj(x)  # (B, T, 2H)
-        x, z = tf.split(xz, 2, axis=-1)  # (B, T, H), (B, T, H)
+    # Gating & Projection
+        gate = tf.nn.silu(self.gate_proj(x))  # (B, T, D)
+        x_proj = self.input_proj(x)          # (B, T, D)
+        u = gate * x_proj                     # (B, T, D)
 
-        # Apply parallel SSM
-        y = self._ssm_parallel(x)  # (B, T)
+    # A^t: 시간 지남에 따른 decay
+        time_idx = tf.cast(tf.range(T), dtype=self.A.dtype)[:, None]  # (T, 1)
+        A_pow = tf.pow(tf.expand_dims(self.A, 0), time_idx)           # (T, D)
 
-        # Expand dimension for broadcasting
-        y = tf.expand_dims(y, axis=-1)  # (B, T, 1)
+    # 커널 생성: K[t, d, s] = A^t[d] * B[s]
+        kernel = tf.einsum('t d, s -> t d s', A_pow, self.B)  # (T, D, S)
 
-        # Gating & scaling
-        y = y * tf.nn.gelu(z)  # (B, T, H)
+    # 입력 텐서 전치: (B, D, T)
+        u_t = tf.transpose(u, [0, 2, 1])
 
-        # Final output projection
-        y = self.out_proj(y)  # (B, T, H)
+    # 커널 전치: (D, S, T)
+        kernel_t = tf.transpose(kernel, [1, 2, 0])  # (D, S, T)
+
+    # 컨볼루션 대체: u_t (B, D, T) × kernel_t (D, S, T) → (B, D, S)
+        y_states = tf.einsum('b d t, d s t -> b d s', u_t, kernel_t)
+
+    # C 가중합: (B, D, S) × (S,) → (B, D)
+        y = tf.einsum('b d s, s -> b d', y_states, self.C)
+
+    # 다시 시퀀스 형태로 확장 (T 차원 복구): (B, D) → (B, T, D)
+        y = tf.expand_dims(y, axis=1)  # (B, 1, D)
+        y = tf.tile(y, [1, T, 1])      # (B, T, D)
+
+    # Skip connection
+        y = y + self.D * u
+
+    # FFN 및 정규화
+        y = self.norm(y)
+        y = self.ffn(y)
+        y = self.output_proj(y)
 
         return y
 
