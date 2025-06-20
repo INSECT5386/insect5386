@@ -359,3 +359,73 @@ model = VecAwSeq2Seq(shared_embedding, hidden_units=256, start_id, end_id)
 model.compile(optimizer='adam', loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True))
 model.fit(dataset, epochs=10)
 model.summary()
+
+def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=False):
+    """
+    사용자 입력 문장을 받아 AI 응답 생성
+    :param model: 훈련된 VecAwSeq2Seq 모델
+    :param sp: SentencePiece Tokenizer
+    :param input_text: 사용자 입력 (str)
+    :param max_dec_len: 최대 생성 길이
+    :param temperature: 샘플링 온도 (낮을수록 greedy, 높을수록 창의적)
+    :param verbose: 디버깅 메시지 출력 여부
+    :return: 생성된 텍스트
+    """
+    start_id = sp.piece_to_id("<start>")
+    end_id = sp.piece_to_id("<end>")
+    sep_id = sp.piece_to_id("<sep>")
+
+    # 인코더 입력 전처리
+    enc_ids = sp.encode(input_text + " <sep>")
+    enc_ids = enc_ids[:max_enc_len]
+    enc_ids += [sp.pad_id()] * (max_enc_len - len(enc_ids))
+    enc_tensor = tf.constant([enc_ids], dtype=tf.int32)
+
+    if verbose:
+        print("Encoder Input:", input_text)
+        print("Encoded:", enc_ids)
+
+    # 인코더 실행
+    encoder_output, encoder_state = model.encoder(enc_tensor, training=False)
+
+    # 디코더 초기 입력: <start>
+    dec_input = tf.constant([[start_id]], dtype=tf.int32)
+    current_state = encoder_state
+    generated_ids = []
+
+    for step in range(max_dec_len):
+        decoder_output, next_state = model.decoder(
+            dec_input, initial_state=current_state, training=False
+        )
+
+        logits = decoder_output[:, -1, :]  # 마지막 타임스텝의 로짓
+
+        # 온도 조절 샘플링
+        if temperature == 0.:
+            pred_id = tf.argmax(logits, axis=-1, output_type=tf.int32)
+        else:
+            logits = logits / temperature
+            pred_id = tf.random.categorical(logits, 1, dtype=tf.int32)
+
+        pred_id = tf.squeeze(pred_id, axis=1)
+
+        # 종료 토큰 체크
+        if int(pred_id[0]) == end_id:
+            break
+
+        generated_ids.append(int(pred_id[0]))
+        dec_input = pred_id[:, tf.newaxis]  # 다음 입력으로 업데이트
+        current_state = next_state
+
+        if verbose:
+            print(f"Step {step}: ID={int(pred_id[0])}, Token='{sp.decode([int(pred_id[0])])}'")
+
+    decoded_text = sp.decode(generated_ids)
+    return decoded_text
+
+# 예시 질문
+user_input = "오늘 날씨가 어때?"
+
+# AI 답변 생성
+response = generate(model, sp, user_input, max_dec_len=64, temperature=0.7, verbose=True)
+print("\nAI 답변:", response)
