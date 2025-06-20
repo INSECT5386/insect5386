@@ -53,7 +53,7 @@ print(f"✅ Vocabulary size: {vocab_size}")
 # ⬇️ 전처리 하이퍼파라미터
 max_enc_len = 128   # 인코더 최대 길이 (질문 부분)
 max_dec_len = 128   # 디코더 최대 길이 (답변 부분)
-batch_size = 32
+batch_size = 64
 
 # ⬇️ 전처리 결과 저장할 리스트
 encoder_inputs = []
