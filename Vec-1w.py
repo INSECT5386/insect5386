@@ -101,22 +101,42 @@ encoder_inputs = np.array(encoder_inputs, dtype=np.int32)
 decoder_inputs = np.array(decoder_inputs, dtype=np.int32)
 targets = np.array(targets, dtype=np.int32)
 
+import tensorflow as tf
+
 # ⬇️ TensorFlow Dataset 생성
 def data_generator():
     for enc, dec, tgt in zip(encoder_inputs, decoder_inputs, targets):
-        yield ((enc, dec), tgt)
+        yield (
+            {'encoder_input': enc, 'decoder_input': dec},
+            tgt
+        )
+
+# output_types 및 output_shapes 정확히 지정
+output_types = (
+    {
+        'encoder_input': tf.int32,
+        'decoder_input': tf.int32
+    },
+    tf.int32
+)
+
+output_shapes = (
+    {
+        'encoder_input': tf.TensorShape([max_enc_len]),
+        'decoder_input': tf.TensorShape([max_dec_len])
+    },
+    tf.TensorShape([max_dec_len])
+)
 
 dataset = tf.data.Dataset.from_generator(
     data_generator,
-    output_types=(({ 'encoder_input': tf.int32, 'decoder_input': tf.int32 }, tf.int32)),
-    output_shapes=({
-        'encoder_input': tf.TensorShape([max_enc_len]),
-        'decoder_input': tf.TensorShape([max_dec_len])
-    }, tf.TensorShape([max_dec_len]))
+    output_types=output_types,
+    output_shapes=output_shapes
 )
 
 dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
-print("dataset ok")
+
+
 class VecAwCell(Layer):
     def __init__(self, units, dropout_rate=0.1, **kwargs):
         super(VecAwCell, self).__init__(**kwargs)
@@ -312,8 +332,7 @@ class VecAwDecoder(Model):
 
 class VecAwSeq2Seq(Model):
     def __init__(self, shared_embedding, hidden_units, 
-                 start_id, end_id, max_length=128, 
-                 dropout_rate=0.1, **kwargs):
+                 start_id=sp.piece_to_id("<start>"), end_id=sp.piece_to_id("<end>"), max_length=128, dropout_rate=0.1, **kwargs):
         super().__init__(**kwargs)
         self.encoder = VecAwEncoder(shared_embedding, hidden_units, dropout_rate)
         self.decoder = VecAwDecoder(shared_embedding, hidden_units, dropout_rate)
@@ -355,9 +374,14 @@ class VecAwSeq2Seq(Model):
         })
         return config
 
-model = VecAwSeq2Seq(shared_embedding, hidden_units=256, start_id, end_id)
+model = VecAwSeq2Seq(shared_embedding, hidden_units=256)
 model.compile(optimizer='adam', loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True))
-model.fit(dataset, epochs=10)
+# 예제 입력으로 build 유도
+test_encoder_input = tf.constant([ [1] * max_enc_len ])  # (1, 128)
+test_decoder_input = tf.constant([ [1] * max_dec_len ])  # (1, 128)
+
+_ = model((test_encoder_input, test_decoder_input))  # build 유도
+model.fit(dataset, epochs=10, steps_per_epoch=len(train_sentences) // batch_size)
 model.summary()
 
 def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=False):
