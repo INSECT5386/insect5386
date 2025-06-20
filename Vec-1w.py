@@ -150,39 +150,41 @@ class VecAwCell(Layer):
 
         return output, [output, longterm]
 
+shared_embedding = Embedding(
+    input_dim=vocab_size,
+    output_dim=embedding_dim,
+    mask_zero=True,
+    name='shared_embedding'
+)
 
 class VecAwEncoder(Model):
-    def __init__(self, vocab_size, embedding_dim, hidden_units, dropout_rate=0.1, **kwargs):
+    def __init__(self, shared_embedding_layer, hidden_units, dropout_rate=0.1, **kwargs):
         super().__init__(**kwargs)
-        self.embedding = Embedding(vocab_size, embedding_dim, mask_zero=True)
+        self.embedding = shared_embedding_layer
         self.dropout = Dropout(dropout_rate)
         self.rnn_cell = VecAwCell(hidden_units, dropout_rate)
         self.rnn = RNN(self.rnn_cell, return_sequences=True, return_state=True)
 
     def call(self, inputs, training=None):
-        # 패딩 마스크 생성
         mask = self.embedding.compute_mask(inputs)
-        
         x = self.embedding(inputs)
         x = self.dropout(x, training=training)
-        
         outputs, h_state, longterm_state = self.rnn(x, mask=mask, training=training)
         return outputs, [h_state, longterm_state]
 
-
 class VecAwDecoder(Model):
-    def __init__(self, vocab_size, embedding_dim, hidden_units, dropout_rate=0.1, **kwargs):
+    def __init__(self, shared_embedding_layer, hidden_units, dropout_rate=0.1, **kwargs):
         super().__init__(**kwargs)
-        self.embedding = Embedding(vocab_size, embedding_dim, mask_zero=True)
+        self.embedding = shared_embedding_layer
         self.dropout = Dropout(dropout_rate)
         self.rnn_cell = VecAwCell(hidden_units, dropout_rate)
         self.rnn = RNN(self.rnn_cell, return_sequences=True, return_state=True)
-        self.output_layer = Dense(vocab_size)
-        self.output_dropout = Dropout(dropout_rate)
+
+        # 출력층을 embedding 가중치와 공유
+        self.output_layer = Dense(shared_embedding_layer.embeddings.shape[0])  # vocab_size
 
     def call(self, inputs, initial_state, training=None):
         mask = self.embedding.compute_mask(inputs)
-        
         x = self.embedding(inputs)
         x = self.dropout(x, training=training)
         
@@ -190,71 +192,33 @@ class VecAwDecoder(Model):
             x, initial_state=initial_state, mask=mask, training=training
         )
         
-        rnn_out = self.output_dropout(rnn_out, training=training)
         logits = self.output_layer(rnn_out)
-        
         return logits, [h_state, longterm_state]
 
-
 class VecAwSeq2Seq(Model):
-    def __init__(self, vocab_size, embedding_dim, hidden_units, 
+    def __init__(self, shared_embedding_layer, hidden_units, 
                  start_token_id=1, end_token_id=2, max_length=50, 
                  dropout_rate=0.1, **kwargs):
         super().__init__(**kwargs)
-        self.vocab_size = vocab_size
+        self.vocab_size = int(shared_embedding_layer.input_dim)
         self.start_token_id = start_token_id
         self.end_token_id = end_token_id
         self.max_length = max_length
         
-        self.encoder = VecAwEncoder(vocab_size, embedding_dim, hidden_units, dropout_rate)
-        self.decoder = VecAwDecoder(vocab_size, embedding_dim, hidden_units, dropout_rate)
+        self.encoder = VecAwEncoder(shared_embedding_layer, hidden_units, dropout_rate)
+        self.decoder = VecAwDecoder(shared_embedding_layer, hidden_units, dropout_rate)
 
     def call(self, inputs, training=None):
         if isinstance(inputs, (list, tuple)) and len(inputs) == 2:
             encoder_input, decoder_input = inputs
         else:
-            # 추론 시에는 인코더 입력만 제공
             return self.predict_step(inputs)
             
         encoder_output, encoder_state = self.encoder(encoder_input, training=training)
         decoder_output, _ = self.decoder(decoder_input, initial_state=encoder_state, training=training)
         
         return decoder_output
-
-    def predict_step(self, inputs):
-        """Beam Search 기반 추론 (간단한 Greedy Decoding으로 구현)"""
-        src_seq = inputs
-        batch_size = tf.shape(src_seq)[0]
-
-        encoder_output, encoder_state = self.encoder(src_seq, training=False)
-
-        # 시작 토큰으로 초기화
-        target_seq = tf.fill((batch_size, 1), self.start_token_id)
-        finished = tf.zeros((batch_size,), dtype=tf.bool)
-
-        for step in range(self.max_length):
-            decoder_output, decoder_state = self.decoder(
-                target_seq, initial_state=encoder_state, training=False
-            )
-            
-            # 마지막 시점의 로짓
-            next_token_logits = decoder_output[:, -1:, :]
-            next_token = tf.argmax(next_token_logits, axis=-1, output_type=tf.int32)
-            
-            # 종료 조건 체크
-            is_end = tf.equal(next_token[:, 0], self.end_token_id)
-            finished = tf.logical_or(finished, is_end)
-            
-            # 다음 토큰 추가
-            target_seq = tf.concat([target_seq, next_token], axis=-1)
-            encoder_state = decoder_state
-            
-            # 모든 시퀀스가 종료되면 중단
-            if tf.reduce_all(finished):
-                break
-
-        return target_seq
-
+        
     def get_config(self):
         config = super().get_config()
         config.update({
