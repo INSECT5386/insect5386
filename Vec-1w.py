@@ -311,22 +311,35 @@ class VecAwDecoder(Model):
 
 
 class VecAwSeq2Seq(Model):
-    def __init__(self, shared_embedding, hidden_units,
-                 start_token_id=1, end_token_id=2, max_length=50,
+    def __init__(self, shared_embedding, hidden_units, 
+                 start_id, end_id, max_length=128, 
                  dropout_rate=0.1, **kwargs):
         super().__init__(**kwargs)
         self.encoder = VecAwEncoder(shared_embedding, hidden_units, dropout_rate)
         self.decoder = VecAwDecoder(shared_embedding, hidden_units, dropout_rate)
 
-        self.start_token_id = start_token_id
-        self.end_token_id = end_token_id
+        self.start_token_id = start_id
+        self.end_token_id = end_id
         self.max_length = max_length
+
+    def build(self, input_shape):
+        # encoder와 decoder가 사용할 input shape 전달
+        if isinstance(input_shape, dict):
+            enc_shape = input_shape['encoder_input']
+            dec_shape = input_shape['decoder_input']
+        else:
+            enc_shape, dec_shape = input_shape[0], input_shape[1]
+        
+        self.encoder.build(enc_shape)
+        self.decoder.build(dec_shape)
+        self.built = True
 
     def call(self, inputs, training=None):
         if isinstance(inputs, (list, tuple)) and len(inputs) == 2:
             encoder_input, decoder_input = inputs
         else:
-            return self.predict_step(inputs)
+            encoder_input = inputs['encoder_input']
+            decoder_input = inputs['decoder_input']
 
         encoder_output, encoder_state = self.encoder(encoder_input, training=training)
         decoder_output, _ = self.decoder(decoder_input, initial_state=encoder_state, training=training)
@@ -342,7 +355,7 @@ class VecAwSeq2Seq(Model):
         })
         return config
 
-model = VecAwSeq2Seq(shared_embedding, hidden_units=256)
+model = VecAwSeq2Seq(shared_embedding, hidden_units=256, start_id, end_id)
 model.compile(optimizer='adam', loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True))
 model.fit(dataset, epochs=10)
 model.summary()
