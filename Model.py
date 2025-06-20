@@ -326,7 +326,7 @@ class VecAwDecoder(Model):
 
 class VecAwSeq2Seq(Model):
     def __init__(self, shared_embedding, hidden_units,
-                 start_token_id=1, end_token_id=2, max_length=50,
+                 start_token_id=sp.piece_to_id("<start>"), end_token_id=sp.piece_to_id("<end>"), max_length=128,
                  dropout_rate=0.1, **kwargs):
         super().__init__(**kwargs)
         self.encoder = VecAwEncoder(shared_embedding, hidden_units, dropout_rate)
