@@ -74,14 +74,15 @@ class VecAwCell(Layer):
         self.built = True
 
     def get_initial_state(self, inputs=None, batch_size=None, dtype=None):
-        """초기 상태 설정"""
         if inputs is not None:
             batch_size = tf.shape(inputs)[0]
-            dtype = inputs.dtype
-        
+            dtype = tf.keras.mixed_precision.global_policy().compute_dtype
+        else:
+            dtype = dtype or tf.float32
+
         return [
-            tf.zeros((batch_size, self.units), dtype=dtype),  # shortterm
-            tf.zeros((batch_size, self.units), dtype=dtype)   # longterm
+            tf.zeros((batch_size, self.units), dtype=dtype),
+            tf.zeros((batch_size, self.units), dtype=dtype)
         ]
 
     def multi_head_attention(self, query, key, value):
@@ -281,7 +282,7 @@ def create_model(vocab_size=10000, embedding_dim=256, hidden_units=512):
     # 손실 함수 (레이블 스무딩 적용)
     loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(
         from_logits=True, 
-        label_smoothing=0.1
+     
     )
     
     # 옵티마이저 (학습률 스케줄링)
