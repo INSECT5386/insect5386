@@ -1,7 +1,7 @@
 from tensorflow.keras.layers import Embedding, RNN
 from tensorflow.keras.models import Model
 import tensorflow as tf
-from tensorflow.keras import Layers
+from tensorflow.keras import layers
 
 class VecAwCell(Layer):
     def __init__(self, units, **kwargs):
