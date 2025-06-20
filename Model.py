@@ -144,13 +144,19 @@ from tensorflow.keras.layers import Layer, LayerNormalization, Embedding, Dropou
 from tensorflow.keras.models import Model
 from tensorflow.keras import Model
 
-
-# ExtremeFRUCell 정의
 class ExtremeFRUCell(Layer):
     def __init__(self, units, dropout_rate=0.1, **kwargs):
         super(ExtremeFRUCell, self).__init__(**kwargs)
         self.units = units
         self.dropout_rate = dropout_rate
+
+    @property
+    def state_size(self):
+        return [self.units, self.units]  # h_state, longterm_state
+
+    @property
+    def output_size(self):
+        return self.units  # shortterm
 
     def build(self, input_shape):
         feature_dim = input_shape[-1]
@@ -195,22 +201,22 @@ class ExtremeFRUCell(Layer):
     def call(self, inputs, states):
         h_prev, longterm_prev = states
 
-        # 1. Input Projection
+        # Input Projection
         x_proj = tf.matmul(inputs, self.kernel_x)
         h_proj = tf.matmul(h_prev, self.kernel_h)
         combined = x_proj + h_proj
         combined = self.dropout(combined, training=True)
 
-        # 2. Gate Calculation
+        # Gate Calculation
         f_gate = tf.sigmoid(tf.matmul(inputs, self.forget_gate_kernel))
         i_gate = tf.sigmoid(tf.matmul(inputs, self.input_gate_kernel))
         o_gate = tf.sigmoid(tf.matmul(inputs, self.output_gate_kernel))
 
-        # 3. Long Term Memory Update
+        # Long Term Memory Update
         longterm = f_gate * longterm_prev + i_gate * tf.nn.gelu(combined)
         longterm = self.ln_long(longterm)
 
-        # 4. Short Term Output
+        # Short Term Output
         shortterm = o_gate * tf.nn.swish(longterm)
         shortterm = self.ln_short(shortterm)
 
