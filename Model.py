@@ -375,7 +375,7 @@ class VecAwSeq2Seq(Model):
 # 공유 임베딩 레이어 build
 shared_embedding = Embedding(
     input_dim=vocab_size,
-    output_dim=256,
+    output_dim=384,
     mask_zero=True,
     name='shared_embedding'
 )
@@ -395,7 +395,7 @@ test_decoder_input = tf.constant([[1] * max_dec_len])
 _ = model((test_encoder_input, test_decoder_input))
 
 # 학습 시작
-model.fit(dataset, epochs=10)
+model.fit(dataset, epochs=10, steps_per_epoch=len(train_sentences) // batch_size)
 model.summary()
 
 # =====================================================================
