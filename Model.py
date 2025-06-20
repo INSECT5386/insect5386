@@ -136,6 +136,8 @@ shared_embedding = Embedding(
     name='shared_embedding'
 )
 
+shared_embedding.build((None,))
+
 
 class VecAwCell(Layer):
     def __init__(self, units, dropout_rate=0.1, **kwargs):
