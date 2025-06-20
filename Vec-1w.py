@@ -136,147 +136,77 @@ dataset = tf.data.Dataset.from_generator(
 
 dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
-
-class VecAwCell(Layer):
-    def __init__(self, units, dropout_rate=0.1, **kwargs):
-        super(VecAwCell, self).__init__(**kwargs)
+class ExtremeFRUCell(Layer):
+    def __init__(self, units, **kwargs):
+        super(ExtremeFRUCell, self).__init__(**kwargs)
         self.units = units
-        self.dropout_rate = dropout_rate
-        self.state_size = [tf.TensorShape(units), tf.TensorShape(units)]  # [shortterm, longterm]
 
     def build(self, input_shape):
         feature_dim = input_shape[-1]
 
-        # FRU 가중치
+        # Main projection weights
         self.kernel_x = self.add_weight(
             shape=(feature_dim, self.units),
-            initializer='he_normal',
+            initializer='glorot_uniform',
             name='kernel_x'
         )
         self.kernel_h = self.add_weight(
             shape=(self.units, self.units),
-            initializer='he_normal',
+            initializer='orthogonal',
             name='kernel_h'
         )
 
-        # 멀티헤드 어텐션 파라미터
-        self.num_heads = 8
-        self.head_dim = self.units // self.num_heads
-
-        self.W_q = self.add_weight(
-            shape=(self.units, self.units),
-            initializer='glorot_normal',
-            name='W_q'
+        # Gate kernels (각각 별도)
+        self.forget_gate_kernel = self.add_weight(
+            shape=(feature_dim, self.units),
+            initializer='glorot_uniform',
+            name='forget_gate_kernel'
         )
-        self.W_k = self.add_weight(
-            shape=(self.units, self.units),
-            initializer='glorot_normal',
-            name='W_k'
+        self.input_gate_kernel = self.add_weight(
+            shape=(feature_dim, self.units),
+            initializer='glorot_uniform',
+            name='input_gate_kernel'
         )
-        self.W_v = self.add_weight(
-            shape=(self.units, self.units),
-            initializer='glorot_normal',
-            name='W_v'
-        )
-        self.W_o = self.add_weight(
-            shape=(self.units, self.units),
-            initializer='glorot_normal',
-            name='W_o'
+        self.output_gate_kernel = self.add_weight(
+            shape=(feature_dim, self.units),
+            initializer='glorot_uniform',
+            name='output_gate_kernel'
         )
 
-        # 게이트 메커니즘
-        self.forget_gate = self.add_weight(
-            shape=(self.units, self.units),
-            initializer='glorot_normal',
-            name='forget_gate'
-        )
-        self.input_gate = self.add_weight(
-            shape=(self.units, self.units),
-            initializer='glorot_normal',
-            name='input_gate'
-        )
-
-        # 정규화 & 드롭아웃
-        self.layer_norm1 = LayerNormalization()
-        self.layer_norm2 = LayerNormalization()
-        self.dropout = Dropout(self.dropout_rate)
+        # Layer Norms
+        self.ln_long = LayerNormalization()
+        self.ln_short = LayerNormalization()
 
         self.built = True
 
-    def get_initial_state(self, inputs=None, batch_size=None, dtype=None):
-        if inputs is not None:
-            batch_size = tf.shape(inputs)[0]
-            dtype = inputs.dtype
-        else:
-            dtype = tf.float32
+    def call(self, inputs, states):
+        h_prev, longterm_prev = states
 
+        # 1. Input Projection
+        x_proj = tf.matmul(inputs, self.kernel_x)
+        h_proj = tf.matmul(h_prev, self.kernel_h)
+        combined = x_proj + h_proj
+
+        # 2. Gate Calculation
+        f_gate = tf.sigmoid(tf.matmul(inputs, self.forget_gate_kernel))
+        i_gate = tf.sigmoid(tf.matmul(inputs, self.input_gate_kernel))
+        o_gate = tf.sigmoid(tf.matmul(inputs, self.output_gate_kernel))
+
+        # 3. Long Term Memory Update
+        longterm = f_gate * longterm_prev + i_gate * tf.nn.gelu(combined)
+        longterm = self.ln_long(longterm)
+
+        # 4. Short Term Output
+        shortterm = o_gate * tf.nn.swish(longterm)
+        shortterm = self.ln_short(shortterm)
+
+        return shortterm, [shortterm, longterm]
+
+    def get_initial_state(self, inputs=None, batch_size=None, dtype=None):
         return [
             tf.zeros((batch_size, self.units), dtype=dtype),
             tf.zeros((batch_size, self.units), dtype=dtype)
         ]
-
-    def multi_head_attention(self, query, key, value):
-        """멀티헤드 어텐션 구현"""
-        batch_size = tf.shape(query)[0]
-
-        q = tf.matmul(query, self.W_q)
-        k = tf.matmul(key, self.W_k)
-        v = tf.matmul(value, self.W_v)
-
-        # 분할: (batch_size, num_heads, head_dim)
-        q = tf.reshape(q, (batch_size, self.num_heads, self.head_dim))
-        k = tf.reshape(k, (batch_size, self.num_heads, self.head_dim))
-        v = tf.reshape(v, (batch_size, self.num_heads, self.head_dim))
-
-        # 스코어 계산
-        dk = tf.cast(self.head_dim, tf.float32)
-        scores = tf.matmul(q, k, transpose_b=True) / tf.math.sqrt(dk)
-        weights = tf.nn.softmax(scores, axis=-1)
-
-        # 가중합
-        attended = tf.matmul(weights, v)
-
-        # 다시 합침
-        attended = tf.reshape(attended, (batch_size, self.units))
-
-        # 최종 선형 변환
-        output = tf.matmul(attended, self.W_o)
-
-        return output
-
-    def call(self, inputs, states, training=None):
-        h_prev, longterm_prev = states
-
-        x_t_proj = tf.matmul(inputs, self.kernel_x)
-        h_prev_proj = tf.matmul(h_prev, self.kernel_h)
-        x = x_t_proj + h_prev_proj
-
-        # 게이트 계산
-        forget_gate = tf.sigmoid(tf.matmul(x, self.forget_gate))
-        input_gate = tf.sigmoid(tf.matmul(x, self.input_gate))
-
-        # LSTM 스타일의 셀 상태 업데이트
-        candidate = tf.tanh(x)
-        longterm = forget_gate * longterm_prev + input_gate * candidate
-
-        mediumterm = tf.nn.swish(x)
-        shortterm = tf.nn.swish(longterm + mediumterm)
-
-        # 정규화
-        shortterm = self.layer_norm1(shortterm)
-        longterm = self.layer_norm2(longterm)
-
-        # 멀티헤드 어텐션 적용 (Self-Attention)
-        attended = self.multi_head_attention(shortterm, shortterm, shortterm)
-
-        # 잔차 연결
-        output = shortterm + attended
-
-        # 드롭아웃
-        if training:
-            output = self.dropout(output, training=training)
-
-        return output, [output, longterm]
 
 
 # 공유 임베딩 레이어
@@ -295,7 +225,7 @@ class VecAwEncoder(Model):
         super().__init__(**kwargs)
         self.embedding = shared_embedding
         self.dropout = Dropout(dropout_rate)
-        self.rnn_cell = VecAwCell(hidden_units, dropout_rate)
+        self.rnn_cell = ExtremeFRUCell(hidden_units, dropout_rate)
         self.rnn = RNN(self.rnn_cell, return_sequences=True, return_state=True)
 
     def call(self, inputs, training=None):
@@ -303,7 +233,7 @@ class VecAwEncoder(Model):
         x = self.embedding(inputs)
         x = self.dropout(x, training=training)
         outputs, h_state, longterm_state = self.rnn(x, mask=mask, training=training)
-        return outputs, [h_state, longterm_state]
+        return shortterm, [shortterm, longterm]
 
 
 class VecAwDecoder(Model):
@@ -311,7 +241,7 @@ class VecAwDecoder(Model):
         super().__init__(**kwargs)
         self.embedding = shared_embedding
         self.dropout = Dropout(dropout_rate)
-        self.rnn_cell = VecAwCell(hidden_units, dropout_rate)
+        self.rnn_cell = ExtremeFRUCell(hidden_units, dropout_rate)
         self.rnn = RNN(self.rnn_cell, return_sequences=True, return_state=True)
 
         # 출력층 - 임베딩과 가중치 공유
@@ -327,7 +257,7 @@ class VecAwDecoder(Model):
         rnn_out, h_state, longterm_state = self.rnn(x, initial_state=initial_state, mask=mask, training=training)
         logits = self.output_layer(rnn_out)
 
-        return logits, [h_state, longterm_state]
+        return logits, [shortterm, longterm]
 
 
 class VecAwSeq2Seq(Model):
