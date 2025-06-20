@@ -333,33 +333,6 @@ class VecAwSeq2Seq(Model):
 
         return decoder_output
 
-    def predict_step(self, encoder_input):
-        batch_size = tf.shape(encoder_input)[0]
-
-        # 인코더 실행
-        encoder_output, encoder_state = self.encoder(encoder_input, training=False)
-
-        # 디코더 시작 토큰
-        decoder_input = tf.fill((batch_size, 1), self.start_token_id)
-
-        # 결과 저장용
-        outputs = tf.TensorArray(dtype=tf.int64, size=0, dynamic_size=True)
-        for i in tf.range(self.max_length):
-            logits, next_state = self.decoder(decoder_input, initial_state=encoder_state, training=False)
-            pred_ids = tf.argmax(logits[:, -1:], axis=-1, output_type=tf.int64)
-
-            outputs = outputs.write(i, tf.squeeze(pred_ids, axis=1))
-            decoder_input = pred_ids
-            encoder_state = next_state
-
-            # 종료 토큰 체크
-            if tf.reduce_all(tf.equal(pred_ids, self.end_token_id)):
-                break
-
-        outputs = outputs.stack()
-        outputs = tf.transpose(outputs, perm=[1, 0])
-        return outputs
-
     def get_config(self):
         config = super().get_config()
         config.update({
