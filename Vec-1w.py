@@ -343,12 +343,6 @@ class VecAwSeq2Seq(Model):
         return config
 
 model = VecAwSeq2Seq(shared_embedding, hidden_units=256)
-
-# 학습 시
-encoder_inputs = tf.constant([[1, 2, 3, 4], [1, 5, 6, 7]])
-decoder_inputs = tf.constant([[1, 8, 9], [1, 10, 11]])
-targets = tf.constant([[8, 9, 2], [10, 11, 2]])
-
 model.compile(optimizer='adam', loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True))
-model.fit([encoder_inputs, decoder_inputs], targets, epochs=10)
+model.fit(dataset, epochs=10)
 model.summary()
