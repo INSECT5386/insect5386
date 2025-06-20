@@ -36,7 +36,7 @@ for conversations in df["conversations"]:
             response = item2.get("value", "").strip().replace("\n", " ")
             full = f"<start> {prompt} <sep> {response} <end>"
             train_sentences.append(full)
-train_sentences = train_sentences[:300000]
+train_sentences = train_sentences[:300]
 print(f"총 문장 개수: {len(train_sentences)}")
 
 # ⬇️ 토크나이저 불러오기
@@ -108,7 +108,7 @@ def data_generator():
 
 dataset = tf.data.Dataset.from_generator(
     data_generator,
-    output_types=(({ 'encoder_input': tf.int32, 'decoder_input': tf.int32 }, tf.int32)},
+    output_types=(({ 'encoder_input': tf.int32, 'decoder_input': tf.int32 }, tf.int32)),
     output_shapes=({
         'encoder_input': tf.TensorShape([max_enc_len]),
         'decoder_input': tf.TensorShape([max_dec_len])
@@ -116,7 +116,7 @@ dataset = tf.data.Dataset.from_generator(
 )
 
 dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
-
+print("dataset ok")
 class VecAwCell(Layer):
     def __init__(self, units, dropout_rate=0.1, **kwargs):
         super(VecAwCell, self).__init__(**kwargs)
