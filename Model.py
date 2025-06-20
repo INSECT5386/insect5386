@@ -1,10 +1,13 @@
 import json  
-import numpy as np  
 import pandas as pd
 import tensorflow as tf  
 from tensorflow.keras import layers 
 import sentencepiece as spm  
 import requests
+from tensorflow.keras.layers import Embedding, RNN, Layer, Dense, Dropout, LayerNormalization
+from tensorflow.keras.models import Model
+import numpy as np
+
 
 # ⬇️ 파일 다운로드 함수
 def download_file(url, save_path):
@@ -58,11 +61,13 @@ def ids_to_text(ids):
     return sp.decode(ids)
 
 # ⬇️ 전처리 하이퍼파라미터
-max_len = 256
-batch_size = 32
+max_enc_len = 128   # 인코더 최대 길이 (질문 부분)
+max_dec_len = 128   # 디코더 최대 길이 (답변 부분)
+batch_size = 64
 
-# ⬇️ 인풋과 타겟 마스킹 포함된 전처리
-encoded_inputs = []
+# ⬇️ 전처리 결과 저장할 리스트
+encoder_inputs = []
+decoder_inputs = []
 targets = []
 
 for sentence in train_sentences:
@@ -70,398 +75,287 @@ for sentence in train_sentences:
         continue
 
     sep_index = sentence.index("<sep>")
-    input_text = sentence[:sep_index + len("<sep>")].strip()
-    target_text = sentence[sep_index + len("<sep>"):].strip()
+    input_text = sentence[:sep_index].strip()      # 질문 부분
+    target_text = sentence[sep_index + len("<sep>"):].strip()  # 답변 부분
 
-    input_ids = text_to_ids(input_text)
-    target_ids = text_to_ids(target_text + " <end>")
+    # 인코더 입력: 질문 + <sep>
+    enc_ids = text_to_ids(input_text + " <sep>")[:max_enc_len]
 
-    full_input = input_ids + target_ids
-    full_input = full_input[:max_len]
+    # 디코더 입력: <start> + 답변
+    dec_input_ids = [start_id] + text_to_ids(target_text)[:max_dec_len - 1]
 
-    target_mask = [0] * len(input_ids) + [1] * len(target_ids)
-    target_mask = target_mask[:max_len]
+    # 정답 라벨: 답변 + <end>
+    target_ids = text_to_ids(target_text + " <end>")[:max_dec_len]
 
-    if len(full_input) < max_len:
-        pad_len = max_len - len(full_input)
-        full_input += [pad_id] * pad_len
-        target_mask += [0] * pad_len
+    # 패딩 추가
+    enc_padded = enc_ids + [pad_id] * (max_enc_len - len(enc_ids))
+    dec_padded = dec_input_ids + [pad_id] * (max_dec_len - len(dec_input_ids))
+    target_padded = target_ids + [pad_id] * (max_dec_len - len(target_ids))
 
-    encoded_inputs.append(full_input)
+    encoder_inputs.append(enc_padded)
+    decoder_inputs.append(dec_padded)
+    targets.append(target_padded)
 
-    target_seq = full_input[1:] + [end_id]
-    target_seq = target_seq[:max_len]
-
-    masked_target = [
-        t if m == 1 else pad_id
-        for t, m in zip(target_seq, target_mask)
-    ]
-
-    targets.append(masked_target)
-
-# ⬇️ 넘파이 변환
-encoded_inputs = np.array(encoded_inputs)
-targets = np.array(targets)
+# ⬇️ 넘파이 배열로 변환
+encoder_inputs = np.array(encoder_inputs, dtype=np.int32)
+decoder_inputs = np.array(decoder_inputs, dtype=np.int32)
+targets = np.array(targets, dtype=np.int32)
 
 # ⬇️ TensorFlow Dataset 생성
 def data_generator():
-    for input_seq, target_seq in zip(encoded_inputs, targets):
-        yield input_seq, target_seq
+    for enc, dec, tgt in zip(encoder_inputs, decoder_inputs, targets):
+        yield ((enc, dec), tgt)
 
 dataset = tf.data.Dataset.from_generator(
     data_generator,
-    output_signature=(
-        tf.TensorSpec(shape=(max_len,), dtype=tf.int32),
-        tf.TensorSpec(shape=(max_len,), dtype=tf.int32)
-    )
+    output_types=(({ 'encoder_input': tf.int32, 'decoder_input': tf.int32 }, tf.int32)),
+    output_shapes=({
+        'encoder_input': tf.TensorShape([max_enc_len]),
+        'decoder_input': tf.TensorShape([max_dec_len])
+    }, tf.TensorShape([max_dec_len]))
 )
 
 dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
+print("dataset ok")
+class VecAwCell(Layer):
+    def __init__(self, units, dropout_rate=0.1, **kwargs):
+        super(VecAwCell, self).__init__(**kwargs)
+        self.units = units
+        self.dropout_rate = dropout_rate
+        self.state_size = [tf.TensorShape(units), tf.TensorShape(units)]  # [shortterm, longterm]
 
-print("✅ TF Dataset 생성 완료!")
+    def build(self, input_shape):
+        feature_dim = input_shape[-1]
 
+        # FRU 가중치
+        self.kernel_x = self.add_weight(
+            shape=(feature_dim, self.units),
+            initializer='he_normal',
+            name='kernel_x'
+        )
+        self.kernel_h = self.add_weight(
+            shape=(self.units, self.units),
+            initializer='he_normal',
+            name='kernel_h'
+        )
 
-# ======================= 개선된 SwiGLU FFN ======================
-class SimpleFFN(tf.keras.layers.Layer):
-    """SwiGLU activation을 사용한 개선된 FFN"""
-    def __init__(self, dim, hidden_dim=192, dropout_rate=0.1):
-        super().__init__()
-        hidden_dim = hidden_dim or int(dim * 8/3)  # SwiGLU 표준 비율
-        
-        self.gate_proj = layers.Dense(hidden_dim, use_bias=False)
-        self.up_proj = layers.Dense(hidden_dim, use_bias=False)
-        self.down_proj = layers.Dense(dim, use_bias=False)
-        self.dropout = layers.Dropout(dropout_rate)
+        # 멀티헤드 어텐션 파라미터
+        self.num_heads = 8
+        self.head_dim = self.units // self.num_heads
 
-    def call(self, x, training=False):
-        gate = self.gate_proj(x)
-        up = self.up_proj(x)
-        hidden = tf.nn.silu(gate) * up
-        hidden = self.dropout(hidden, training=training)
-        return self.down_proj(hidden)
+        self.W_q = self.add_weight(
+            shape=(self.units, self.units),
+            initializer='glorot_normal',
+            name='W_q'
+        )
+        self.W_k = self.add_weight(
+            shape=(self.units, self.units),
+            initializer='glorot_normal',
+            name='W_k'
+        )
+        self.W_v = self.add_weight(
+            shape=(self.units, self.units),
+            initializer='glorot_normal',
+            name='W_v'
+        )
+        self.W_o = self.add_weight(
+            shape=(self.units, self.units),
+            initializer='glorot_normal',
+            name='W_o'
+        )
 
-class RealMambaCore(tf.keras.layers.Layer):
-    def __init__(self, hidden_dim, state_dim=None):
-        super().__init__()
-        self.hidden_dim = hidden_dim
-        self.state_dim = state_dim or hidden_dim  # 기본값으로 hidden_dim 사용
-        
-        self.ffn = SimpleFFN(hidden_dim)  # 또는 'tanh'
+        # 게이트 메커니즘
+        self.forget_gate = self.add_weight(
+            shape=(self.units, self.units),
+            initializer='glorot_normal',
+            name='forget_gate'
+        )
+        self.input_gate = self.add_weight(
+            shape=(self.units, self.units),
+            initializer='glorot_normal',
+            name='input_gate'
+        )
 
-        self.gate_proj = layers.Dense(hidden_dim)
-        self.input_proj = layers.Dense(hidden_dim)
+        # 정규화 & 드롭아웃
+        self.layer_norm1 = LayerNormalization()
+        self.layer_norm2 = LayerNormalization()
+        self.dropout = Dropout(self.dropout_rate)
 
-        # A: (hidden_dim,)
-        self.A = self.add_weight(shape=(hidden_dim,),
-                                 initializer=tf.keras.initializers.RandomNormal(mean=-0.5, stddev=0.1),
-                                 trainable=True, name="A")
+        self.built = True
 
-        # B: (state_dim,)
-        self.B = self.add_weight(shape=(self.state_dim,),
-                                 initializer='random_normal',
-                                 trainable=True, name="B")
-
-        # C: (state_dim,)
-        self.C = self.add_weight(shape=(self.state_dim,),
-                                 initializer='random_normal',
-                                 trainable=True, name="C")
-
-        self.D = self.add_weight(shape=(hidden_dim,),
-                                 initializer='zeros',
-                                 trainable=True, name="D")
-
-        self.norm = layers.LayerNormalization()
-        self.output_proj = layers.Dense(hidden_dim)
-
-    def fft_convolve(self, u_t, kernel_t, T):
-        pad_len = T - 1
-        seq_len = T + pad_len
-
-        fft_len_float = tf.math.ceil(tf.math.log(tf.cast(seq_len, tf.float32)) / tf.math.log(2.0))
-        fft_len = tf.cast(2 ** fft_len_float, tf.int32)
-
-        u_padded = tf.pad(u_t, [[0, 0], [0, 0], [pad_len, fft_len - seq_len]])
-        K_padded = tf.pad(kernel_t, [[0, 0], [0, fft_len - T]])
-
-        U_f = tf.signal.fft(tf.cast(tf.complex(u_padded, 0.0), tf.complex64))
-        K_f = tf.signal.fft(tf.cast(tf.complex(K_padded, 0.0), tf.complex64))
-
-        Y_f = U_f * tf.expand_dims(K_f, 0)
-        y_full = tf.signal.ifft(Y_f)
-        y_real = tf.math.real(y_full)[..., pad_len:pad_len + T]
-
-        return y_real
-
-    def call(self, x):
-        B = tf.shape(x)[0]
-        T = tf.shape(x)[1]
-        D = self.hidden_dim
-        S = self.state_dim
-
-    # Gating & Projection
-        gate = tf.nn.silu(self.gate_proj(x))  # (B, T, D)
-        x_proj = self.input_proj(x)          # (B, T, D)
-        u = gate * x_proj                     # (B, T, D)
-
-    # A^t: 시간 지남에 따른 decay
-        time_idx = tf.cast(tf.range(T), dtype=self.A.dtype)[:, None]  # (T, 1)
-        A_pow = tf.pow(tf.expand_dims(self.A, 0), time_idx)           # (T, D)
-
-    # 커널 생성: K[t, d, s] = A^t[d] * B[s]
-        kernel = tf.einsum('t d, s -> t d s', A_pow, self.B)  # (T, D, S)
-
-    # 입력 텐서 전치: (B, D, T)
-        u_t = tf.transpose(u, [0, 2, 1])
-
-    # 커널 전치: (D, S, T)
-        kernel_t = tf.transpose(kernel, [1, 2, 0])  # (D, S, T)
-
-    # 컨볼루션 대체: u_t (B, D, T) × kernel_t (D, S, T) → (B, D, S)
-        y_states = tf.einsum('b d t, d s t -> b d s', u_t, kernel_t)
-
-    # C 가중합: (B, D, S) × (S,) → (B, D)
-        y = tf.einsum('b d s, s -> b d', y_states, self.C)
-
-    # 다시 시퀀스 형태로 확장 (T 차원 복구): (B, D) → (B, T, D)
-        y = tf.expand_dims(y, axis=1)  # (B, 1, D)
-        y = tf.tile(y, [1, T, 1])      # (B, T, D)
-
-    # Skip connection
-        y = y + self.D * u
-
-    # FFN 및 정규화
-        y = self.norm(y)
-        y = self.ffn(y)
-        y = self.output_proj(y)
-
-        return y
-
-# ======================= Cobrablock ======================
-class Cobrablock(tf.keras.layers.Layer):
-    def __init__(self, d_model, dropout_rate=0.1):
-        super().__init__()
-        self.norm1 = layers.LayerNormalization(epsilon=1e-5)
-        self.mamba = RealMambaCore(d_model)
-        self.dropout1 = layers.Dropout(dropout_rate)
-
-        self.norm2 = layers.LayerNormalization(epsilon=1e-5)
-        self.dropout2 = layers.Dropout(dropout_rate)
-
-    def call(self, x, training=False):
-        residual = x
-        x = self.norm1(x)
-        x = self.mamba(x)
-        x = residual + self.dropout1(x, training=training)
-
-        residual = x
-        x = self.norm2(x)
-        x = self.dropout2(x, training=training)
-        x = residual + x
-
-        return x
-
-
-# ======================= CobraModel ======================
-class CobraModel(tf.keras.Model):
-    def __init__(self, vocab_size, d_model, n_layers, dropout_rate=0.1):
-        super().__init__()
-        self.token_embedding = layers.Embedding(vocab_size, d_model)
-        self.blocks = [Cobrablock(d_model, dropout_rate) for _ in range(n_layers)]
-        self.ln_f = layers.LayerNormalization(epsilon=1e-5)
-
-    def call(self, x, training=False):
-        x = self.token_embedding(x)
-
-        for block in self.blocks:
-            x = block(x, training=training)
-
-        x = self.ln_f(x)
-        logits = tf.matmul(x, self.token_embedding.embeddings, transpose_b=True)
-        return logits
-
-
-# 손실 함수 및 메트릭 정의
-loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True, reduction='none')
-
-def masked_loss(y_true, y_pred):
-    loss = loss_fn(y_true, y_pred)
-    mask = tf.cast(tf.not_equal(y_true, pad_id), tf.float32)
-    masked_loss = tf.reduce_sum(loss * mask) / tf.reduce_sum(mask)
-    return masked_loss
-
-def masked_accuracy(y_true, y_pred):
-    preds = tf.argmax(y_pred, axis=-1, output_type=y_true.dtype)
-    matches = tf.cast(tf.equal(y_true, preds), tf.float32)
-    mask = tf.cast(tf.not_equal(y_true, pad_id), tf.float32)
-    return tf.reduce_sum(matches * mask) / tf.reduce_sum(mask)
-
-def masked_perplexity(y_true, y_pred):
-    loss = loss_fn(y_true, y_pred)
-    mask = tf.cast(tf.not_equal(y_true, pad_id), tf.float32)
-    avg_loss = tf.reduce_sum(loss * mask) / tf.reduce_sum(mask)
-    return tf.exp(tf.minimum(avg_loss, 10.0))  # 수치 안정성 확보
-
-def masked_top5_accuracy(y_true, y_pred):
-    top5_preds = tf.nn.top_k(y_pred, k=5).indices
-    top5_preds = tf.cast(top5_preds, dtype=y_true.dtype)  # <-- 이 줄 추가
-    y_true_expanded = tf.expand_dims(y_true, axis=-1)
-    matches = tf.reduce_any(tf.equal(y_true_expanded, top5_preds), axis=-1)
-    matches = tf.cast(matches, tf.float32)
-    mask = tf.cast(tf.not_equal(y_true, pad_id), tf.float32)
-    return tf.reduce_sum(matches * mask) / tf.reduce_sum(mask)
-
-
-def token_level_loss(y_true, y_pred):
-    loss = loss_fn(y_true, y_pred)
-    mask = tf.cast(tf.not_equal(y_true, pad_id), tf.float32)
-    return tf.reduce_mean(loss * mask)
-
-def create_lr_schedule(initial_lr=5e-5, decay_steps=10000, decay_rate=0.9):
-    return tf.keras.optimizers.schedules.ExponentialDecay(
-        initial_learning_rate=initial_lr,
-        decay_steps=decay_steps,
-        decay_rate=decay_rate,
-        staircase=False
-    )
-
-
-# 모델 생성
-model = CobraModel(
-    vocab_size=vocab_size,
-    d_model=192,
-    n_layers=10
-)
-
-# 옵티마이저 설정
-optimizer = tf.keras.optimizers.Adam(
-    learning_rate=create_lr_schedule(),
-    beta_1=0.9,
-    beta_2=0.95,
-    epsilon=1e-8,
-    clipnorm=1.0
-)
-
-# 모델 컴파일
-model.compile(
-    optimizer=optimizer,
-    loss=masked_loss,
-    metrics=[
-        masked_accuracy,
-        masked_perplexity,
-        masked_top5_accuracy,
-        token_level_loss
-    ]
-)
-
-# 더미 인풋으로 모델 초기화
-dummy_input = np.zeros((1, max_len), dtype=np.int32)
-model(dummy_input)
-model.summary()
-
-# 학습 시작
-history = model.fit(
-    dataset,
-    epochs=1,
-    steps_per_epoch = encoded_inputs.shape[0] // batch_size,
-    verbose=1
-)
-
-# 가중치 저장
-model.save_weights("Cobra.weights.h5")
-print("모델 가중치 저장 완료!")
-from google.colab import files
-files.download('Cobra.weights.h5')  # 여기에 다운로드할 파일명을 넣어줘
-
-
-def advanced_generate_text_yield(
-    model, 
-    prompt, 
-    max_len=256, 
-    max_gen=200, 
-    temperature=0.8,
-    top_p=0.9,
-    repetition_penalty=1.1,
-    min_len=20
-):
-    model_input = text_to_ids(f"<start> {prompt} <sep>")
-    model_input = model_input[:max_len]
-    generated = list(model_input)
-    
-    for step in range(max_gen):
-        if len(generated) > max_len:
-            input_seq = generated[-max_len:]
+    def get_initial_state(self, inputs=None, batch_size=None, dtype=None):
+        if inputs is not None:
+            batch_size = tf.shape(inputs)[0]
+            dtype = inputs.dtype
         else:
-            input_seq = generated
+            dtype = tf.float32
 
-        input_padded = np.pad(input_seq, (0, max_len - len(input_seq)), constant_values=pad_id)
-        input_tensor = tf.convert_to_tensor([input_padded])
+        return [
+            tf.zeros((batch_size, self.units), dtype=dtype),
+            tf.zeros((batch_size, self.units), dtype=dtype)
+        ]
 
-        logits = model(input_tensor, training=False)
-        next_token_logits = logits[0, len(input_seq)-1].numpy()
+    def multi_head_attention(self, query, key, value):
+        """멀티헤드 어텐션 구현"""
+        batch_size = tf.shape(query)[0]
 
-        # 반복 패널티 적용
-        for i, token_id in enumerate(generated[-50:]):
-            if token_id < len(next_token_logits):
-                next_token_logits[token_id] /= repetition_penalty
+        q = tf.matmul(query, self.W_q)
+        k = tf.matmul(key, self.W_k)
+        v = tf.matmul(value, self.W_v)
 
-        next_token_logits[pad_id] -= 10.0
-        if len(generated) < min_len:
-            next_token_logits[end_id] -= 5.0
+        # 분할: (batch_size, num_heads, head_dim)
+        q = tf.reshape(q, (batch_size, self.num_heads, self.head_dim))
+        k = tf.reshape(k, (batch_size, self.num_heads, self.head_dim))
+        v = tf.reshape(v, (batch_size, self.num_heads, self.head_dim))
 
-        probs = tf.nn.softmax(next_token_logits / temperature).numpy()
-        sorted_indices = np.argsort(probs)[::-1]
-        sorted_probs = probs[sorted_indices]
-        cumulative_probs = np.cumsum(sorted_probs)
+        # 스코어 계산
+        dk = tf.cast(self.head_dim, tf.float32)
+        scores = tf.matmul(q, k, transpose_b=True) / tf.math.sqrt(dk)
+        weights = tf.nn.softmax(scores, axis=-1)
 
-        cutoff = np.searchsorted(cumulative_probs, top_p)
-        top_indices = sorted_indices[:cutoff + 1]
-        top_probs = sorted_probs[:cutoff + 1]
-        top_probs /= np.sum(top_probs)
+        # 가중합
+        attended = tf.matmul(weights, v)
 
-        next_token_id = np.random.choice(top_indices, p=top_probs)
+        # 다시 합침
+        attended = tf.reshape(attended, (batch_size, self.units))
 
-        if next_token_id == end_id and len(generated) >= min_len:
-            break
+        # 최종 선형 변환
+        output = tf.matmul(attended, self.W_o)
 
-        generated.append(int(next_token_id))
-        yield int(next_token_id)  # ID만 yield
+        return output
 
-def decode_sp_tokens(tokens):
-    """
-    SentencePiece 기반의 토큰 리스트를 사람이 읽을 수 있는 텍스트로 디코딩합니다.
-    '▁' (underscore)는 공백으로 대체하고, 전체 문자열은 양쪽 공백을 제거합니다.
-    
-    Args:
-        tokens (list of str): 각 요소가 하나의 토큰인 리스트
-        
-    Returns:
-        str: 디코딩된 텍스트
-    """
-    text = ''.join(tokens).replace('▁', ' ').strip()
-    return text
+    def call(self, inputs, states, training=None):
+        h_prev, longterm_prev = states
+
+        x_t_proj = tf.matmul(inputs, self.kernel_x)
+        h_prev_proj = tf.matmul(h_prev, self.kernel_h)
+        x = x_t_proj + h_prev_proj
+
+        # 게이트 계산
+        forget_gate = tf.sigmoid(tf.matmul(x, self.forget_gate))
+        input_gate = tf.sigmoid(tf.matmul(x, self.input_gate))
+
+        # LSTM 스타일의 셀 상태 업데이트
+        candidate = tf.tanh(x)
+        longterm = forget_gate * longterm_prev + input_gate * candidate
+
+        mediumterm = tf.nn.swish(x)
+        shortterm = tf.nn.swish(longterm + mediumterm)
+
+        # 정규화
+        shortterm = self.layer_norm1(shortterm)
+        longterm = self.layer_norm2(longterm)
+
+        # 멀티헤드 어텐션 적용 (Self-Attention)
+        attended = self.multi_head_attention(shortterm, shortterm, shortterm)
+
+        # 잔차 연결
+        output = shortterm + attended
+
+        # 드롭아웃
+        if training:
+            output = self.dropout(output, training=training)
+
+        return output, [output, longterm]
 
 
-def generate_full_text(model, prompt, decode_fn=None, **kwargs):
-    generator = advanced_generate_text_yield(model, prompt, **kwargs)
-
-    token_ids = []
-    for token_id in generator:
-        token_ids.append(token_id)
-
-    # 전체 디코딩
-    full_text = ids_to_text(token_ids)
-
-    if decode_fn:
-        return decode_fn([t for t in full_text])  # 필요시 토큰 단위 처리
-    else:
-        return full_text
-
-response = generate_full_text(
-    model,
-    "안녕하세요",
-    decode_fn=lambda x: ''.join(x).replace('▁', ' ').strip(),
-    max_gen=100
+# 공유 임베딩 레이어
+shared_embedding = Embedding(
+    input_dim=48000,
+    output_dim=256,
+    mask_zero=True,
+    name='shared_embedding'
 )
+# 🔥 명시적으로 build() 호출
+shared_embedding.build(input_shape=(None,))  # (batch_size, seq_len)
 
-print(response)
 
+class VecAwEncoder(Model):
+    def __init__(self, shared_embedding, hidden_units, dropout_rate=0.1, **kwargs):
+        super().__init__(**kwargs)
+        self.embedding = shared_embedding
+        self.dropout = Dropout(dropout_rate)
+        self.rnn_cell = VecAwCell(hidden_units, dropout_rate)
+        self.rnn = RNN(self.rnn_cell, return_sequences=True, return_state=True)
+
+    def call(self, inputs, training=None):
+        mask = self.embedding.compute_mask(inputs)
+        x = self.embedding(inputs)
+        x = self.dropout(x, training=training)
+        outputs, h_state, longterm_state = self.rnn(x, mask=mask, training=training)
+        return outputs, [h_state, longterm_state]
+
+
+class VecAwDecoder(Model):
+    def __init__(self, shared_embedding, hidden_units, dropout_rate=0.1, **kwargs):
+        super().__init__(**kwargs)
+        self.embedding = shared_embedding
+        self.dropout = Dropout(dropout_rate)
+        self.rnn_cell = VecAwCell(hidden_units, dropout_rate)
+        self.rnn = RNN(self.rnn_cell, return_sequences=True, return_state=True)
+
+        # 출력층 - 임베딩과 가중치 공유
+        vocab_size = int(shared_embedding.input_dim)
+        self.output_layer = Dense(vocab_size, use_bias=False, name='output_layer')
+        self.output_layer.build((None, hidden_units))
+        self.output_layer.set_weights([tf.transpose(shared_embedding.weights[0])])
+    def call(self, inputs, initial_state, training=None):
+        mask = self.embedding.compute_mask(inputs)
+        x = self.embedding(inputs)
+        x = self.dropout(x, training=training)
+
+        rnn_out, h_state, longterm_state = self.rnn(x, initial_state=initial_state, mask=mask, training=training)
+        logits = self.output_layer(rnn_out)
+
+        return logits, [h_state, longterm_state]
+
+
+class VecAwSeq2Seq(Model):
+    def __init__(self, shared_embedding, hidden_units, 
+                 start_id=sp.piece_to_id("<start>"), end_id=sp.piece_to_id("<end>"), max_length=128, 
+                 dropout_rate=0.1, **kwargs):
+        super().__init__(**kwargs)
+        self.encoder = VecAwEncoder(shared_embedding, hidden_units, dropout_rate)
+        self.decoder = VecAwDecoder(shared_embedding, hidden_units, dropout_rate)
+
+        self.start_token_id = start_id
+        self.end_token_id = end_id
+        self.max_length = max_length
+
+    def build(self, input_shape):
+        # encoder와 decoder가 사용할 input shape 전달
+        if isinstance(input_shape, dict):
+            enc_shape = input_shape['encoder_input']
+            dec_shape = input_shape['decoder_input']
+        else:
+            enc_shape, dec_shape = input_shape[0], input_shape[1]
+        
+        self.encoder.build(enc_shape)
+        self.decoder.build(dec_shape)
+        self.built = True
+
+    def call(self, inputs, training=None):
+        if isinstance(inputs, (list, tuple)) and len(inputs) == 2:
+            encoder_input, decoder_input = inputs
+        else:
+            encoder_input = inputs['encoder_input']
+            decoder_input = inputs['decoder_input']
+
+        encoder_output, encoder_state = self.encoder(encoder_input, training=training)
+        decoder_output, _ = self.decoder(decoder_input, initial_state=encoder_state, training=training)
+
+        return decoder_output
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            'start_id': self.start_id,
+            'end_id': self.end_id,
+            'max_length': self.max_length
+        })
+        return config
+
+model = VecAwSeq2Seq(shared_embedding, hidden_units=256)
+model.compile(optimizer='adam', loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True))
+model.fit(dataset, epochs=10)
+model.summary()
