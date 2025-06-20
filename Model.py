@@ -138,166 +138,109 @@ dataset = tf.data.Dataset.from_generator(
 dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
 print("dataset ok")
-class VecAwCell(Layer):
+
+import tensorflow as tf
+from tensorflow.keras.layers import Layer, LayerNormalization, Embedding, Dropout, Dense
+from tensorflow.keras.models import Model
+from tensorflow.keras import Model
+
+
+# ExtremeFRUCell 정의
+class ExtremeFRUCell(Layer):
     def __init__(self, units, dropout_rate=0.1, **kwargs):
-        super(VecAwCell, self).__init__(**kwargs)
+        super(ExtremeFRUCell, self).__init__(**kwargs)
         self.units = units
         self.dropout_rate = dropout_rate
-        self.state_size = [tf.TensorShape(units), tf.TensorShape(units)]  # [shortterm, longterm]
 
     def build(self, input_shape):
         feature_dim = input_shape[-1]
 
-        # FRU 가중치
+        # Main projection weights
         self.kernel_x = self.add_weight(
             shape=(feature_dim, self.units),
-            initializer='he_normal',
+            initializer='glorot_uniform',
             name='kernel_x'
         )
         self.kernel_h = self.add_weight(
             shape=(self.units, self.units),
-            initializer='he_normal',
+            initializer='orthogonal',
             name='kernel_h'
         )
 
-        # 멀티헤드 어텐션 파라미터
-        self.num_heads = 8
-        self.head_dim = self.units // self.num_heads
-
-        self.W_q = self.add_weight(
-            shape=(self.units, self.units),
-            initializer='glorot_normal',
-            name='W_q'
+        # Gate kernels
+        self.forget_gate_kernel = self.add_weight(
+            shape=(feature_dim, self.units),
+            initializer='glorot_uniform',
+            name='forget_gate_kernel'
         )
-        self.W_k = self.add_weight(
-            shape=(self.units, self.units),
-            initializer='glorot_normal',
-            name='W_k'
+        self.input_gate_kernel = self.add_weight(
+            shape=(feature_dim, self.units),
+            initializer='glorot_uniform',
+            name='input_gate_kernel'
         )
-        self.W_v = self.add_weight(
-            shape=(self.units, self.units),
-            initializer='glorot_normal',
-            name='W_v'
-        )
-        self.W_o = self.add_weight(
-            shape=(self.units, self.units),
-            initializer='glorot_normal',
-            name='W_o'
+        self.output_gate_kernel = self.add_weight(
+            shape=(feature_dim, self.units),
+            initializer='glorot_uniform',
+            name='output_gate_kernel'
         )
 
-        # 게이트 메커니즘
-        self.forget_gate = self.add_weight(
-            shape=(self.units, self.units),
-            initializer='glorot_normal',
-            name='forget_gate'
-        )
-        self.input_gate = self.add_weight(
-            shape=(self.units, self.units),
-            initializer='glorot_normal',
-            name='input_gate'
-        )
+        # Layer Norms
+        self.ln_long = LayerNormalization()
+        self.ln_short = LayerNormalization()
 
-        # 정규화 & 드롭아웃
-        self.layer_norm1 = LayerNormalization()
-        self.layer_norm2 = LayerNormalization()
         self.dropout = Dropout(self.dropout_rate)
 
         self.built = True
 
-    def get_initial_state(self, inputs=None, batch_size=None, dtype=None):
-        if inputs is not None:
-            batch_size = tf.shape(inputs)[0]
-            dtype = inputs.dtype
-        else:
-            dtype = tf.float32
+    def call(self, inputs, states):
+        h_prev, longterm_prev = states
 
+        # 1. Input Projection
+        x_proj = tf.matmul(inputs, self.kernel_x)
+        h_proj = tf.matmul(h_prev, self.kernel_h)
+        combined = x_proj + h_proj
+        combined = self.dropout(combined, training=True)
+
+        # 2. Gate Calculation
+        f_gate = tf.sigmoid(tf.matmul(inputs, self.forget_gate_kernel))
+        i_gate = tf.sigmoid(tf.matmul(inputs, self.input_gate_kernel))
+        o_gate = tf.sigmoid(tf.matmul(inputs, self.output_gate_kernel))
+
+        # 3. Long Term Memory Update
+        longterm = f_gate * longterm_prev + i_gate * tf.nn.gelu(combined)
+        longterm = self.ln_long(longterm)
+
+        # 4. Short Term Output
+        shortterm = o_gate * tf.nn.swish(longterm)
+        shortterm = self.ln_short(shortterm)
+
+        return shortterm, [shortterm, longterm]
+
+    def get_initial_state(self, inputs=None, batch_size=None, dtype=None):
         return [
             tf.zeros((batch_size, self.units), dtype=dtype),
             tf.zeros((batch_size, self.units), dtype=dtype)
         ]
 
-    def multi_head_attention(self, query, key, value):
-        """멀티헤드 어텐션 구현"""
-        batch_size = tf.shape(query)[0]
 
-        q = tf.matmul(query, self.W_q)
-        k = tf.matmul(key, self.W_k)
-        v = tf.matmul(value, self.W_v)
-
-        # 분할: (batch_size, num_heads, head_dim)
-        q = tf.reshape(q, (batch_size, self.num_heads, self.head_dim))
-        k = tf.reshape(k, (batch_size, self.num_heads, self.head_dim))
-        v = tf.reshape(v, (batch_size, self.num_heads, self.head_dim))
-
-        # 스코어 계산
-        dk = tf.cast(self.head_dim, tf.float32)
-        scores = tf.matmul(q, k, transpose_b=True) / tf.math.sqrt(dk)
-        weights = tf.nn.softmax(scores, axis=-1)
-
-        # 가중합
-        attended = tf.matmul(weights, v)
-
-        # 다시 합침
-        attended = tf.reshape(attended, (batch_size, self.units))
-
-        # 최종 선형 변환
-        output = tf.matmul(attended, self.W_o)
-
-        return output
-
-    def call(self, inputs, states, training=None):
-        h_prev, longterm_prev = states
-
-        x_t_proj = tf.matmul(inputs, self.kernel_x)
-        h_prev_proj = tf.matmul(h_prev, self.kernel_h)
-        x = x_t_proj + h_prev_proj
-
-        # 게이트 계산
-        forget_gate = tf.sigmoid(tf.matmul(x, self.forget_gate))
-        input_gate = tf.sigmoid(tf.matmul(x, self.input_gate))
-
-        # LSTM 스타일의 셀 상태 업데이트
-        candidate = tf.tanh(x)
-        longterm = forget_gate * longterm_prev + input_gate * candidate
-
-        mediumterm = tf.nn.swish(x)
-        shortterm = tf.nn.swish(longterm + mediumterm)
-
-        # 정규화
-        shortterm = self.layer_norm1(shortterm)
-        longterm = self.layer_norm2(longterm)
-
-        # 멀티헤드 어텐션 적용 (Self-Attention)
-        attended = self.multi_head_attention(shortterm, shortterm, shortterm)
-
-        # 잔차 연결
-        output = shortterm + attended
-
-        # 드롭아웃
-        if training:
-            output = self.dropout(output, training=training)
-
-        return output, [output, longterm]
-
-
-# 공유 임베딩 레이어
+# 공유 임베딩 레이어 (예시로 vocab_size 48000, dim 256 사용)
 shared_embedding = Embedding(
     input_dim=48000,
     output_dim=256,
     mask_zero=True,
     name='shared_embedding'
 )
-# 🔥 명시적으로 build() 호출
-shared_embedding.build(input_shape=(None,))  # (batch_size, seq_len)
+shared_embedding.build(input_shape=(None,))  # 명시적 build 호출
 
 
+# 인코더 클래스
 class VecAwEncoder(Model):
     def __init__(self, shared_embedding, hidden_units, dropout_rate=0.1, **kwargs):
         super().__init__(**kwargs)
         self.embedding = shared_embedding
         self.dropout = Dropout(dropout_rate)
-        self.rnn_cell = VecAwCell(hidden_units, dropout_rate)
-        self.rnn = RNN(self.rnn_cell, return_sequences=True, return_state=True)
+        self.rnn_cell = ExtremeFRUCell(hidden_units, dropout_rate)
+        self.rnn = tf.keras.layers.RNN(self.rnn_cell, return_sequences=True, return_state=True)
 
     def call(self, inputs, training=None):
         mask = self.embedding.compute_mask(inputs)
@@ -307,19 +250,21 @@ class VecAwEncoder(Model):
         return outputs, [h_state, longterm_state]
 
 
+# 디코더 클래스
 class VecAwDecoder(Model):
     def __init__(self, shared_embedding, hidden_units, dropout_rate=0.1, **kwargs):
         super().__init__(**kwargs)
         self.embedding = shared_embedding
         self.dropout = Dropout(dropout_rate)
-        self.rnn_cell = VecAwCell(hidden_units, dropout_rate)
-        self.rnn = RNN(self.rnn_cell, return_sequences=True, return_state=True)
+        self.rnn_cell = ExtremeFRUCell(hidden_units, dropout_rate)
+        self.rnn = tf.keras.layers.RNN(self.rnn_cell, return_sequences=True, return_state=True)
 
         # 출력층 - 임베딩과 가중치 공유
         vocab_size = int(shared_embedding.input_dim)
         self.output_layer = Dense(vocab_size, use_bias=False, name='output_layer')
         self.output_layer.build((None, hidden_units))
         self.output_layer.set_weights([tf.transpose(shared_embedding.weights[0])])
+
     def call(self, inputs, initial_state, training=None):
         mask = self.embedding.compute_mask(inputs)
         x = self.embedding(inputs)
@@ -331,10 +276,10 @@ class VecAwDecoder(Model):
         return logits, [h_state, longterm_state]
 
 
+# Seq2Seq 모델
 class VecAwSeq2Seq(Model):
     def __init__(self, shared_embedding, hidden_units, 
-                 start_id=sp.piece_to_id("<start>"), end_id=sp.piece_to_id("<end>"), max_length=128, 
-                 dropout_rate=0.1, **kwargs):
+                 start_id=1, end_id=2, max_length=128, dropout_rate=0.1, **kwargs):
         super().__init__(**kwargs)
         self.encoder = VecAwEncoder(shared_embedding, hidden_units, dropout_rate)
         self.decoder = VecAwDecoder(shared_embedding, hidden_units, dropout_rate)
@@ -344,7 +289,6 @@ class VecAwSeq2Seq(Model):
         self.max_length = max_length
 
     def build(self, input_shape):
-        # encoder와 decoder가 사용할 input shape 전달
         if isinstance(input_shape, dict):
             enc_shape = input_shape['encoder_input']
             dec_shape = input_shape['decoder_input']
@@ -370,8 +314,8 @@ class VecAwSeq2Seq(Model):
     def get_config(self):
         config = super().get_config()
         config.update({
-            'start_id': self.start_id,
-            'end_id': self.end_id,
+            'start_token_id': self.start_token_id,
+            'end_token_id': self.end_token_id,
             'max_length': self.max_length
         })
         return config
