@@ -383,5 +383,5 @@ test_encoder_input = tf.constant([ [1] * max_enc_len ])  # (1, 128)
 test_decoder_input = tf.constant([ [1] * max_dec_len ])  # (1, 128)
 
 _ = model((test_encoder_input, test_decoder_input))  # build 유도
-model.fit(dataset, epochs=10)
+model.fit(dataset, epochs=10, steps_per_epoch=len(train_sentences) // batch_size,)
 model.summary()
