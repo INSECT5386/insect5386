@@ -1,13 +1,11 @@
-import json  
-import pandas as pd
-import tensorflow as tf  
-from tensorflow.keras import layers 
-import sentencepiece as spm  
-import requests
+# -*- coding: utf-8 -*-
+import numpy as np
+import tensorflow as tf
 from tensorflow.keras.layers import Embedding, RNN, Layer, Dense, Dropout, LayerNormalization
 from tensorflow.keras.models import Model
-import numpy as np
-
+import sentencepiece as spm
+import pandas as pd
+import requests
 
 # ⬇️ 파일 다운로드 함수
 def download_file(url, save_path):
@@ -22,7 +20,7 @@ def download_file(url, save_path):
 download_file('https://huggingface.co/datasets/Yuchan5386/KeraLux4/resolve/main/dataset.parquet?download=true', 'dataset.parquet')
 download_file('https://huggingface.co/datasets/Yuchan5386/KeraLux4/resolve/main/kolig_unigram.model?download=true', 'ko_unigram.model')
 
-# ⬇️ Parquet 데이터 불러오기
+# ⬇️ Parquet 데이터 불러오기  
 df = pd.read_parquet("dataset.parquet", engine="pyarrow")
 
 # ⬇️ <start> 질문 <sep> 답변 <end> 포맷으로 변환
@@ -36,7 +34,7 @@ for conversations in df["conversations"]:
             response = item2.get("value", "").strip().replace("\n", " ")
             full = f"<start> {prompt} <sep> {response} <end>"
             train_sentences.append(full)
-train_sentences = train_sentences[:300]
+train_sentences = train_sentences[:100000]  # 예제용 소량
 print(f"총 문장 개수: {len(train_sentences)}")
 
 # ⬇️ 토크나이저 불러오기
@@ -48,22 +46,14 @@ pad_id = sp.piece_to_id("<pad>") if sp.piece_to_id("<pad>") != -1 else 0
 start_id = sp.piece_to_id("<start>")  
 sep_id = sp.piece_to_id("<sep>")  
 end_id = sp.piece_to_id("<end>")  
-unk_id = sp.piece_to_id("<unk>")  
 
 vocab_size = sp.get_piece_size()
 print(f"✅ Vocabulary size: {vocab_size}")
 
-# ⬇️ 텍스트 <-> ID 변환 함수
-def text_to_ids(text):
-    return sp.encode(text, out_type=int)
-
-def ids_to_text(ids):
-    return sp.decode(ids)
-
 # ⬇️ 전처리 하이퍼파라미터
 max_enc_len = 128   # 인코더 최대 길이 (질문 부분)
 max_dec_len = 128   # 디코더 최대 길이 (답변 부분)
-batch_size = 64
+batch_size = 32
 
 # ⬇️ 전처리 결과 저장할 리스트
 encoder_inputs = []
@@ -79,13 +69,13 @@ for sentence in train_sentences:
     target_text = sentence[sep_index + len("<sep>"):].strip()  # 답변 부분
 
     # 인코더 입력: 질문 + <sep>
-    enc_ids = text_to_ids(input_text + " <sep>")[:max_enc_len]
+    enc_ids = sp.encode(input_text + " <sep>")[:max_enc_len]
 
     # 디코더 입력: <start> + 답변
-    dec_input_ids = [start_id] + text_to_ids(target_text)[:max_dec_len - 1]
+    dec_input_ids = [start_id] + sp.encode(target_text)[:max_dec_len - 1]
 
     # 정답 라벨: 답변 + <end>
-    target_ids = text_to_ids(target_text + " <end>")[:max_dec_len]
+    target_ids = sp.encode(target_text + " <end>")[:max_dec_len]
 
     # 패딩 추가
     enc_padded = enc_ids + [pad_id] * (max_enc_len - len(enc_ids))
@@ -101,8 +91,6 @@ encoder_inputs = np.array(encoder_inputs, dtype=np.int32)
 decoder_inputs = np.array(decoder_inputs, dtype=np.int32)
 targets = np.array(targets, dtype=np.int32)
 
-import tensorflow as tf
-
 # ⬇️ TensorFlow Dataset 생성
 def data_generator():
     for enc, dec, tgt in zip(encoder_inputs, decoder_inputs, targets):
@@ -111,7 +99,6 @@ def data_generator():
             tgt
         )
 
-# output_types 및 output_shapes 정확히 지정
 output_types = (
     {
         'encoder_input': tf.int32,
@@ -135,97 +122,120 @@ dataset = tf.data.Dataset.from_generator(
 )
 
 dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
+print("dataset ok")
 
-class ExtremeFRUCell(Layer):
-    def __init__(self, units, **kwargs):
-        super(ExtremeFRUCell, self).__init__(**kwargs)
+# =====================================================================
+# 🧠 VecAwCell 정의
+# =====================================================================
+
+# 공유 임베딩 레이어 build
+shared_embedding = Embedding(
+    input_dim=vocab_size,
+    output_dim=256,
+    mask_zero=True,
+    name='shared_embedding'
+)
+
+shared_embedding.build((None,))
+
+
+class VecAwCell(Layer):
+    def __init__(self, units, dropout_rate=0.1, **kwargs):
+        super(VecAwCell, self).__init__(**kwargs)
         self.units = units
+        self.dropout_rate = dropout_rate
+        self.state_size = [tf.TensorShape(units), tf.TensorShape(units)]
 
     def build(self, input_shape):
         feature_dim = input_shape[-1]
 
-        # Main projection weights
+        # FRU 가중치
         self.kernel_x = self.add_weight(
             shape=(feature_dim, self.units),
-            initializer='glorot_uniform',
+            initializer='he_normal',
             name='kernel_x'
         )
         self.kernel_h = self.add_weight(
             shape=(self.units, self.units),
-            initializer='orthogonal',
+            initializer='he_normal',
             name='kernel_h'
         )
 
-        # Gate kernels (각각 별도)
-        self.forget_gate_kernel = self.add_weight(
-            shape=(feature_dim, self.units),
-            initializer='glorot_uniform',
-            name='forget_gate_kernel'
+
+        # 게이트 메커니즘
+        self.forget_gate = self.add_weight(
+            shape=(self.units, self.units),
+            initializer='glorot_normal',
+            name='forget_gate'
         )
-        self.input_gate_kernel = self.add_weight(
-            shape=(feature_dim, self.units),
-            initializer='glorot_uniform',
-            name='input_gate_kernel'
-        )
-        self.output_gate_kernel = self.add_weight(
-            shape=(feature_dim, self.units),
-            initializer='glorot_uniform',
-            name='output_gate_kernel'
+        self.input_gate = self.add_weight(
+            shape=(self.units, self.units),
+            initializer='glorot_normal',
+            name='input_gate'
         )
 
-        # Layer Norms
-        self.ln_long = LayerNormalization()
-        self.ln_short = LayerNormalization()
+        # 정규화 & 드롭아웃
+        self.layer_norm1 = LayerNormalization()
+        self.layer_norm2 = LayerNormalization()
+        self.dropout = Dropout(self.dropout_rate)
 
         self.built = True
 
-    def call(self, inputs, states):
-        h_prev, longterm_prev = states
-
-        # 1. Input Projection
-        x_proj = tf.matmul(inputs, self.kernel_x)
-        h_proj = tf.matmul(h_prev, self.kernel_h)
-        combined = x_proj + h_proj
-
-        # 2. Gate Calculation
-        f_gate = tf.sigmoid(tf.matmul(inputs, self.forget_gate_kernel))
-        i_gate = tf.sigmoid(tf.matmul(inputs, self.input_gate_kernel))
-        o_gate = tf.sigmoid(tf.matmul(inputs, self.output_gate_kernel))
-
-        # 3. Long Term Memory Update
-        longterm = f_gate * longterm_prev + i_gate * tf.nn.gelu(combined)
-        longterm = self.ln_long(longterm)
-
-        # 4. Short Term Output
-        shortterm = o_gate * tf.nn.swish(longterm)
-        shortterm = self.ln_short(shortterm)
-
-        return shortterm, [shortterm, longterm]
-
     def get_initial_state(self, inputs=None, batch_size=None, dtype=None):
+        if inputs is not None:
+            batch_size = tf.shape(inputs)[0]
+            dtype = inputs.dtype
+        else:
+            dtype = tf.float32
+
         return [
             tf.zeros((batch_size, self.units), dtype=dtype),
             tf.zeros((batch_size, self.units), dtype=dtype)
         ]
 
 
-# 공유 임베딩 레이어
-shared_embedding = Embedding(
-    input_dim=48000,
-    output_dim=256,
-    mask_zero=True,
-    name='shared_embedding'
-)
-# 🔥 명시적으로 build() 호출
-shared_embedding.build(input_shape=(None,))  # (batch_size, seq_len)
+    def call(self, inputs, states, training=None):
+        h_prev, longterm_prev = states
 
+        x_t_proj = tf.matmul(inputs, self.kernel_x)
+        h_prev_proj = tf.matmul(h_prev, self.kernel_h)
+        x = x_t_proj + h_prev_proj
+
+        # 게이트 계산
+        forget_gate = tf.sigmoid(tf.matmul(x, self.forget_gate))
+        input_gate = tf.sigmoid(tf.matmul(x, self.input_gate))
+
+        # LSTM 스타일의 셀 상태 업데이트
+        candidate = tf.tanh(x)
+        longterm = forget_gate * longterm_prev + input_gate * candidate
+
+        mediumterm = tf.nn.swish(x)
+        shortterm = tf.nn.swish(longterm + mediumterm)
+
+        # 정규화
+        shortterm = self.layer_norm1(shortterm)
+        longterm = self.layer_norm2(longterm)
+
+      
+        # 잔차 연결
+        output = shortterm
+
+        # 드롭아웃
+        if training:
+            output = self.dropout(output, training=training)
+
+        return output, [output, longterm]
+
+# =====================================================================
+# 🧮 Encoder / Decoder / Seq2Seq 모델
+# =====================================================================
 
 class VecAwEncoder(Model):
     def __init__(self, shared_embedding, hidden_units, dropout_rate=0.1, **kwargs):
         super().__init__(**kwargs)
         self.embedding = shared_embedding
         self.dropout = Dropout(dropout_rate)
-        self.rnn_cell = ExtremeFRUCell(hidden_units, dropout_rate)
+        self.rnn_cell = VecAwCell(hidden_units, dropout_rate)
         self.rnn = RNN(self.rnn_cell, return_sequences=True, return_state=True)
 
     def call(self, inputs, training=None):
@@ -233,7 +243,7 @@ class VecAwEncoder(Model):
         x = self.embedding(inputs)
         x = self.dropout(x, training=training)
         outputs, h_state, longterm_state = self.rnn(x, mask=mask, training=training)
-        return shortterm, [shortterm, longterm]
+        return outputs, [h_state, longterm_state]
 
 
 class VecAwDecoder(Model):
@@ -241,14 +251,14 @@ class VecAwDecoder(Model):
         super().__init__(**kwargs)
         self.embedding = shared_embedding
         self.dropout = Dropout(dropout_rate)
-        self.rnn_cell = ExtremeFRUCell(hidden_units, dropout_rate)
+        self.rnn_cell = VecAwCell(hidden_units, dropout_rate)
         self.rnn = RNN(self.rnn_cell, return_sequences=True, return_state=True)
 
-        # 출력층 - 임베딩과 가중치 공유
         vocab_size = int(shared_embedding.input_dim)
         self.output_layer = Dense(vocab_size, use_bias=False, name='output_layer')
         self.output_layer.build((None, hidden_units))
         self.output_layer.set_weights([tf.transpose(shared_embedding.weights[0])])
+
     def call(self, inputs, initial_state, training=None):
         mask = self.embedding.compute_mask(inputs)
         x = self.embedding(inputs)
@@ -257,28 +267,28 @@ class VecAwDecoder(Model):
         rnn_out, h_state, longterm_state = self.rnn(x, initial_state=initial_state, mask=mask, training=training)
         logits = self.output_layer(rnn_out)
 
-        return logits, [shortterm, longterm]
+        return logits, [h_state, longterm_state]
 
 
 class VecAwSeq2Seq(Model):
-    def __init__(self, shared_embedding, hidden_units, 
-                 start_id=sp.piece_to_id("<start>"), end_id=sp.piece_to_id("<end>"), max_length=128, dropout_rate=0.1, **kwargs):
+    def __init__(self, shared_embedding, hidden_units,
+                 start_token_id=sp.piece_to_id("<start>"), end_token_id=sp.piece_to_id("<end>"), max_length=128,
+                 dropout_rate=0.1, **kwargs):
         super().__init__(**kwargs)
         self.encoder = VecAwEncoder(shared_embedding, hidden_units, dropout_rate)
         self.decoder = VecAwDecoder(shared_embedding, hidden_units, dropout_rate)
 
-        self.start_token_id = start_id
-        self.end_token_id = end_id
+        self.start_token_id = start_token_id
+        self.end_token_id = end_token_id
         self.max_length = max_length
 
     def build(self, input_shape):
-        # encoder와 decoder가 사용할 input shape 전달
         if isinstance(input_shape, dict):
             enc_shape = input_shape['encoder_input']
             dec_shape = input_shape['decoder_input']
         else:
             enc_shape, dec_shape = input_shape[0], input_shape[1]
-        
+
         self.encoder.build(enc_shape)
         self.decoder.build(dec_shape)
         self.built = True
@@ -304,16 +314,39 @@ class VecAwSeq2Seq(Model):
         })
         return config
 
-model = VecAwSeq2Seq(shared_embedding, hidden_units=256)
-model.compile(optimizer='adam', loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True))
-# 예제 입력으로 build 유도
-test_encoder_input = tf.constant([ [1] * max_enc_len ])  # (1, 128)
-test_decoder_input = tf.constant([ [1] * max_dec_len ])  # (1, 128)
+# =====================================================================
+# 🚀 모델 생성 및 학습
+# =====================================================================
 
-_ = model((test_encoder_input, test_decoder_input))  # build 유도
+# 공유 임베딩 레이어 build
+shared_embedding = Embedding(
+    input_dim=vocab_size,
+    output_dim=256,
+    mask_zero=True,
+    name='shared_embedding'
+)
+shared_embedding.build((None,))  # 🔥 반드시 build() 호출!
+
+# 모델 생성
+model = VecAwSeq2Seq(shared_embedding, hidden_units=256)
+model.compile(
+    optimizer=tf.keras.optimizers.Adam(learning_rate=3e-4),
+    loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+    metrics=['accuracy']
+)
+
+# 예제 입력으로 build 유도
+test_encoder_input = tf.constant([[1] * max_enc_len])
+test_decoder_input = tf.constant([[1] * max_dec_len])
+_ = model((test_encoder_input, test_decoder_input))
+
+# 학습 시작
 model.fit(dataset, epochs=10, steps_per_epoch=len(train_sentences) // batch_size)
 model.summary()
 
+# =====================================================================
+# 💬 추론 함수: generate()
+# =====================================================================
 def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=False):
     """
     사용자 입력 문장을 받아 AI 응답 생성
@@ -376,6 +409,7 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
 
     decoded_text = sp.decode(generated_ids)
     return decoded_text
+
 
 # 예시 질문
 user_input = "오늘 날씨가 어때?"
