@@ -1,9 +1,3 @@
-import tensorflow as tf
-from tensorflow.keras import layers, Model, Sequential
-import numpy as np
-
-
-# 1. SwiGLU FFN (기존 코드 그대로)
 class SwiGLUFFN(tf.keras.layers.Layer):
     """SwiGLU activation을 사용한 개선된 FFN"""
     def __init__(self, dim, hidden_dim=None, dropout_rate=0.1):
@@ -22,39 +16,27 @@ class SwiGLUFFN(tf.keras.layers.Layer):
         hidden = self.dropout(hidden, training=training)
         return self.down_proj(hidden)
 
-class ConvSwiGLUBlock(layers.Layer):
-    def __init__(self, d_model, kernel_size=3, expansion_factor=2, dropout_rate=0.1, **kwargs):
+class HybridBlock(layers.Layer):
+    def __init__(self, d_model, kernel_size=3, **kwargs):
         super().__init__(**kwargs)
-        inner_dim = d_model * expansion_factor
-
-        self.net = Sequential([
-            layers.Conv1D(inner_dim, kernel_size, padding='causal'),
-            SwiGLUFFN(inner_dim),  # FFN이 inner_dim -> hidden -> d_model
-            layers.Conv1D(d_model, kernel_size, padding='causal'),
-            layers.Dropout(dropout_rate)
-        ])
-
+        self.conv = layers.Conv1D(d_model, kernel_size, padding='causal')
+        self.recurrent = layers.GRU(d_model, return_sequences=True)
+        self.ffn = SwiGLUFFN(d_model)
         self.norm = layers.LayerNormalization()
-    
-    def call(self, x, training=False):
-        residual = x
-        x = self.net(x, training=training)
-        x = x + residual
-        x = self.norm(x)
-        return x
 
+    def call(self, x):
+        x = self.conv(x) + self.recurrent(x)
+        x = self.ffn(x)
+        return self.norm(x)
 
-class ConvSwiGLULanguageModel(Model):
+class FreeAttentionNLG(Model):
     def __init__(self, vocab_size, d_model=512, depth=8, kernel_size=3, max_seq_length=1024, **kwargs):
         super().__init__(**kwargs)
         self.token_emb = layers.Embedding(vocab_size, d_model)
-        
-        # ✅ PosEmb를 Variable으로 명시적으로 선언
-        pos_emb_init = tf.keras.initializers.RandomNormal()(shape=[1, max_seq_length, d_model])
-        self.pos_emb = tf.Variable(pos_emb_init, trainable=True, name="positional_embedding")
+        self.pos_emb = layers.Embedding(max_seq_length, d_model)  # Learned Positional Embedding
 
         self.blocks = Sequential([
-            ConvSwiGLUBlock(d_model, kernel_size) for _ in range(depth)
+            HybridBlock(d_model, kernel_size) for _ in range(depth)
         ])
 
         self.head = layers.Dense(vocab_size)
@@ -62,7 +44,8 @@ class ConvSwiGLULanguageModel(Model):
     def call(self, x):
         B, T = tf.shape(x)[0], tf.shape(x)[1]
         x = self.token_emb(x)
-        x = x + self.pos_emb[:, :T, :]
+        positions = tf.range(T)
+        x = x + self.pos_emb(positions)  # Add positional embedding
         x = self.blocks(x)
         return self.head(x)
 
@@ -74,14 +57,14 @@ class ConvSwiGLULanguageModel(Model):
             logits = self(input_ids)
             logits = logits[:, -1, :]
 
-            if temperature == 0.0:
+            if temperature <= 1e-5:  # Greedy decoding
                 next_token = tf.argmax(logits, axis=-1, output_type=tf.int32)
             else:
                 logits = logits / temperature
                 if top_k is not None:
                     values, _ = tf.nn.top_k(logits, k=top_k)
-                    min_value = values[:, -1]
-                    logits = tf.where(logits < tf.expand_dims(min_value, -1), -float('Inf'), logits)
+                    min_value = tf.reduce_min(values, axis=-1, keepdims=True)
+                    logits = tf.where(logits < min_value, -float('Inf'), logits)
                 probs = tf.nn.softmax(logits, axis=-1)
                 next_token = tf.random.categorical(probs, 1)
 
