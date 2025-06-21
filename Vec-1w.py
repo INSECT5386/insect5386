@@ -31,6 +31,7 @@ class HybridBlock(layers.Layer):
         x = self.ffn(x)
         return self.norm1(x)
 
+
 class FreeAttentionNLG(Model):
     def __init__(self, vocab_size, d_model=512, depth=8, kernel_size=3, max_seq_length=1024, **kwargs):
         super().__init__(**kwargs)
