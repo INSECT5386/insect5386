@@ -150,8 +150,8 @@ class CustomSRUCell(Layer):
                  kernel_initializer='glorot_uniform',
                  recurrent_initializer='orthogonal',
                  bias_initializer='zeros',
-                 dropout=0.,
-                 recurrent_dropout=0.,
+                 dropout=0.1,
+                 recurrent_dropout=0.1,
                  **kwargs):
         super(CustomSRUCell, self).__init__(**kwargs)
         self.units = units
@@ -255,7 +255,7 @@ class VecAwEncoder(Model):
         super().__init__(**kwargs)
         self.embedding = shared_embedding
         self.dropout = Dropout(dropout_rate)
-        self.rnn_cell = CustomSRUCell(hidden_units, dropout_rate)
+        self.rnn_cell = CustomSRUCell(hidden_units)
         self.rnn = RNN(self.rnn_cell, return_sequences=True, return_state=True)
 
     def call(self, inputs, training=None):
@@ -271,7 +271,7 @@ class VecAwDecoder(Model):
         super().__init__(**kwargs)
         self.embedding = shared_embedding
         self.dropout = Dropout(dropout_rate)
-        self.rnn_cell = CustomSRUCell(hidden_units, dropout_rate)
+        self.rnn_cell = CustomSRUCell(hidden_units)
         self.rnn = RNN(self.rnn_cell, return_sequences=True, return_state=True)
 
         vocab_size = int(shared_embedding.input_dim)
