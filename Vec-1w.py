@@ -139,45 +139,68 @@ shared_embedding = Embedding(
 shared_embedding.build((None,))
 
 
-class VecAwCell(Layer):
-    def __init__(self, units, dropout_rate=0.1, **kwargs):
-        super(VecAwCell, self).__init__(**kwargs)
+import tensorflow as tf
+from tensorflow.keras.layers import Layer, LayerNormalization, Dropout
+from tensorflow.keras import initializers, regularizers, constraints
+
+class CustomSRUCell(Layer):
+    def __init__(self, units,
+                 activation='tanh',
+                 use_bias=True,
+                 kernel_initializer='glorot_uniform',
+                 recurrent_initializer='orthogonal',
+                 bias_initializer='zeros',
+                 dropout=0.,
+                 recurrent_dropout=0.,
+                 **kwargs):
+        super(CustomSRUCell, self).__init__(**kwargs)
         self.units = units
-        self.dropout_rate = dropout_rate
-        self.state_size = [tf.TensorShape(units), tf.TensorShape(units)]
+        self.activation = tf.keras.activations.get(activation)
+        self.use_bias = use_bias
+
+        self.kernel_initializer = initializers.get(kernel_initializer)
+        self.recurrent_initializer = initializers.get(recurrent_initializer)
+        self.bias_initializer = initializers.get(bias_initializer)
+
+        self.dropout = min(1., max(0., dropout))
+        self.recurrent_dropout = min(1., max(0., recurrent_dropout))
+
+        self.state_size = [units, units, units]  # [h_t, m_t, C_t]
+        self.output_size = units
 
     def build(self, input_shape):
-        feature_dim = input_shape[-1]
+        input_dim = input_shape[-1]
 
-        # FRU 가중치
-        self.kernel_x = self.add_weight(
-            shape=(feature_dim, self.units),
-            initializer='he_normal',
-            name='kernel_x'
+        # Gate projections
+        self.gate_kernel = self.add_weight(
+            shape=(input_dim, 3 * self.units),  # forget_gate, update_gate, candidate
+            name='gate_kernel',
+            initializer=self.kernel_initializer
         )
-        self.kernel_h = self.add_weight(
+
+        if self.use_bias:
+            self.gate_bias = self.add_weight(
+                shape=(3 * self.units,),
+                name='gate_bias',
+                initializer=self.bias_initializer
+            )
+        else:
+            self.gate_bias = None
+
+        # Working Memory projection
+        self.Wm = self.add_weight(
             shape=(self.units, self.units),
-            initializer='he_normal',
-            name='kernel_h'
+            name='Wm',
+            initializer=self.recurrent_initializer
         )
 
+        # Normalization
+        self.ln_c = LayerNormalization()
+        self.ln_m = LayerNormalization()
 
-        # 게이트 메커니즘
-        self.forget_gate = self.add_weight(
-            shape=(self.units, self.units),
-            initializer='glorot_normal',
-            name='forget_gate'
-        )
-        self.input_gate = self.add_weight(
-            shape=(self.units, self.units),
-            initializer='glorot_normal',
-            name='input_gate'
-        )
-
-        # 정규화 & 드롭아웃
-        self.layer_norm1 = LayerNormalization()
-        self.layer_norm2 = LayerNormalization()
-        self.dropout = Dropout(self.dropout_rate)
+        # Dropout
+        self.dropout_layer = Dropout(self.dropout)
+        self.recurrent_dropout_layer = Dropout(self.recurrent_dropout)
 
         self.built = True
 
@@ -190,41 +213,38 @@ class VecAwCell(Layer):
 
         return [
             tf.zeros((batch_size, self.units), dtype=dtype),
+            tf.zeros((batch_size, self.units), dtype=dtype),
             tf.zeros((batch_size, self.units), dtype=dtype)
         ]
 
-
     def call(self, inputs, states, training=None):
-        h_prev, longterm_prev = states
+        h_prev, m_prev, C_prev = states
 
-        x_t_proj = tf.matmul(inputs, self.kernel_x)
-        h_prev_proj = tf.matmul(h_prev, self.kernel_h)
-        x = x_t_proj + h_prev_proj
+        # Gate computation
+        gates = tf.matmul(inputs, self.gate_kernel)
+        if self.use_bias:
+            gates = tf.nn.bias_add(gates, self.gate_bias)
 
-        # 게이트 계산
-        forget_gate = tf.sigmoid(tf.matmul(x, self.forget_gate))
-        input_gate = tf.sigmoid(tf.matmul(x, self.input_gate))
+        forget_gate, update_gate, candidate = tf.split(gates, 3, axis=-1)
+        forget_gate = tf.sigmoid(forget_gate)
+        update_gate = tf.sigmoid(update_gate)
+        candidate = tf.nn.gelu(candidate)
 
-        # LSTM 스타일의 셀 상태 업데이트
-        candidate = tf.tanh(x)
-        longterm = forget_gate * longterm_prev + input_gate * candidate
+        # C_t: Long-term memory
+        C_t = forget_gate * C_prev + (1 - forget_gate) * candidate
+        C_t = self.ln_c(C_t)
 
-        mediumterm = tf.nn.swish(x)
-        shortterm = tf.nn.swish(longterm + mediumterm)
+        # m_t: Working memory
+        m_t = tf.tanh(tf.matmul(C_t, self.Wm)) * update_gate + (1 - update_gate) * m_prev
+        m_t = self.ln_m(m_t)
 
-        # 정규화
-        shortterm = self.layer_norm1(shortterm)
-        longterm = self.layer_norm2(longterm)
+        # h_t: Sensory memory / Output
+        h_t = tf.tanh(C_t * m_t)
 
-      
-        # 잔차 연결
-        output = shortterm
+        if training and self.dropout > 0.:
+            h_t = self.dropout_layer(h_t, training=training)
 
-        # 드롭아웃
-        if training:
-            output = self.dropout(output, training=training)
-
-        return output, [output, longterm]
+        return h_t, [h_t, m_t, C_t]
 
 # =====================================================================
 # 🧮 Encoder / Decoder / Seq2Seq 모델
@@ -235,15 +255,15 @@ class VecAwEncoder(Model):
         super().__init__(**kwargs)
         self.embedding = shared_embedding
         self.dropout = Dropout(dropout_rate)
-        self.rnn_cell = VecAwCell(hidden_units, dropout_rate)
+        self.rnn_cell = CustomSRUCell(hidden_units, dropout_rate)
         self.rnn = RNN(self.rnn_cell, return_sequences=True, return_state=True)
 
     def call(self, inputs, training=None):
         mask = self.embedding.compute_mask(inputs)
         x = self.embedding(inputs)
         x = self.dropout(x, training=training)
-        outputs, h_state, longterm_state = self.rnn(x, mask=mask, training=training)
-        return outputs, [h_state, longterm_state]
+        h_t, m_t, C_t = self.rnn(x, mask=mask, training=training)
+        return h_t, [h_t, m_t, C_t]
 
 
 class VecAwDecoder(Model):
@@ -251,7 +271,7 @@ class VecAwDecoder(Model):
         super().__init__(**kwargs)
         self.embedding = shared_embedding
         self.dropout = Dropout(dropout_rate)
-        self.rnn_cell = VecAwCell(hidden_units, dropout_rate)
+        self.rnn_cell = CustomSRUCell(hidden_units, dropout_rate)
         self.rnn = RNN(self.rnn_cell, return_sequences=True, return_state=True)
 
         vocab_size = int(shared_embedding.input_dim)
@@ -264,10 +284,10 @@ class VecAwDecoder(Model):
         x = self.embedding(inputs)
         x = self.dropout(x, training=training)
 
-        rnn_out, h_state, longterm_state = self.rnn(x, initial_state=initial_state, mask=mask, training=training)
+        rnn_out, h_t, m_t, C_t = self.rnn(x, initial_state=initial_state, mask=mask, training=training)
         logits = self.output_layer(rnn_out)
 
-        return logits, [h_state, longterm_state]
+        return logits, [h_t, m_t, C_t]
 
 
 class VecAwSeq2Seq(Model):
