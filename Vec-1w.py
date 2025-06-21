@@ -29,7 +29,7 @@ class ConvSwiGLUBlock(layers.Layer):
 
         self.net = Sequential([
             layers.Conv1D(inner_dim, kernel_size, padding='causal'),
-            SwiGLUFFN(d_model),
+            SwiGLUFFN(inner_dim),  # FFN이 inner_dim -> hidden -> d_model
             layers.Conv1D(d_model, kernel_size, padding='causal'),
             layers.Dropout(dropout_rate)
         ])
@@ -44,13 +44,15 @@ class ConvSwiGLUBlock(layers.Layer):
         return x
 
 
-# 5. 전체 언어 모델 정의
 class ConvSwiGLULanguageModel(Model):
     def __init__(self, vocab_size, d_model=512, depth=8, kernel_size=3, max_seq_length=1024, **kwargs):
         super().__init__(**kwargs)
         self.token_emb = layers.Embedding(vocab_size, d_model)
-        self.pos_emb = tf.keras.initializers.RandomNormal()(shape=[1, max_seq_length, d_model])
         
+        # ✅ PosEmb를 Variable으로 명시적으로 선언
+        pos_emb_init = tf.keras.initializers.RandomNormal()(shape=[1, max_seq_length, d_model])
+        self.pos_emb = tf.Variable(pos_emb_init, trainable=True, name="positional_embedding")
+
         self.blocks = Sequential([
             ConvSwiGLUBlock(d_model, kernel_size) for _ in range(depth)
         ])
@@ -70,15 +72,19 @@ class ConvSwiGLULanguageModel(Model):
         """
         for _ in range(max_new_tokens):
             logits = self(input_ids)
-            logits = logits[:, -1, :] / temperature
+            logits = logits[:, -1, :]
 
-            if top_k is not None:
-                values, _ = tf.nn.top_k(logits, k=top_k)
-                min_value = values[:, -1]
-                logits = tf.where(logits < tf.expand_dims(min_value, -1), -float('Inf'), logits)
+            if temperature == 0.0:
+                next_token = tf.argmax(logits, axis=-1, output_type=tf.int32)
+            else:
+                logits = logits / temperature
+                if top_k is not None:
+                    values, _ = tf.nn.top_k(logits, k=top_k)
+                    min_value = values[:, -1]
+                    logits = tf.where(logits < tf.expand_dims(min_value, -1), -float('Inf'), logits)
+                probs = tf.nn.softmax(logits, axis=-1)
+                next_token = tf.random.categorical(probs, 1)
 
-            probs = tf.nn.softmax(logits, axis=-1)
-            next_token = tf.random.categorical(probs, 1)
-            input_ids = tf.concat([input_ids, next_token], axis=1)
+            input_ids = tf.concat([input_ids, tf.expand_dims(next_token, axis=-1)], axis=1)
 
         return input_ids
