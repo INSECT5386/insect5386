@@ -22,34 +22,15 @@ class SwiGLUFFN(tf.keras.layers.Layer):
         hidden = self.dropout(hidden, training=training)
         return self.down_proj(hidden)
 
-
-# 2. Causal Conv1D 정의
-class CausalConv1D(layers.Layer):
-    def __init__(self, filters, kernel_size, dilation_rate=1, **kwargs):
-        super().__init__(**kwargs)
-        self.padding = dilation_rate * (kernel_size - 1)
-        self.conv = layers.Conv1D(
-            filters=filters,
-            kernel_size=kernel_size,
-            padding='valid',
-            dilation_rate=dilation_rate
-        )
-
-    def call(self, inputs):
-        # inputs shape: (batch, seq_len, channels)
-        x = tf.pad(inputs, [[0, 0], [self.padding, 0], [0, 0]])  # causal padding
-        return self.conv(x)
-
-# 4. Conv + SwiGLU Block
 class ConvSwiGLUBlock(layers.Layer):
     def __init__(self, d_model, kernel_size=3, expansion_factor=2, dropout_rate=0.1, **kwargs):
         super().__init__(**kwargs)
         inner_dim = d_model * expansion_factor
 
         self.net = Sequential([
-            CausalConv1D(inner_dim, kernel_size),
-            SwiGLUAFFN(d_model),
-            CausalConv1D(d_model, kernel_size),
+            layers.Conv1D(inner_dim, kernel_size, padding='causal'),
+            SwiGLUFFN(d_model),
+            layers.Conv1D(d_model, kernel_size, padding='causal'),
             layers.Dropout(dropout_rate)
         ])
 
