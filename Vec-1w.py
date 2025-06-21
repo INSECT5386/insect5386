@@ -255,15 +255,15 @@ class VecAwEncoder(Model):
         super().__init__(**kwargs)
         self.embedding = shared_embedding
         self.dropout = Dropout(dropout_rate)
-        self.rnn_cell = CustomSRUCell(hidden_units)
+        self.rnn_cell = CustomSRUCell(units=hidden_units)
         self.rnn = RNN(self.rnn_cell, return_sequences=True, return_state=True)
 
     def call(self, inputs, training=None):
         mask = self.embedding.compute_mask(inputs)
         x = self.embedding(inputs)
         x = self.dropout(x, training=training)
-        h_t, m_t, C_t = self.rnn(x, mask=mask, training=training)
-        return h_t, [h_t, m_t, C_t]
+        outputs, states = self.rnn(x, mask=mask, training=training)
+        return outputs, states
 
 
 class VecAwDecoder(Model):
@@ -284,10 +284,10 @@ class VecAwDecoder(Model):
         x = self.embedding(inputs)
         x = self.dropout(x, training=training)
 
-        rnn_out, h_t, m_t, C_t = self.rnn(x, initial_state=initial_state, mask=mask, training=training)
+        rnn_out, states = self.rnn(x, initial_state=initial_state, mask=mask, training=training)
         logits = self.output_layer(rnn_out)
 
-        return logits, [h_t, m_t, C_t]
+        return logits, states
 
 
 class VecAwSeq2Seq(Model):
