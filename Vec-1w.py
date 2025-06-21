@@ -23,11 +23,13 @@ class HybridBlock(layers.Layer):
         self.recurrent = layers.GRU(d_model, return_sequences=True)
         self.ffn = SwiGLUFFN(d_model)
         self.norm = layers.LayerNormalization()
+        self.norm1 = layers.LayerNormalization()
 
     def call(self, x):
         x = self.conv(x) + self.recurrent(x)
+        x = self.norm(x)
         x = self.ffn(x)
-        return self.norm(x)
+        return self.norm1(x)
 
 class FreeAttentionNLG(Model):
     def __init__(self, vocab_size, d_model=512, depth=8, kernel_size=3, max_seq_length=1024, **kwargs):
