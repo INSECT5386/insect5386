@@ -34,7 +34,7 @@ for conversations in df["conversations"]:
             response = item2.get("value", "").strip().replace("\n", " ")
             full = f"<start> {prompt} <sep> {response} <end>"
             train_sentences.append(full)
-train_sentences = train_sentences[:100000]  # 예제용 소량
+train_sentences = train_sentences[:10]  # 예제용 소량
 print(f"총 문장 개수: {len(train_sentences)}")
 
 # ⬇️ 토크나이저 불러오기
@@ -51,8 +51,8 @@ vocab_size = sp.get_piece_size()
 print(f"✅ Vocabulary size: {vocab_size}")
 
 # ⬇️ 전처리 하이퍼파라미터
-max_enc_len = 128   # 인코더 최대 길이 (질문 부분)
-max_dec_len = 128   # 디코더 최대 길이 (답변 부분)
+max_enc_len = 256   # 인코더 최대 길이 (질문 부분)
+max_dec_len = 256  # 디코더 최대 길이 (답변 부분)
 batch_size = 64
 
 # ⬇️ 전처리 결과 저장할 리스트
@@ -256,14 +256,18 @@ class VecAwEncoder(Model):
         self.embedding = shared_embedding
         self.dropout = Dropout(dropout_rate)
         self.rnn_cell = CustomSRUCell(units=hidden_units)
-        self.rnn = RNN(self.rnn_cell, return_sequences=True, return_state=True)
-
+        self.rnn = RNN(
+    self.rnn_cell,
+    return_sequences=True,
+    return_state=True,
+    stateful=False  # ← 중요!
+        )
     def call(self, inputs, training=None):
         mask = self.embedding.compute_mask(inputs)
         x = self.embedding(inputs)
         x = self.dropout(x, training=training)
-        outputs, states = self.rnn(x, mask=mask, training=training)
-        return outputs, states
+        states = self.rnn(x, mask=mask, training=training)
+        return states
 
 
 class VecAwDecoder(Model):
@@ -272,8 +276,12 @@ class VecAwDecoder(Model):
         self.embedding = shared_embedding
         self.dropout = Dropout(dropout_rate)
         self.rnn_cell = CustomSRUCell(hidden_units)
-        self.rnn = RNN(self.rnn_cell, return_sequences=True, return_state=True)
-
+        self.rnn = RNN(
+    self.rnn_cell,
+    return_sequences=True,
+    return_state=True,
+    stateful=False  # ← 중요!
+        )
         vocab_size = int(shared_embedding.input_dim)
         self.output_layer = Dense(vocab_size, use_bias=False, name='output_layer')
         self.output_layer.build((None, hidden_units))
@@ -320,7 +328,7 @@ class VecAwSeq2Seq(Model):
             encoder_input = inputs['encoder_input']
             decoder_input = inputs['decoder_input']
 
-        encoder_output, encoder_state = self.encoder(encoder_input, training=training)
+        encoder_state = self.encoder(encoder_input, training=training)
         decoder_output, _ = self.decoder(decoder_input, initial_state=encoder_state, training=training)
 
         return decoder_output
