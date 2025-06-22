@@ -94,25 +94,17 @@ targets = np.array(targets, dtype=np.int32)
 # ⬇️ TensorFlow Dataset 생성
 def data_generator():
     for enc, dec, tgt in zip(encoder_inputs, decoder_inputs, targets):
-        yield (
-            {'encoder_input': enc, 'decoder_input': dec},
-            tgt
-        )
+        # 딕셔너리 대신 튜플 형태로 반환
+        yield (enc, dec), tgt
 
 output_types = (
-    {
-        'encoder_input': tf.int32,
-        'decoder_input': tf.int32
-    },
-    tf.int32
+    (tf.int32, tf.int32), # 두 개의 입력 텐서에 대한 타입
+    tf.int32             # 타겟에 대한 타입
 )
 
 output_shapes = (
-    {
-        'encoder_input': tf.TensorShape([max_enc_len]),
-        'decoder_input': tf.TensorShape([max_dec_len])
-    },
-    tf.TensorShape([max_dec_len])
+    (tf.TensorShape([max_enc_len]), tf.TensorShape([max_dec_len])), # 두 개의 입력 텐서에 대한 모양
+    tf.TensorShape([max_dec_len])                                   # 타겟에 대한 모양
 )
 
 dataset = tf.data.Dataset.from_generator(
@@ -123,6 +115,8 @@ dataset = tf.data.Dataset.from_generator(
 
 dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 print("dataset ok")
+
+import tensorflow as tf
 
 class RecurrentFFN(tf.keras.layers.Layer):
     def __init__(self, input_dim, hidden_dim=None, dropout_rate=0.1):
@@ -150,44 +144,83 @@ class RecurrentFFN(tf.keras.layers.Layer):
 
     def build(self, input_shape):
         # 입력 크기 기반으로 내부 가중치를 명시적으로 생성
-        input_dim = input_shape[-1]
-        self.update_gate_dense.build((None, input_dim + self.hidden_dim))
-        self.reset_gate_dense.build((None, input_dim + self.hidden_dim))
-        self.gate_proj.build((None, input_dim + self.hidden_dim))
-        self.up_proj.build((None, input_dim + self.hidden_dim))
+        # input_shape는 (batch_size, sequence_length, features) 형태일 수 있으므로 마지막 차원을 사용
+        # self.input_dim은 input_shape의 마지막 차원이어야 함.
+        # RecurrentFFN이 RNN 셀처럼 작동한다면, input_shape는 (batch_size, features)
+        # 만약 (batch_size, seq_len, features)로 들어온다면 RNN Layer에서 각 타임스텝의 input_shape이 (batch_size, features)가 됨.
+        # 따라서 build에서 input_shape[-1]을 사용하는 것은 맞음.
+        
+        # 다만, hidden_dim은 input_dim * 4로 설정될 수 있으므로,
+        # build 메서드 호출 시 전달되는 input_shape는 x의 shape만 해당될 수 있음.
+        # hidden_state의 shape도 고려해야 combined의 input_shape가 올바르게 계산됨.
+        # 여기서는 RecurrentFFN이 RNN의 Cell로 사용된다고 가정하고 build의 input_shape가 x의 shape라고 가정.
+
+        # Keras Layer의 build 메서드는 일반적으로 첫 번째 인자로 (batch_size, ...) 형태의 input_shape를 받음
+        # RecurrentFFN의 build는 x의 input_shape를 받음.
+        # 따라서 combined의 shape는 (None, input_shape[-1] + self.hidden_dim)이 됨.
+        combined_input_dim = input_shape[-1] + self.hidden_dim
+
+        self.update_gate_dense.build((None, combined_input_dim))
+        self.reset_gate_dense.build((None, combined_input_dim))
+        self.gate_proj.build((None, combined_input_dim))
+        self.up_proj.build((None, combined_input_dim))
         self.down_proj.build((None, self.hidden_dim))
         self.built = True
 
     def call(self, x, hidden_state, training=False):
-        combined = tf.concat([x, hidden_state], axis=-1)
+        # hidden_state가 튜플일 경우 첫 번째 요소를 추출
+        # Keras RNN 래퍼가 셀의 상태를 튜플로 묶어서 전달할 수 있기 때문
+        if isinstance(hidden_state, (list, tuple)):
+            current_hidden_state = hidden_state[0]
+        else:
+            current_hidden_state = hidden_state
+
+        # 이제 x와 current_hidden_state는 모두 (batch_size, feature_dim) 형태의 2차원 텐서여야 합니다.
+        combined = tf.concat([x, current_hidden_state], axis=-1)
 
         update_gate = self.update_gate_act(self.update_gate_dense(combined))
         reset_gate = self.reset_gate_act(self.reset_gate_dense(combined))
 
-        gated_hidden = reset_gate * hidden_state
+        gated_hidden = reset_gate * current_hidden_state # 여기도 current_hidden_state 사용
         candidate_combined = tf.concat([x, gated_hidden], axis=-1)
 
         gate = self.gate_proj(candidate_combined)
         up = self.up_proj(candidate_combined)
         swiglu_output = tf.nn.silu(gate) * up
 
-        new_hidden_state = (1 - update_gate) * hidden_state + update_gate * swiglu_output
+        new_hidden_state = (1 - update_gate) * current_hidden_state + update_gate * swiglu_output
         new_hidden_state = self.norm_hidden(new_hidden_state)
 
         output = self.down_proj(new_hidden_state)
         output = self.norm_output(output)
         output = self.dropout(output, training=training)
 
+        # RNN 셀로 사용될 때는 (출력, 다음_상태) 튜플을 반환해야 함.
+        # Keras의 RNN 레이어가 이 형태를 기대함.
         return output, new_hidden_state
 
+    @property
+    def state_size(self):
+        # RNN Cell의 state_size 속성은 Keras RNN Layer가 초기 상태를 생성하고 관리할 때 사용합니다.
+        # 이는 일반적으로 단일 정수 또는 상태 텐서들의 모양을 나타내는 튜플입니다.
+        # 여기서는 단일 hidden_state를 사용하므로 hidden_dim을 반환합니다.
+        return self.hidden_dim
+
     def get_initial_state(self, batch_size=None, dtype=None):
-        return tf.zeros(shape=[batch_size, self.state_size], dtype=dtype)
+        # dtype이 None일 경우 self.dtype (레이어의 기본 dtype)을 사용하거나
+        # 아니면 tf.float32와 같은 명시적인 타입을 사용합니다.
+        # Keras 내부에서 RNN Cell의 dtype을 기반으로 이 메서드를 호출할 때
+        # dtype 인자를 전달하므로, 해당 dtype을 우선적으로 사용하는 것이 좋습니다.
+        actual_dtype = dtype if dtype is not None else self.dtype if hasattr(self, 'dtype') else tf.float32
+        return tf.zeros(shape=[batch_size, self.state_size], dtype=actual_dtype)
+
+
 
 # 인코더
 encoder_input = tf.keras.Input(shape=(max_enc_len,))
 encoder_emb = tf.keras.layers.Embedding(vocab_size, 200)(encoder_input)
 
-rnn_cell = RecurrentFFN(input_dim=50, hidden_dim=200)
+rnn_cell = RecurrentFFN(input_dim=200, hidden_dim=200)
 encoder = tf.keras.layers.RNN(rnn_cell, return_sequences=True, return_state=True, name='encoder')
 encoder_output, encoder_final_state = encoder(encoder_emb)
 
@@ -195,7 +228,7 @@ encoder_output, encoder_final_state = encoder(encoder_emb)
 decoder_input = tf.keras.Input(shape=(max_dec_len,))
 decoder_emb = tf.keras.layers.Embedding(vocab_size, 200)(decoder_input)
 
-rnn_cell_decoder = RecurrentFFN(input_dim=50, hidden_dim=200)
+rnn_cell_decoder = RecurrentFFN(input_dim=200, hidden_dim=200)
 
 decoder = tf.keras.layers.RNN(
     rnn_cell_decoder,
