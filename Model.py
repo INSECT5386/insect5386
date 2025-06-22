@@ -34,7 +34,7 @@ for conversations in df["conversations"]:
             response = item2.get("value", "").strip().replace("\n", " ")
             full = f"<start> {prompt} <sep> {response} <end>"
             train_sentences.append(full)
-train_sentences = train_sentences[:300]  # 예제용 소량
+train_sentences = train_sentences[:10]  # 예제용 소량
 print(f"총 문장 개수: {len(train_sentences)}")
 
 # ⬇️ 토크나이저 불러오기
@@ -129,6 +129,7 @@ class RecurrentFFN(tf.keras.layers.Layer):
         super().__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim or input_dim * 4
+        self.state_size = self.hidden_dim  # 👈 중요! state_size 정의
 
         # Update Gate and Reset Gate (like GRU)
         self.update_gate = tf.keras.Sequential([
@@ -154,29 +155,21 @@ class RecurrentFFN(tf.keras.layers.Layer):
         # Dropout
         self.dropout = tf.keras.layers.Dropout(dropout_rate)
 
-    def build(self, input_shape):
-        pass
-
     def call(self, x, hidden_state, training=False):
-        # Update Gate & Reset Gate 계산
         combined = tf.concat([x, hidden_state], axis=-1)
         update_gate = self.update_gate(combined)
         reset_gate = self.reset_gate(combined)
 
-        # Reset 적용 후 candidate 생성
         gated_hidden = reset_gate * hidden_state
         candidate_combined = tf.concat([x, gated_hidden], axis=-1)
 
-        # SwiGLU 활성화
         gate = self.gate_proj(candidate_combined)
         up = self.up_proj(candidate_combined)
         swiglu_output = tf.nn.silu(gate) * up
 
-        # Hidden State 업데이트
         new_hidden_state = (1 - update_gate) * hidden_state + update_gate * swiglu_output
         new_hidden_state = self.norm_hidden(new_hidden_state)
 
-        # Final output
         output = self.down_proj(new_hidden_state)
         output = self.norm_output(output)
         output = self.dropout(output, training=training)
@@ -184,8 +177,7 @@ class RecurrentFFN(tf.keras.layers.Layer):
         return output, new_hidden_state
 
     def get_initial_state(self, batch_size=None, dtype=None):
-        """Returns initial hidden state"""
-        return tf.zeros(shape=[batch_size, self.hidden_dim], dtype=dtype)
+        return tf.zeros(shape=[batch_size, self.state_size], dtype=dtype)
 
 # 인코더
 encoder_input = tf.keras.Input(shape=(max_enc_len,))
