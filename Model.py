@@ -24,16 +24,19 @@ class RecurrentDecoder(tf.keras.Model):
 # 인코더
 encoder_input = Input(shape=(max_len_q,))
 encoder_emb = Embedding(vocab_size, 50)(encoder_input)
+rnn_cell = RecurrentFFN(hidden_units)
 
-encoder = RFNN(50, return_sequences=True, return_state=True, name='encoder_1')
+encoder = RNN(rnn_cell, return_sequences=True, return_state=True, name='encoder_1')
 encoder_output, state_h, state_c = encoder_1(encoder_emb)
 
 # 디코더
 decoder_input = Input(shape=(max_len_a,))
 decoder_emb = Embedding(vocab_size_a, 50)(decoder_input)
 
+rnn_cell_2 = RecurrentFFN(hidden_units)
+
 # 첫 번째 LSTM (초기 상태는 encoder에서 나오는 상태 사용)
-decoder_1 = RFFN(50, return_sequences=True, return_state=True, name='decoder_lstm_1',
+decoder_1 = RNN(rnn_cell_2, return_sequences=True, return_state=True, name='decoder_lstm_1',
                       kernel_initializer=initializers.GlorotUniform(), recurrent_initializer=initializers.Orthogonal())
 decoder_output, state_h_1, state_c_1 = decoder_1(decoder_emb, initial_state=[state_h, state_c])
 
