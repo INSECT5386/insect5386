@@ -244,10 +244,8 @@ decoder = tf.keras.layers.RNN(
 decoder_output, _ = decoder(decoder_emb, initial_state=encoder_final_state)
 
 # 출력층
-decoder_dense = tf.keras.layers.TimeDistributed(
-    tf.keras.layers.Dense(vocab_size)
-)
-decoder_outputs = decoder_dense(decoder_output)
+logits = tf.matmul(x, shared_embedding.embedding, transpose_b=True)      
+decoder_outputs = decoder_dense(logits)
 
 # 모델 정의
 model = tf.keras.Model(inputs=[encoder_input, decoder_input], outputs=decoder_outputs)
