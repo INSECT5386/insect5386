@@ -1,25 +1,65 @@
-class RecurrentDecoder(tf.keras.Model):
-    def __init__(self, vocab_size, embed_dim, hidden_dim=None, num_layers=2, dropout_rate=0.1):
+import tensorflow as tf
+
+
+class RecurrentFFN(tf.keras.layers.Layer):
+    def __init__(self, input_dim, hidden_dim=None, dropout_rate=0.1):
         super().__init__()
-        self.embedding = tf.keras.layers.Embedding(vocab_size, embed_dim)
-        self.layers = [RecurrentFFN(embed_dim, hidden_dim, dropout_rate) for _ in range(num_layers)]
-        self.norm = tf.keras.layers.LayerNormalization()
-        self.head = tf.keras.layers.Dense(vocab_size)
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim or input_dim * 4
 
-    def call(self, x, hidden_states, training=False):
-        x = self.embedding(x)
-        new_hidden_states = []
+        # Update Gate and Reset Gate (like GRU)
+        self.update_gate = tf.keras.Sequential([
+            tf.keras.layers.Dense(self.hidden_dim),
+            tf.keras.layers.Activation('sigmoid')
+        ])
+        self.reset_gate = tf.keras.Sequential([
+            tf.keras.layers.Dense(self.hidden_dim),
+            tf.keras.layers.Activation('sigmoid')
+        ])
 
-        for i, layer in enumerate(self.layers):
-            x, new_state = layer(x, hidden_states[i], training=training)
-            new_hidden_states.append(new_state)
+        # Candidate hidden state (SwiGLU 기반)
+        self.gate_proj = tf.keras.layers.Dense(self.hidden_dim, use_bias=True)
+        self.up_proj = tf.keras.layers.Dense(self.hidden_dim, use_bias=True)
 
-        x = self.norm(x)
-        logits = self.head(x)
-        return logits, new_hidden_states
+        # Down projection
+        self.down_proj = tf.keras.layers.Dense(input_dim, use_bias=True)
 
-    def get_initial_states(self, batch_size, dtype=tf.float32):
-        return [layer.get_initial_state(batch_size=batch_size, dtype=dtype) for layer in self.layers]
+        # Layer Normalizations
+        self.norm_hidden = tf.keras.layers.LayerNormalization()
+        self.norm_output = tf.keras.layers.LayerNormalization()
+
+        # Dropout
+        self.dropout = tf.keras.layers.Dropout(dropout_rate)
+
+    def call(self, x, hidden_state, training=False):
+        # Update Gate & Reset Gate 계산
+        combined = tf.concat([x, hidden_state], axis=-1)
+        update_gate = self.update_gate(combined)
+        reset_gate = self.reset_gate(combined)
+
+        # Reset 적용 후 candidate 생성
+        gated_hidden = reset_gate * hidden_state
+        candidate_combined = tf.concat([x, gated_hidden], axis=-1)
+
+        # SwiGLU 활성화
+        gate = self.gate_proj(candidate_combined)
+        up = self.up_proj(candidate_combined)
+        swiglu_output = tf.nn.silu(gate) * up
+
+        # Hidden State 업데이트
+        new_hidden_state = (1 - update_gate) * hidden_state + update_gate * swiglu_output
+        new_hidden_state = self.norm_hidden(new_hidden_state)
+
+        # Final output
+        output = self.down_proj(new_hidden_state)
+        output = self.norm_output(output)
+        output = self.dropout(output, training=training)
+
+        return output, new_hidden_state
+
+    def get_initial_state(self, batch_size=None, dtype=None):
+        """Returns initial hidden state"""
+        return tf.zeros(shape=[batch_size, self.hidden_dim], dtype=dtype)
 
 # 인코더
 encoder_input = Input(shape=(max_len_q,))
