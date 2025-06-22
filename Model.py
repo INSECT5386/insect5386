@@ -218,39 +218,43 @@ class RecurrentFFN(tf.keras.layers.Layer):
         return tf.zeros(shape=[batch_size, self.state_size], dtype=actual_dtype)
 
 
-# 인코더 & 디코더 임베딩 공유
-shared_embedding = tf.keras.layers.Embedding(vocab_size, 200)
+# 공유 임베딩 레이어
+shared_embedding = layers.Embedding(vocab_size, 200)
 
-encoder_input = tf.keras.Input(shape=(max_enc_len,))
+# 인코더 입력 및 처리
+encoder_input = Input(shape=(max_enc_len,), name='encoder_input')
 encoder_emb = shared_embedding(encoder_input)
 
 rnn_cell = RecurrentFFN(input_dim=200, hidden_dim=200)
-encoder = tf.keras.layers.RNN(rnn_cell, return_sequences=True, return_state=True, name='encoder')
+encoder = layers.RNN(rnn_cell, return_sequences=True, return_state=True, name='encoder')
 encoder_output, encoder_final_state = encoder(encoder_emb)
 
-# 디코더
-decoder_input = tf.keras.Input(shape=(max_dec_len,))
+# 디코더 입력 및 처리
+decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
 decoder_emb = shared_embedding(decoder_input)
 
 rnn_cell_decoder = RecurrentFFN(input_dim=200, hidden_dim=200)
-
-decoder = tf.keras.layers.RNN(
+decoder = layers.RNN(
     rnn_cell_decoder,
     return_sequences=True,
     return_state=True,
-    name='decoder',
+    name='decoder'
 )
 
+# 디코더 실행 (초기 상태로 인코더의 final state 전달)
 decoder_output, _ = decoder(decoder_emb, initial_state=encoder_final_state)
 
-# 출력층
-logits = tf.matmul(x, shared_embedding.embedding, transpose_b=True)      
-decoder_outputs = decoder_dense(logits)
 
-# 모델 정의
-model = tf.keras.Model(inputs=[encoder_input, decoder_input], outputs=decoder_outputs)
+logits = tf.matmul(decoder_output, shared_embedding.embeddings, transpose_b=True)
 
-model.compile(optimizer='adam', loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True))
+# 소프트맥스 적용 (train 시 crossentropy loss에서 필요 없을 수 있음)
+decoder_outputs = tf.nn.softmax(logits, axis=-1)
+
+# 전체 모델 정의
+model = Model(inputs=[encoder_input, decoder_input], outputs=decoder_outputs)
+
+# 컴파일
+model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
 
 model.summary()
 model.fit(dataset, epochs=1, steps_per_epoch=len(train_sentences) // batch_size)
