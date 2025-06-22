@@ -129,36 +129,40 @@ class RecurrentFFN(tf.keras.layers.Layer):
         super().__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim or input_dim * 4
-        self.state_size = self.hidden_dim  # 👈 중요! state_size 정의
+        self.state_size = self.hidden_dim
 
-        # Update Gate and Reset Gate (like GRU)
-        self.update_gate = tf.keras.Sequential([
-            tf.keras.layers.Dense(self.hidden_dim),
-            tf.keras.layers.Activation('sigmoid')
-        ])
-        self.reset_gate = tf.keras.Sequential([
-            tf.keras.layers.Dense(self.hidden_dim),
-            tf.keras.layers.Activation('sigmoid')
-        ])
+        # 각 레이어를 개별적으로 선언
+        self.update_gate_dense = tf.keras.layers.Dense(self.hidden_dim)
+        self.update_gate_act = tf.keras.layers.Activation('sigmoid')
 
-        # Candidate hidden state (SwiGLU 기반)
+        self.reset_gate_dense = tf.keras.layers.Dense(self.hidden_dim)
+        self.reset_gate_act = tf.keras.layers.Activation('sigmoid')
+
         self.gate_proj = tf.keras.layers.Dense(self.hidden_dim, use_bias=True)
         self.up_proj = tf.keras.layers.Dense(self.hidden_dim, use_bias=True)
 
-        # Down projection
         self.down_proj = tf.keras.layers.Dense(input_dim, use_bias=True)
 
-        # Layer Normalizations
         self.norm_hidden = tf.keras.layers.LayerNormalization()
         self.norm_output = tf.keras.layers.LayerNormalization()
 
-        # Dropout
         self.dropout = tf.keras.layers.Dropout(dropout_rate)
+
+    def build(self, input_shape):
+        # 입력 크기 기반으로 내부 가중치를 명시적으로 생성
+        input_dim = input_shape[-1]
+        self.update_gate_dense.build((None, input_dim + self.hidden_dim))
+        self.reset_gate_dense.build((None, input_dim + self.hidden_dim))
+        self.gate_proj.build((None, input_dim + self.hidden_dim))
+        self.up_proj.build((None, input_dim + self.hidden_dim))
+        self.down_proj.build((None, self.hidden_dim))
+        self.built = True
 
     def call(self, x, hidden_state, training=False):
         combined = tf.concat([x, hidden_state], axis=-1)
-        update_gate = self.update_gate(combined)
-        reset_gate = self.reset_gate(combined)
+
+        update_gate = self.update_gate_act(self.update_gate_dense(combined))
+        reset_gate = self.reset_gate_act(self.reset_gate_dense(combined))
 
         gated_hidden = reset_gate * hidden_state
         candidate_combined = tf.concat([x, gated_hidden], axis=-1)
