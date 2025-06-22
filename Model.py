@@ -55,7 +55,7 @@ class RecurrentFFN(tf.keras.layers.Layer):
         output = self.norm_output(output)
         output = self.dropout(output, training=training)
 
-        return output, new_hidden_state
+        return output, [new_hidden_state]
 
     def get_initial_state(self, batch_size=None, dtype=None):
         """Returns initial hidden state"""
@@ -67,7 +67,7 @@ encoder_emb = Embedding(vocab_size, 50)(encoder_input)
 rnn_cell = RecurrentFFN(hidden_units)
 
 encoder = RNN(rnn_cell, return_sequences=True, return_state=True, name='encoder_1')
-encoder_output, state_h = encoder_1(encoder_emb)
+encoder_output, new_hidden_state = encoder_1(encoder_emb)
 
 # 디코더
 decoder_input = Input(shape=(max_len_a,))
@@ -78,7 +78,7 @@ rnn_cell_2 = RecurrentFFN(hidden_units)
 # 첫 번째 LSTM (초기 상태는 encoder에서 나오는 상태 사용)
 decoder_1 = RNN(rnn_cell_2, return_sequences=True, return_state=True, name='decoder_1',
                       kernel_initializer=initializers.GlorotUniform(), recurrent_initializer=initializers.Orthogonal())
-decoder_output, state_h_1 = decoder_1(decoder_emb, initial_state=[])
+decoder_output, new_hidden_state = decoder_1(decoder_emb, initial_state=[new_hidden_state])
 
 decoder_dense = TimeDistributed(Dense(vocab_size, activation='softmax'))
 decoder_outputs = decoder_dense(decoder_output)
