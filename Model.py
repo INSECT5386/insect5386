@@ -187,22 +187,17 @@ class RecurrentFFN(tf.keras.layers.Layer):
         """Returns initial hidden state"""
         return tf.zeros(shape=[batch_size, self.hidden_dim], dtype=dtype)
 
-
-# 가정된 파라미터
-vocab_size = 10000
-max_len = 256
-
 # 인코더
-encoder_input = tf.keras.Input(shape=(max_len,))
-encoder_emb = tf.keras.layers.Embedding(vocab_size, 50)(encoder_input)
+encoder_input = tf.keras.Input(shape=(max_enc_len,))
+encoder_emb = tf.keras.layers.Embedding(vocab_size, 200)(encoder_input)
 
 rnn_cell = RecurrentFFN(input_dim=50, hidden_dim=200)
 encoder = tf.keras.layers.RNN(rnn_cell, return_sequences=True, return_state=True, name='encoder')
 encoder_output, encoder_final_state = encoder(encoder_emb)
 
 # 디코더
-decoder_input = tf.keras.Input(shape=(max_len,))
-decoder_emb = tf.keras.layers.Embedding(vocab_size, 50)(decoder_input)
+decoder_input = tf.keras.Input(shape=(max_dec_len,))
+decoder_emb = tf.keras.layers.Embedding(vocab_size, 200)(decoder_input)
 
 rnn_cell_decoder = RecurrentFFN(input_dim=50, hidden_dim=200)
 
@@ -217,9 +212,13 @@ decoder_output, _ = decoder(decoder_emb, initial_state=encoder_final_state)
 
 # 출력층
 decoder_dense = tf.keras.layers.TimeDistributed(
-    tf.keras.layers.Dense(vocab_size, activation='softmax')
+    tf.keras.layers.Dense(vocab_size)
 )
 decoder_outputs = decoder_dense(decoder_output)
 
 # 모델 정의
 model = tf.keras.Model(inputs=[encoder_input, decoder_input], outputs=decoder_outputs)
+
+model.compile(optimizer='adam', loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True))
+
+model.summary()
