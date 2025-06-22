@@ -218,10 +218,11 @@ class RecurrentFFN(tf.keras.layers.Layer):
         return tf.zeros(shape=[batch_size, self.state_size], dtype=actual_dtype)
 
 
+# 인코더 & 디코더 임베딩 공유
+shared_embedding = tf.keras.layers.Embedding(vocab_size, 200)
 
-# 인코더
 encoder_input = tf.keras.Input(shape=(max_enc_len,))
-encoder_emb = tf.keras.layers.Embedding(vocab_size, 200)(encoder_input)
+encoder_emb = shared_embedding(encoder_input)
 
 rnn_cell = RecurrentFFN(input_dim=200, hidden_dim=200)
 encoder = tf.keras.layers.RNN(rnn_cell, return_sequences=True, return_state=True, name='encoder')
@@ -229,7 +230,7 @@ encoder_output, encoder_final_state = encoder(encoder_emb)
 
 # 디코더
 decoder_input = tf.keras.Input(shape=(max_dec_len,))
-decoder_emb = tf.keras.layers.Embedding(vocab_size, 200)(decoder_input)
+decoder_emb = shared_embedding(decoder_input)
 
 rnn_cell_decoder = RecurrentFFN(input_dim=200, hidden_dim=200)
 
