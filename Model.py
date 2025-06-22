@@ -1,4 +1,7 @@
 import tensorflow as tf
+from tensorflow.keras.layers import Input, Embedding, Dense, LayerNormalization, Dropout, RNN
+from tensorflow.keras.models import Model
+from tensorflow.keras.initializers import GlorotUniform, Orthogonal
 
 
 class RecurrentFFN(tf.keras.layers.Layer):
@@ -31,6 +34,9 @@ class RecurrentFFN(tf.keras.layers.Layer):
         # Dropout
         self.dropout = tf.keras.layers.Dropout(dropout_rate)
 
+    def build(self, input_shape):
+        pass
+
     def call(self, x, hidden_state, training=False):
         # Update Gate & Reset Gate 계산
         combined = tf.concat([x, hidden_state], axis=-1)
@@ -55,33 +61,45 @@ class RecurrentFFN(tf.keras.layers.Layer):
         output = self.norm_output(output)
         output = self.dropout(output, training=training)
 
-        return output, [new_hidden_state]
+        return output, new_hidden_state
 
     def get_initial_state(self, batch_size=None, dtype=None):
         """Returns initial hidden state"""
         return tf.zeros(shape=[batch_size, self.hidden_dim], dtype=dtype)
 
-# 인코더
-encoder_input = Input(shape=(max_len_q,))
-encoder_emb = Embedding(vocab_size, 50)(encoder_input)
-rnn_cell = RecurrentFFN(hidden_units)
 
-encoder = RNN(rnn_cell, return_sequences=True, return_state=True, name='encoder_1')
-encoder_output, new_hidden_state = encoder_1(encoder_emb)
+# 가정된 파라미터
+vocab_size = 10000
+max_len = 256
+
+# 인코더
+encoder_input = tf.keras.Input(shape=(max_len,))
+encoder_emb = tf.keras.layers.Embedding(vocab_size, 50)(encoder_input)
+
+rnn_cell = RecurrentFFN(input_dim=50, hidden_dim=200)
+encoder = tf.keras.layers.RNN(rnn_cell, return_sequences=True, return_state=True, name='encoder')
+encoder_output, encoder_final_state = encoder(encoder_emb)
 
 # 디코더
-decoder_input = Input(shape=(max_len_a,))
-decoder_emb = Embedding(vocab_size_a, 50)(decoder_input)
+decoder_input = tf.keras.Input(shape=(max_len,))
+decoder_emb = tf.keras.layers.Embedding(vocab_size, 50)(decoder_input)
 
-rnn_cell_2 = RecurrentFFN(hidden_units)
+rnn_cell_decoder = RecurrentFFN(input_dim=50, hidden_dim=200)
 
-# 첫 번째 LSTM (초기 상태는 encoder에서 나오는 상태 사용)
-decoder_1 = RNN(rnn_cell_2, return_sequences=True, return_state=True, name='decoder_1',
-                      kernel_initializer=initializers.GlorotUniform(), recurrent_initializer=initializers.Orthogonal())
-decoder_output, new_hidden_state = decoder_1(decoder_emb, initial_state=[new_hidden_state])
+decoder = tf.keras.layers.RNN(
+    rnn_cell_decoder,
+    return_sequences=True,
+    return_state=True,
+    name='decoder',
+)
 
-decoder_dense = TimeDistributed(Dense(vocab_size, activation='softmax'))
+decoder_output, _ = decoder(decoder_emb, initial_state=encoder_final_state)
+
+# 출력층
+decoder_dense = tf.keras.layers.TimeDistributed(
+    tf.keras.layers.Dense(vocab_size, activation='softmax')
+)
 decoder_outputs = decoder_dense(decoder_output)
 
 # 모델 정의
-model = Model(inputs=[encoder_input, decoder_input], outputs=decoder_outputs)
+model = tf.keras.Model(inputs=[encoder_input, decoder_input], outputs=decoder_outputs)
