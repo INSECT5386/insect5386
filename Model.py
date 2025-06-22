@@ -251,12 +251,12 @@ model = tf.keras.Model(inputs=[encoder_input, decoder_input], outputs=decoder_ou
 model.compile(optimizer='adam', loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True))
 
 model.summary()
-model.fit(dataset, epochs=10, steps_per_epoch=len(train_sentences) // batch_size)
+model.fit(dataset, epochs=1, steps_per_epoch=len(train_sentences) // batch_size)
 
 def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=False):
     """
     사용자 입력 문장을 받아 AI 응답 생성
-    :param model: 훈련된 VecAwSeq2Seq 모델
+    :param model: 훈련된 Seq2Seq 모델
     :param sp: SentencePiece Tokenizer
     :param input_text: 사용자 입력 (str)
     :param max_dec_len: 최대 생성 길이
@@ -278,8 +278,17 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
         print("Encoder Input:", input_text)
         print("Encoded:", enc_ids)
 
-    # 인코더 실행
-    encoder_output, encoder_state = model.encoder(enc_tensor, training=False)
+    # 인코더 실행 (인코더 임베딩 -> RNN)
+    encoder_emb_layer = model.get_layer('embedding')  # 인코더 임베딩
+    encoder_rnn_layer = model.get_layer('encoder')    # 인코더 RNN
+
+    encoder_emb_out = encoder_emb_layer(enc_tensor)
+    encoder_output, encoder_state = encoder_rnn_layer(encoder_emb_out, training=False)
+
+    # 디코더 준비
+    decoder_emb_layer = model.get_layer('embedding_1')  # 디코더 임베딩
+    decoder_rnn_layer = model.get_layer('decoder')      # 디코더 RNN
+    decoder_dense_layer = model.get_layer('time_distributed')  # TimeDistributed(Dense)
 
     # 디코더 초기 입력: <start>
     dec_input = tf.constant([[start_id]], dtype=tf.int32)
@@ -287,11 +296,14 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
     generated_ids = []
 
     for step in range(max_dec_len):
-        decoder_output, next_state = model.decoder(
-            dec_input, initial_state=current_state, training=False
+        dec_emb = decoder_emb_layer(dec_input)  # 입력 임베딩
+
+        decoder_output, next_state = decoder_rnn_layer(
+            dec_emb, initial_state=current_state, training=False
         )
 
-        logits = decoder_output[:, -1, :]  # 마지막 타임스텝의 로짓
+        logits = decoder_dense_layer(decoder_output)  # (batch_size, 1, vocab_size)
+        logits = tf.squeeze(logits, axis=1)  # (batch_size, vocab_size)
 
         # 온도 조절 샘플링
         if temperature == 0.:
@@ -300,7 +312,7 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
             logits = logits / temperature
             pred_id = tf.random.categorical(logits, 1, dtype=tf.int32)
 
-        pred_id = tf.squeeze(pred_id, axis=1)
+        pred_id = tf.squeeze(pred_id, axis=1)  # (1,)
 
         # 종료 토큰 체크
         if int(pred_id[0]) == end_id:
@@ -315,11 +327,3 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
 
     decoded_text = sp.decode(generated_ids)
     return decoded_text
-
-
-# 예시 질문
-user_input = "오늘 날씨가 어때?"
-
-# AI 답변 생성
-response = generate(model, sp, user_input, max_dec_len=64, temperature=0.7, verbose=True)
-print("\nAI 답변:", response)
