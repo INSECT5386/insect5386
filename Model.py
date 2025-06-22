@@ -34,7 +34,7 @@ for conversations in df["conversations"]:
             response = item2.get("value", "").strip().replace("\n", " ")
             full = f"<start> {prompt} <sep> {response} <end>"
             train_sentences.append(full)
-train_sentences = train_sentences[:10]  # 예제용 소량
+train_sentences = train_sentences[:128] # 예제용 소량
 print(f"총 문장 개수: {len(train_sentences)}")
 
 # ⬇️ 토크나이저 불러오기
@@ -51,8 +51,8 @@ vocab_size = sp.get_piece_size()
 print(f"✅ Vocabulary size: {vocab_size}")
 
 # ⬇️ 전처리 하이퍼파라미터
-max_enc_len = 128   # 인코더 최대 길이 (질문 부분)
-max_dec_len = 128   # 디코더 최대 길이 (답변 부분)
+max_enc_len = 128 # 인코더 최대 길이 (질문 부분)
+max_dec_len = 128 # 디코더 최대 길이 (답변 부분)
 batch_size = 32
 
 # ⬇️ 전처리 결과 저장할 리스트
@@ -65,8 +65,8 @@ for sentence in train_sentences:
         continue
 
     sep_index = sentence.index("<sep>")
-    input_text = sentence[:sep_index].strip()      # 질문 부분
-    target_text = sentence[sep_index + len("<sep>"):].strip()  # 답변 부분
+    input_text = sentence[:sep_index].strip() # 질문 부분
+    target_text = sentence[sep_index + len("<sep>"):].strip() # 답변 부분
 
     # 인코더 입력: 질문 + <sep>
     enc_ids = sp.encode(input_text + " <sep>")[:max_enc_len]
@@ -99,12 +99,12 @@ def data_generator():
 
 output_types = (
     (tf.int32, tf.int32), # 두 개의 입력 텐서에 대한 타입
-    tf.int32             # 타겟에 대한 타입
+    tf.int32 # 타겟에 대한 타입
 )
 
 output_shapes = (
     (tf.TensorShape([max_enc_len]), tf.TensorShape([max_dec_len])), # 두 개의 입력 텐서에 대한 모양
-    tf.TensorShape([max_dec_len])                                   # 타겟에 대한 모양
+    tf.TensorShape([max_dec_len]) # 타겟에 대한 모양
 )
 
 dataset = tf.data.Dataset.from_generator(
@@ -119,8 +119,9 @@ print("dataset ok")
 import tensorflow as tf
 
 class RecurrentFFN(tf.keras.layers.Layer):
-    def __init__(self, input_dim, hidden_dim=None, dropout_rate=0.1):
-        super().__init__()
+    # __init__ 메서드에 **kwargs 추가
+    def __init__(self, input_dim, hidden_dim=None, dropout_rate=0.1, **kwargs):
+        super().__init__(**kwargs) # **kwargs를 부모 클래스인 tf.keras.layers.Layer의 __init__에 전달
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim or input_dim * 4
         self.state_size = self.hidden_dim
@@ -165,6 +166,8 @@ class RecurrentFFN(tf.keras.layers.Layer):
         self.gate_proj.build((None, combined_input_dim))
         self.up_proj.build((None, combined_input_dim))
         self.down_proj.build((None, self.hidden_dim))
+        self.norm_hidden.build((None, self.hidden_dim)) # new_hidden_state의 shape
+        self.norm_output.build((None, self.input_dim))
         self.built = True
 
     def call(self, x, hidden_state, training=False):
@@ -252,7 +255,7 @@ model.compile(optimizer='adam', loss=tf.keras.losses.SparseCategoricalCrossentro
 
 model.summary()
 model.fit(dataset, epochs=1, steps_per_epoch=len(train_sentences) // batch_size)
-
+model.save("model.keras") # 최선의 선택
 def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=False):
     """
     사용자 입력 문장을 받아 AI 응답 생성
@@ -279,16 +282,16 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
         print("Encoded:", enc_ids)
 
     # 인코더 실행 (인코더 임베딩 -> RNN)
-    encoder_emb_layer = model.get_layer('embedding')  # 인코더 임베딩
-    encoder_rnn_layer = model.get_layer('encoder')    # 인코더 RNN
+    encoder_emb_layer = model.get_layer('embedding') # 인코더 임베딩
+    encoder_rnn_layer = model.get_layer('encoder') # 인코더 RNN
 
     encoder_emb_out = encoder_emb_layer(enc_tensor)
     encoder_output, encoder_state = encoder_rnn_layer(encoder_emb_out, training=False)
 
     # 디코더 준비
-    decoder_emb_layer = model.get_layer('embedding_1')  # 디코더 임베딩
-    decoder_rnn_layer = model.get_layer('decoder')      # 디코더 RNN
-    decoder_dense_layer = model.get_layer('time_distributed')  # TimeDistributed(Dense)
+    decoder_emb_layer = model.get_layer('embedding_1') # 디코더 임베딩
+    decoder_rnn_layer = model.get_layer('decoder') # 디코더 RNN
+    decoder_dense_layer = model.get_layer('time_distributed') # TimeDistributed(Dense)
 
     # 디코더 초기 입력: <start>
     dec_input = tf.constant([[start_id]], dtype=tf.int32)
@@ -296,14 +299,14 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
     generated_ids = []
 
     for step in range(max_dec_len):
-        dec_emb = decoder_emb_layer(dec_input)  # 입력 임베딩
+        dec_emb = decoder_emb_layer(dec_input) # 입력 임베딩
 
         decoder_output, next_state = decoder_rnn_layer(
             dec_emb, initial_state=current_state, training=False
         )
 
-        logits = decoder_dense_layer(decoder_output)  # (batch_size, 1, vocab_size)
-        logits = tf.squeeze(logits, axis=1)  # (batch_size, vocab_size)
+        logits = decoder_dense_layer(decoder_output) # (batch_size, 1, vocab_size)
+        logits = tf.squeeze(logits, axis=1) # (batch_size, vocab_size)
 
         # 온도 조절 샘플링
         if temperature == 0.:
@@ -312,14 +315,14 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
             logits = logits / temperature
             pred_id = tf.random.categorical(logits, 1, dtype=tf.int32)
 
-        pred_id = tf.squeeze(pred_id, axis=1)  # (1,)
+        pred_id = tf.squeeze(pred_id, axis=1) # (1,)
 
         # 종료 토큰 체크
         if int(pred_id[0]) == end_id:
             break
 
         generated_ids.append(int(pred_id[0]))
-        dec_input = pred_id[:, tf.newaxis]  # 다음 입력으로 업데이트
+        dec_input = pred_id[:, tf.newaxis] # 다음 입력으로 업데이트
         current_state = next_state
 
         if verbose:
