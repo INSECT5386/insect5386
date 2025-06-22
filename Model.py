@@ -327,3 +327,7 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
 
     decoded_text = sp.decode(generated_ids)
     return decoded_text
+
+input_text = "안녕하세요"
+
+generate(model, sp, input_text)
