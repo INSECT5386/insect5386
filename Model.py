@@ -206,6 +206,13 @@ class RecurrentFFN(tf.keras.layers.Layer):
 
         return outputs, h_seq[:, -1, :]  # [B, T, D], [B, H]
 
+    @property
+    def state_size(self):
+        return self.hidden_dim
+
+    def get_initial_state(self, batch_size=None, dtype=None):
+        actual_dtype = dtype if dtype is not None else self.dtype if hasattr(self, 'dtype') else tf.float32
+        return tf.zeros(shape=[batch_size, self.state_size], dtype=actual_dtype)
 
 encoder_input = tf.keras.Input(shape=(max_enc_len,))
 encoder_emb = tf.keras.layers.Embedding(vocab_size, 200)(encoder_input)
