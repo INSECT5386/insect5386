@@ -123,13 +123,17 @@ class RecurrentFFN(tf.keras.layers.Layer):
         self.hidden_dim = hidden_dim or input_dim * 4
         self.use_reset_gate = use_reset_gate
 
-        # SRU-style gating parameters
+        # Gating layer
         self.gate_proj = tf.keras.layers.Dense(self.hidden_dim * (2 if use_reset_gate else 1))
-        
-        # Optional output projection
-        self.output_proj = tf.keras.layers.Dense(input_dim)
 
-        # Normalization and dropout
+        # SwiGLU components
+        self.gate = tf.keras.layers.Dense(self.hidden_dim)
+        self.up = tf.keras.layers.Dense(self.hidden_dim)
+
+        # Output projection
+        self.down_proj = tf.keras.layers.Dense(input_dim)
+
+        # Norms and dropout
         self.norm_hidden = tf.keras.layers.LayerNormalization()
         self.norm_output = tf.keras.layers.LayerNormalization()
         self.dropout = tf.keras.layers.Dropout(dropout_rate)
@@ -137,7 +141,9 @@ class RecurrentFFN(tf.keras.layers.Layer):
     def build(self, input_shape):
         combined_input_dim = input_shape[-1]
         self.gate_proj.build((None, combined_input_dim))
-        self.output_proj.build((None, self.hidden_dim))
+        self.gate.build((None, self.hidden_dim))
+        self.up.build((None, self.hidden_dim))
+        self.down_proj.build((None, self.hidden_dim))
         self.built = True
 
     def call(self, x, hidden_state, training=False):
@@ -146,7 +152,7 @@ class RecurrentFFN(tf.keras.layers.Layer):
         else:
             current_hidden_state = hidden_state
 
-        # Compute gates
+        # 1. SRU-style forget/reset gate 계산
         if self.use_reset_gate:
             gate = self.gate_proj(x)
             forget_gate, reset_gate = tf.split(gate, 2, axis=-1)
@@ -156,12 +162,17 @@ class RecurrentFFN(tf.keras.layers.Layer):
             forget_gate = tf.sigmoid(self.gate_proj(x))
             reset_gate = 1.0 - forget_gate
 
-        # New hidden state
+        # 2. New hidden state
         new_hidden_state = forget_gate * current_hidden_state + reset_gate * x
         new_hidden_state = self.norm_hidden(new_hidden_state)
 
-        # Output projection
-        output = self.output_proj(new_hidden_state)
+        # 3. SwiGLU 적용
+        gate_act = tf.nn.silu(self.gate(new_hidden_state))
+        up_val = self.up(new_hidden_state)
+        swiglu_out = gate_act * up_val
+
+        # 4. Output projection
+        output = self.down_proj(swiglu_out)
         output = self.norm_output(output)
         output = self.dropout(output, training=training)
 
@@ -174,8 +185,6 @@ class RecurrentFFN(tf.keras.layers.Layer):
     def get_initial_state(self, batch_size=None, dtype=None):
         actual_dtype = dtype if dtype is not None else self.dtype if hasattr(self, 'dtype') else tf.float32
         return tf.zeros(shape=[batch_size, self.state_size], dtype=actual_dtype)
-
-
 # 인코더
 encoder_input = tf.keras.Input(shape=(max_enc_len,))
 encoder_emb = tf.keras.layers.Embedding(vocab_size, 200)(encoder_input)
