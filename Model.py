@@ -34,7 +34,7 @@ for conversations in df["conversations"]:
             response = item2.get("value", "").strip().replace("\n", " ")
             full = f"<start> {prompt} <sep> {response} <end>"
             train_sentences.append(full)
-train_sentences = train_sentences[:1280] # 예제용 소량
+train_sentences = train_sentences[:128] # 예제용 소량
 print(f"총 문장 개수: {len(train_sentences)}")
 
 # ⬇️ 토크나이저 불러오기
@@ -217,14 +217,11 @@ class RecurrentFFN(tf.keras.layers.Layer):
         actual_dtype = dtype if dtype is not None else self.dtype if hasattr(self, 'dtype') else tf.float32
         return tf.zeros(shape=[batch_size, self.state_size], dtype=actual_dtype)
 
-shared_embedding = Embedding(
-    input_dim=vocab_size,
-    output_dim=200,
-    name='shared_embedding'
-)
 
+
+# 인코더
 encoder_input = tf.keras.Input(shape=(max_enc_len,))
-encoder_emb = shared_embedding(encoder_input)
+encoder_emb = tf.keras.layers.Embedding(vocab_size, 200)(encoder_input)
 
 rnn_cell = RecurrentFFN(input_dim=200, hidden_dim=200)
 encoder = tf.keras.layers.RNN(rnn_cell, return_sequences=True, return_state=True, name='encoder')
@@ -232,7 +229,7 @@ encoder_output, encoder_final_state = encoder(encoder_emb)
 
 # 디코더
 decoder_input = tf.keras.Input(shape=(max_dec_len,))
-decoder_emb = shared_embedding(decoder_input)
+decoder_emb = tf.keras.layers.Embedding(vocab_size, 200)(decoder_input)
 
 rnn_cell_decoder = RecurrentFFN(input_dim=200, hidden_dim=200)
 
@@ -250,19 +247,15 @@ decoder_dense = tf.keras.layers.TimeDistributed(
     tf.keras.layers.Dense(vocab_size)
 )
 decoder_outputs = decoder_dense(decoder_output)
-decoder_output, _ = decoder(decoder_emb, initial_state=encoder_final_state)
 
+# 모델 정의
+model = tf.keras.Model(inputs=[encoder_input, decoder_input], outputs=decoder_outputs)
 
-# 전체 모델 정의
-model = Model(inputs=[encoder_input, decoder_input], outputs=decoder_outputs)
-
-# 컴파일
-model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+model.compile(optimizer='adam', loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True))
 
 model.summary()
 model.fit(dataset, epochs=1, steps_per_epoch=len(train_sentences) // batch_size)
 model.save("model.keras") # 최선의 선택
-
 def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=False):
     """
     사용자 입력 문장을 받아 AI 응답 생성
@@ -289,14 +282,14 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
         print("Encoded:", enc_ids)
 
     # 인코더 실행 (인코더 임베딩 -> RNN)
-    encoder_emb_layer = model.get_layer('shared_embedding') # 인코더 임베딩
+    encoder_emb_layer = model.get_layer('embedding') # 인코더 임베딩
     encoder_rnn_layer = model.get_layer('encoder') # 인코더 RNN
 
     encoder_emb_out = encoder_emb_layer(enc_tensor)
     encoder_output, encoder_state = encoder_rnn_layer(encoder_emb_out, training=False)
 
     # 디코더 준비
-    decoder_emb_layer = model.get_layer('shared_embedding') # 디코더 임베딩
+    decoder_emb_layer = model.get_layer('embedding_1') # 디코더 임베딩
     decoder_rnn_layer = model.get_layer('decoder') # 디코더 RNN
     decoder_dense_layer = model.get_layer('time_distributed') # TimeDistributed(Dense)
 
