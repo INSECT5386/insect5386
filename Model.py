@@ -214,8 +214,8 @@ optimizer = tf.keras.optimizers.Adam(3e-4)
 # 컴파일
 model.compile(optimizer=optimizer, loss=loss_fn)
 
-# 학습 실행
-model.fit(dataset, epochs=10)
+model.summary()
+model.fit(dataset, epochs=1, steps_per_epoch=len(train_sentences) // batch_size)
 
 input_sentence = ["<start> 오늘 날씨는 어때 <sep>"]
 tokenized = [sp.encode(s) for s in input_sentence]
