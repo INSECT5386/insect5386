@@ -218,44 +218,33 @@ class RecurrentFFN(tf.keras.layers.Layer):
         return tf.zeros(shape=[batch_size, self.state_size], dtype=actual_dtype)
 
 
-import tensorflow as tf
-from tensorflow.keras.layers import Layer, Input, Embedding, Dense, RNN
-from tensorflow.keras.models import Model
+encoder_input = tf.keras.Input(shape=(max_enc_len,))
+encoder_emb = tf.keras.layers.Embedding(vocab_size, 200)(encoder_input)
 
-# 1. 공유 임베딩 레이어 정의
-shared_embedding = Embedding(
-    input_dim=vocab_size,
-    output_dim=200,
-    name='shared_embedding'
-)
-shared_embedding.build(input_shape=(None,))  # (batch_size, ) 형태의 입력을 가정
-
-# 임베딩 테이블 가져오기 (로짓 계산 시 재사용)
-shared_embeddings = shared_embedding.embeddings  # ← 여기서 정의됨!
-
-
-# 2. 인코더 입력 및 처리
-encoder_input = Input(shape=(max_enc_len,), name='encoder_input')
-encoder_emb = shared_embedding(encoder_input)
-
-# 가정: RecurrentFFN은 이미 정의되어 있음
-rnn_cell = RecurrentFFN(input_dim=embedding_dim, hidden_dim=hidden_dim)
-encoder = RNN(rnn_cell, return_sequences=True, return_state=True, name='encoder')
+rnn_cell = RecurrentFFN(input_dim=200, hidden_dim=200)
+encoder = tf.keras.layers.RNN(rnn_cell, return_sequences=True, return_state=True, name='encoder')
 encoder_output, encoder_final_state = encoder(encoder_emb)
 
+# 디코더
+decoder_input = tf.keras.Input(shape=(max_dec_len,))
+decoder_emb = tf.keras.layers.Embedding(vocab_size, 200)(decoder_input)
 
-# 3. 디코더 입력 및 처리
-decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
-decoder_emb = shared_embedding(decoder_input)
+rnn_cell_decoder = RecurrentFFN(input_dim=200, hidden_dim=200)
 
-rnn_cell_decoder = RecurrentFFN(input_dim=embedding_dim, hidden_dim=hidden_dim)
-decoder = RNN(
+decoder = tf.keras.layers.RNN(
     rnn_cell_decoder,
     return_sequences=True,
     return_state=True,
-    name='decoder'
+    name='decoder',
 )
 
+decoder_output, _ = decoder(decoder_emb, initial_state=encoder_final_state)
+
+# 출력층
+decoder_dense = tf.keras.layers.TimeDistributed(
+    tf.keras.layers.Dense(vocab_size)
+)
+decoder_outputs = decoder_dense(decoder_output)
 decoder_output, _ = decoder(decoder_emb, initial_state=encoder_final_state)
 
 
