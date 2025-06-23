@@ -116,6 +116,8 @@ dataset = tf.data.Dataset.from_generator(
 dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 print("dataset ok")
 
+import tensorflow as tf
+
 class RecurrentFFN(tf.keras.layers.Layer):
     def __init__(self, input_dim, hidden_dim=None, dropout_rate=0.1, use_reset_gate=True, **kwargs):
         super().__init__(**kwargs)
@@ -123,7 +125,7 @@ class RecurrentFFN(tf.keras.layers.Layer):
         self.hidden_dim = hidden_dim or input_dim * 4
         self.use_reset_gate = use_reset_gate
 
-        # Gating layer
+        # Gating parameters
         self.gate_proj = tf.keras.layers.Dense(self.hidden_dim * (2 if use_reset_gate else 1))
 
         # SwiGLU components
@@ -139,53 +141,72 @@ class RecurrentFFN(tf.keras.layers.Layer):
         self.dropout = tf.keras.layers.Dropout(dropout_rate)
 
     def build(self, input_shape):
-        combined_input_dim = input_shape[-1]
-        self.gate_proj.build((None, combined_input_dim))
+        x_dim = input_shape[-1]
+        self.gate_proj.build((None, x_dim))
         self.gate.build((None, self.hidden_dim))
         self.up.build((None, self.hidden_dim))
         self.down_proj.build((None, self.hidden_dim))
         self.built = True
 
-    def call(self, x, hidden_state, training=False):
-        if isinstance(hidden_state, (list, tuple)):
-            current_hidden_state = hidden_state[0]
-        else:
-            current_hidden_state = hidden_state
+    def call(self, inputs, initial_state=None, training=False):
+        """
+        inputs: [B, T, D]
+        initial_state: [B, H]
+        returns:
+            outputs: [B, T, D]
+            final_state: [B, H]
+        """
+        batch_size, _, _ = tf.unstack(tf.shape(inputs))
 
-        # 1. SRU-style forget/reset gate 계산
+        # Gate 계산 (전체 시퀀스에 대해)
+        gates = self.gate_proj(inputs)  # [B, T, 2H] or [B, T, H]
+
         if self.use_reset_gate:
-            gate = self.gate_proj(x)
-            forget_gate, reset_gate = tf.split(gate, 2, axis=-1)
-            forget_gate = tf.sigmoid(forget_gate)
-            reset_gate = tf.sigmoid(reset_gate)
+            forget_gates, reset_gates = tf.split(gates, 2, axis=-1)
+            forget_gates = tf.sigmoid(forget_gates)
+            reset_gates = tf.sigmoid(reset_gates)
         else:
-            forget_gate = tf.sigmoid(self.gate_proj(x))
-            reset_gate = 1.0 - forget_gate
+            forget_gates = tf.sigmoid(gates)
+            reset_gates = 1.0 - forget_gates
 
-        # 2. New hidden state
-        new_hidden_state = forget_gate * current_hidden_state + reset_gate * x
-        new_hidden_state = self.norm_hidden(new_hidden_state)
+        # 입력 텐서 재조합: [T, B, D], [T, B, H], [T, B, H]
+        xs = tf.transpose(inputs, [1, 0, 2])          # [T, B, D]
+        fs = tf.transpose(forget_gates, [1, 0, 2])     # [T, B, H]
+        rs = tf.transpose(reset_gates, [1, 0, 2])      # [T, B, H]
 
-        # 3. SwiGLU 적용
-        gate_act = tf.nn.silu(self.gate(new_hidden_state))
-        up_val = self.up(new_hidden_state)
-        swiglu_out = gate_act * up_val
+        # Initial state
+        if initial_state is None:
+            dtype = inputs.dtype if hasattr(inputs, 'dtype') else tf.float32
+            initial_state = tf.zeros([batch_size, self.hidden_dim], dtype=dtype)
 
-        # 4. Output projection
-        output = self.down_proj(swiglu_out)
-        output = self.norm_output(output)
-        output = self.dropout(output, training=training)
+        # Hidden state scan
+        def scan_fn(h, x_f_r):
+            x, f, r = x_f_r
+            return f * h + r * x
 
-        return output, new_hidden_state
+        # 각 타임스텝 데이터 묶기
+        elements = (xs, fs, rs)
 
-    @property
-    def state_size(self):
-        return self.hidden_dim
+        h_seq = tf.scan(fn=scan_fn, elems=elements, initializer=initial_state)
+        # h_seq: [T, B, H]
 
-    def get_initial_state(self, batch_size=None, dtype=None):
-        actual_dtype = dtype if dtype is not None else self.dtype if hasattr(self, 'dtype') else tf.float32
-        return tf.zeros(shape=[batch_size, self.state_size], dtype=actual_dtype)
-# 인코더
+        # Transpose back to [B, T, H]
+        h_seq = tf.transpose(h_seq, [1, 0, 2])
+        h_seq = self.norm_hidden(h_seq)
+
+        # SwiGLU 적용
+        gate_act = tf.nn.silu(self.gate(h_seq))  # [B, T, H]
+        up_val = self.up(h_seq)                  # [B, T, H]
+        swiglu_out = gate_act * up_val           # [B, T, H]
+
+        # Output projection
+        outputs = self.down_proj(swiglu_out)     # [B, T, D]
+        outputs = self.norm_output(outputs)
+        outputs = self.dropout(outputs, training=training)
+
+        return outputs, h_seq[:, -1, :]  # [B, T, D], [B, H]
+
+
 encoder_input = tf.keras.Input(shape=(max_enc_len,))
 encoder_emb = tf.keras.layers.Embedding(vocab_size, 200)(encoder_input)
 
