@@ -288,16 +288,17 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
         print("Encoder Input:", input_text)
         print("Encoded:", enc_ids)
 
-    # 인코더 실행 (임베딩 + RNN)
-    encoder_emb_layer = model.get_layer('embedding')
-    encoder_rnn_layer = model.get_layer('encoder')
+    # 인코더 실행 (인코더 임베딩 -> RNN)
+    encoder_emb_layer = model.get_layer('embedding') # 인코더 임베딩
+    encoder_rnn_layer = model.get_layer('encoder') # 인코더 RNN
 
     encoder_emb_out = encoder_emb_layer(enc_tensor)
     encoder_output, encoder_state = encoder_rnn_layer(encoder_emb_out, training=False)
 
     # 디코더 준비
-    decoder_emb_layer = model.get_layer('embedding')  # 공유 임베딩 사용
-    decoder_rnn_layer = model.get_layer('decoder')
+    decoder_emb_layer = model.get_layer('embedding_1') # 디코더 임베딩
+    decoder_rnn_layer = model.get_layer('decoder') # 디코더 RNN
+    decoder_dense_layer = model.get_layer('time_distributed') # TimeDistributed(Dense)
 
     # 디코더 초기 입력: <start>
     dec_input = tf.constant([[start_id]], dtype=tf.int32)
@@ -305,15 +306,14 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
     generated_ids = []
 
     for step in range(max_dec_len):
-        dec_emb = decoder_emb_layer(dec_input)  # 입력 임베딩
+        dec_emb = decoder_emb_layer(dec_input) # 입력 임베딩
 
         decoder_output, next_state = decoder_rnn_layer(
             dec_emb, initial_state=current_state, training=False
         )
 
-        # logits 계산: 디코더 출력과 임베딩 매트릭스의 내적
-        logits = tf.matmul(decoder_output, encoder_emb_layer.embeddings, transpose_b=True)
-        logits = tf.squeeze(logits, axis=1)  # (batch_size, vocab_size)
+        logits = decoder_dense_layer(decoder_output) # (batch_size, 1, vocab_size)
+        logits = tf.squeeze(logits, axis=1) # (batch_size, vocab_size)
 
         # 온도 조절 샘플링
         if temperature == 0.:
@@ -322,14 +322,14 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
             logits = logits / temperature
             pred_id = tf.random.categorical(logits, 1, dtype=tf.int32)
 
-        pred_id = tf.squeeze(pred_id, axis=1)  # (1,)
+        pred_id = tf.squeeze(pred_id, axis=1) # (1,)
 
         # 종료 토큰 체크
         if int(pred_id[0]) == end_id:
             break
 
         generated_ids.append(int(pred_id[0]))
-        dec_input = pred_id[:, tf.newaxis]  # 다음 입력으로 업데이트
+        dec_input = pred_id[:, tf.newaxis] # 다음 입력으로 업데이트
         current_state = next_state
 
         if verbose:
