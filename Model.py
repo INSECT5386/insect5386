@@ -218,8 +218,11 @@ class RecurrentFFN(tf.keras.layers.Layer):
         return tf.zeros(shape=[batch_size, self.state_size], dtype=actual_dtype)
 
 
-# 공유 임베딩 레이어
-shared_embedding = layers.Embedding(vocab_size, 200)
+class SharedEmb(tf.keras.layers.Layer):    
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs) 
+        self.shared_embedding = Embedding(vocab_size, 200)
+        return shared_embedding
 
 # 인코더 입력 및 처리
 encoder_input = Input(shape=(max_enc_len,), name='encoder_input')
