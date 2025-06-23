@@ -34,7 +34,7 @@ for conversations in df["conversations"]:
             response = item2.get("value", "").strip().replace("\n", " ")
             full = f"<start> {prompt} <sep> {response} <end>"
             train_sentences.append(full)
-train_sentences = train_sentences[:128] # 예제용 소량
+train_sentences = train_sentences[:1280] # 예제용 소량
 print(f"총 문장 개수: {len(train_sentences)}")
 
 # ⬇️ 토크나이저 불러오기
@@ -289,14 +289,14 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
         print("Encoded:", enc_ids)
 
     # 인코더 실행 (인코더 임베딩 -> RNN)
-    encoder_emb_layer = model.get_layer('embedding') # 인코더 임베딩
+    encoder_emb_layer = model.get_layer('shared_embedding') # 인코더 임베딩
     encoder_rnn_layer = model.get_layer('encoder') # 인코더 RNN
 
     encoder_emb_out = encoder_emb_layer(enc_tensor)
     encoder_output, encoder_state = encoder_rnn_layer(encoder_emb_out, training=False)
 
     # 디코더 준비
-    decoder_emb_layer = model.get_layer('embedding_1') # 디코더 임베딩
+    decoder_emb_layer = model.get_layer('shared_embedding') # 디코더 임베딩
     decoder_rnn_layer = model.get_layer('decoder') # 디코더 RNN
     decoder_dense_layer = model.get_layer('time_distributed') # TimeDistributed(Dense)
 
