@@ -225,9 +225,10 @@ from tensorflow.keras.models import Model
 # 1. 공유 임베딩 레이어 정의
 shared_embedding = Embedding(
     input_dim=vocab_size,
-    output_dim=embedding_dim,
+    output_dim=200,
     name='shared_embedding'
 )
+shared_embedding.build(input_shape=(None,))  # (batch_size, ) 형태의 입력을 가정
 
 # 임베딩 테이블 가져오기 (로짓 계산 시 재사용)
 shared_embeddings = shared_embedding.embeddings  # ← 여기서 정의됨!
