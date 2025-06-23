@@ -119,102 +119,94 @@ print("dataset ok")
 import tensorflow as tf
 
 class RecurrentFFN(tf.keras.layers.Layer):
-    # __init__ 메서드에 **kwargs 추가
-    def __init__(self, input_dim, hidden_dim=None, dropout_rate=0.1, **kwargs):
-        super().__init__(**kwargs) # **kwargs를 부모 클래스인 tf.keras.layers.Layer의 __init__에 전달
-        self.input_dim = input_dim
-        self.hidden_dim = hidden_dim or input_dim * 4
-        self.state_size = self.hidden_dim
+    def __init__(self, dim, state_dim=None, expansion=2, **kwargs):
+        super().__init__(**kwargs)
+        self.dim = dim
+        self.state_dim = state_dim or dim
+        self.expansion = expansion
 
-        # 각 레이어를 개별적으로 선언
-        self.update_gate_dense = tf.keras.layers.Dense(self.hidden_dim)
-        self.update_gate_act = tf.keras.layers.Activation('sigmoid')
+        # State transition parameters
+        self.A_log = self.add_weight(
+            shape=(self.state_dim,),
+            initializer='zeros',
+            trainable=True,
+            name='log_A'
+        )
+        self.B = self.add_weight(
+            shape=(self.dim, self.state_dim),
+            initializer='glorot_uniform',
+            trainable=True,
+            name='input_proj_B'
+        )
 
-        self.reset_gate_dense = tf.keras.layers.Dense(self.hidden_dim)
-        self.reset_gate_act = tf.keras.layers.Activation('sigmoid')
+        # FFN components
+        self.gate_proj = layers.Dense(self.state_dim * expansion)
+        self.up_proj = layers.Dense(self.state_dim * expansion)
+        self.down_proj = layers.Dense(dim)
 
-        self.gate_proj = tf.keras.layers.Dense(self.hidden_dim, use_bias=True)
-        self.up_proj = tf.keras.layers.Dense(self.hidden_dim, use_bias=True)
+        # Norm & Dropout
+        self.norm = layers.LayerNormalization()
+        self.dropout = layers.Dropout(0.1)
 
-        self.down_proj = tf.keras.layers.Dense(input_dim, use_bias=True)
+    def _step(self, inputs, hidden_state):
+        """단일 타임스텝 처리"""
+        A = tf.exp(self.A_log)
+        input_contribution = inputs @ self.B
+        new_hidden = A * hidden_state + input_contribution
 
-        self.norm_hidden = tf.keras.layers.LayerNormalization()
-        self.norm_output = tf.keras.layers.LayerNormalization()
+        gate = self.gate_proj(new_hidden)
+        up = self.up_proj(new_hidden)
+        swiglu_out = tf.nn.silu(gate) * up
 
-        self.dropout = tf.keras.layers.Dropout(dropout_rate)
+        output = self.down_proj(swiglu_out)
+        output = self.norm(output)
+        output = self.dropout(output)
 
-    def build(self, input_shape):
-        # 입력 크기 기반으로 내부 가중치를 명시적으로 생성
-        # input_shape는 (batch_size, sequence_length, features) 형태일 수 있으므로 마지막 차원을 사용
-        # self.input_dim은 input_shape의 마지막 차원이어야 함.
-        # RecurrentFFN이 RNN 셀처럼 작동한다면, input_shape는 (batch_size, features)
-        # 만약 (batch_size, seq_len, features)로 들어온다면 RNN Layer에서 각 타임스텝의 input_shape이 (batch_size, features)가 됨.
-        # 따라서 build에서 input_shape[-1]을 사용하는 것은 맞음.
-        
-        # 다만, hidden_dim은 input_dim * 4로 설정될 수 있으므로,
-        # build 메서드 호출 시 전달되는 input_shape는 x의 shape만 해당될 수 있음.
-        # hidden_state의 shape도 고려해야 combined의 input_shape가 올바르게 계산됨.
-        # 여기서는 RecurrentFFN이 RNN의 Cell로 사용된다고 가정하고 build의 input_shape가 x의 shape라고 가정.
+        return output, new_hidden
 
-        # Keras Layer의 build 메서드는 일반적으로 첫 번째 인자로 (batch_size, ...) 형태의 input_shape를 받음
-        # RecurrentFFN의 build는 x의 input_shape를 받음.
-        # 따라서 combined의 shape는 (None, input_shape[-1] + self.hidden_dim)이 됨.
-        combined_input_dim = input_shape[-1] + self.hidden_dim
+    def call(self, inputs, training=False, initial_state=None):
+        batch_size, seq_len, _ = tf.shape(inputs)
 
-        self.update_gate_dense.build((None, combined_input_dim))
-        self.reset_gate_dense.build((None, combined_input_dim))
-        self.gate_proj.build((None, combined_input_dim))
-        self.up_proj.build((None, combined_input_dim))
-        self.down_proj.build((None, self.hidden_dim))
-        self.norm_hidden.build((None, self.hidden_dim)) # new_hidden_state의 shape
-        self.norm_output.build((None, self.input_dim))
-        self.built = True
+        if initial_state is None:
+            initial_state = tf.zeros((batch_size, self.state_dim), dtype=inputs.dtype)
 
-    def call(self, x, hidden_state, training=False):
-        # hidden_state가 튜플일 경우 첫 번째 요소를 추출
-        # Keras RNN 래퍼가 셀의 상태를 튜플로 묶어서 전달할 수 있기 때문
-        if isinstance(hidden_state, (list, tuple)):
-            current_hidden_state = hidden_state[0]
-        else:
-            current_hidden_state = hidden_state
+    # A: (D,)
+        A = tf.exp(self.A_log)
+    # B: (dim, D) -> (1, dim, D)
+        B_expanded = tf.expand_dims(self.B, axis=0)
 
-        # 이제 x와 current_hidden_state는 모두 (batch_size, feature_dim) 형태의 2차원 텐서여야 합니다.
-        combined = tf.concat([x, current_hidden_state], axis=-1)
+    # inputs: (B, T, dim) @ (1, dim, D) -> (B, T, D)
+        input_contributions = tf.einsum('btd,dh->bth', inputs, self.B)
 
-        update_gate = self.update_gate_act(self.update_gate_dense(combined))
-        reset_gate = self.reset_gate_act(self.reset_gate_dense(combined))
+    # hidden_states = [initial_state]
+    # new_hidden_state = A * h_prev + input_contribution_t
+    # => scan 연산으로 처리 가능
+        def step(h_prev, input_t):
+            return A * h_prev + input_t
 
-        gated_hidden = reset_gate * current_hidden_state # 여기도 current_hidden_state 사용
-        candidate_combined = tf.concat([x, gated_hidden], axis=-1)
+        input_contributions_time_major = tf.transpose(input_contributions, [1, 0, 2])
+        hidden_states = tf.scan(step, input_contributions_time_major, initializer=initial_state)
+        hidden_states = tf.transpose(hidden_states, [1, 0, 2])  # (T, B, D) -> (B, T, D)
 
-        gate = self.gate_proj(candidate_combined)
-        up = self.up_proj(candidate_combined)
-        swiglu_output = tf.nn.silu(gate) * up
+    # SwiGLU 적용
+        gate = self.gate_proj(hidden_states)
+        up = self.up_proj(hidden_states)
+        swiglu_out = tf.nn.silu(gate) * up
 
-        new_hidden_state = (1 - update_gate) * current_hidden_state + update_gate * swiglu_output
-        new_hidden_state = self.norm_hidden(new_hidden_state)
+        outputs = self.down_proj(swiglu_out)
+        outputs = self.norm(outputs)
+        outputs = self.dropout(outputs, training=training)
 
-        output = self.down_proj(new_hidden_state)
-        output = self.norm_output(output)
-        output = self.dropout(output, training=training)
+        final_state = hidden_states[:, -1, :]
 
-        # RNN 셀로 사용될 때는 (출력, 다음_상태) 튜플을 반환해야 함.
-        # Keras의 RNN 레이어가 이 형태를 기대함.
-        return output, new_hidden_state
+        return outputs, final_state
 
     @property
     def state_size(self):
-        # RNN Cell의 state_size 속성은 Keras RNN Layer가 초기 상태를 생성하고 관리할 때 사용합니다.
-        # 이는 일반적으로 단일 정수 또는 상태 텐서들의 모양을 나타내는 튜플입니다.
-        # 여기서는 단일 hidden_state를 사용하므로 hidden_dim을 반환합니다.
-        return self.hidden_dim
+        return self.state_dim
 
     def get_initial_state(self, batch_size=None, dtype=None):
-        # dtype이 None일 경우 self.dtype (레이어의 기본 dtype)을 사용하거나
-        # 아니면 tf.float32와 같은 명시적인 타입을 사용합니다.
-        # Keras 내부에서 RNN Cell의 dtype을 기반으로 이 메서드를 호출할 때
-        # dtype 인자를 전달하므로, 해당 dtype을 우선적으로 사용하는 것이 좋습니다.
-        actual_dtype = dtype if dtype is not None else self.dtype if hasattr(self, 'dtype') else tf.float32
+        actual_dtype = dtype or self.dtype
         return tf.zeros(shape=[batch_size, self.state_size], dtype=actual_dtype)
 
 
