@@ -218,40 +218,63 @@ class RecurrentFFN(tf.keras.layers.Layer):
         return tf.zeros(shape=[batch_size, self.state_size], dtype=actual_dtype)
 
 
-class SharedEmb(tf.keras.layers.Layer):    
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs) 
-        self.shared_embedding = Embedding(vocab_size, 200)
-        return shared_embedding
+import tensorflow as tf
+from tensorflow.keras.layers import Layer, Input, Embedding, Dense, RNN
+from tensorflow.keras.models import Model
 
-# 인코더 입력 및 처리
+# 1. 공유 임베딩 레이어 정의
+shared_embedding = Embedding(
+    input_dim=vocab_size,
+    output_dim=embedding_dim,
+    name='shared_embedding'
+)
+
+# 임베딩 테이블 가져오기 (로짓 계산 시 재사용)
+shared_embeddings = shared_embedding.embeddings  # ← 여기서 정의됨!
+
+
+# 2. 인코더 입력 및 처리
 encoder_input = Input(shape=(max_enc_len,), name='encoder_input')
 encoder_emb = shared_embedding(encoder_input)
 
-rnn_cell = RecurrentFFN(input_dim=200, hidden_dim=200)
-encoder = layers.RNN(rnn_cell, return_sequences=True, return_state=True, name='encoder')
+# 가정: RecurrentFFN은 이미 정의되어 있음
+rnn_cell = RecurrentFFN(input_dim=embedding_dim, hidden_dim=hidden_dim)
+encoder = RNN(rnn_cell, return_sequences=True, return_state=True, name='encoder')
 encoder_output, encoder_final_state = encoder(encoder_emb)
 
-# 디코더 입력 및 처리
+
+# 3. 디코더 입력 및 처리
 decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
 decoder_emb = shared_embedding(decoder_input)
 
-rnn_cell_decoder = RecurrentFFN(input_dim=200, hidden_dim=200)
-decoder = layers.RNN(
+rnn_cell_decoder = RecurrentFFN(input_dim=embedding_dim, hidden_dim=hidden_dim)
+decoder = RNN(
     rnn_cell_decoder,
     return_sequences=True,
     return_state=True,
     name='decoder'
 )
 
-# 디코더 실행 (초기 상태로 인코더의 final state 전달)
 decoder_output, _ = decoder(decoder_emb, initial_state=encoder_final_state)
 
 
-logits = tf.matmul(decoder_output, shared_embedding.embeddings, transpose_b=True)
+# 4. 커스텀 로짓 계산 레이어 정의
+class SharedWeightsDense(Layer):
+    def __init__(self, shared_embeddings, **kwargs):
+        super().__init__(**kwargs)
+        self.shared_embeddings = shared_embeddings  # ← 여기서 저장
 
-# 소프트맥스 적용 (train 시 crossentropy loss에서 필요 없을 수 있음)
+    def call(self, inputs):
+        return tf.matmul(inputs, self.shared_embeddings, transpose_b=True)
+
+
+# 5. 로짓 계산 (공유된 임베딩 사용)
+logits = SharedWeightsDense(shared_embeddings)(decoder_output)
+
+
+# 6. 소프트맥스 적용 (필요에 따라)
 decoder_outputs = tf.nn.softmax(logits, axis=-1)
+
 
 # 전체 모델 정의
 model = Model(inputs=[encoder_input, decoder_input], outputs=decoder_outputs)
