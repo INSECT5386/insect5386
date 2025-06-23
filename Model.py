@@ -116,8 +116,6 @@ dataset = tf.data.Dataset.from_generator(
 dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 print("dataset ok")
 
-import tensorflow as tf
-
 class RecurrentFFN(tf.keras.layers.Layer):
     def __init__(self, input_dim, hidden_dim=None, dropout_rate=0.1, use_reset_gate=True, **kwargs):
         super().__init__(**kwargs)
@@ -141,78 +139,61 @@ class RecurrentFFN(tf.keras.layers.Layer):
         self.dropout = tf.keras.layers.Dropout(dropout_rate)
 
     def build(self, input_shape):
-        x_dim = input_shape[-1]
-        self.gate_proj.build((None, x_dim))
+        self.gate_proj.build((None, self.input_dim))
         self.gate.build((None, self.hidden_dim))
         self.up.build((None, self.hidden_dim))
         self.down_proj.build((None, self.hidden_dim))
         self.built = True
 
-    def call(self, inputs, initial_state=None, training=False):
+    def call(self, inputs, states, training=False):
         """
-        inputs: [B, T, D]
-        initial_state: [B, H]
+        - inputs: [B, D]
+        - states: [B, H]
         returns:
-            outputs: [B, T, D]
-            final_state: [B, H]
+            output: [B, D]
+            new_state: [B, H]
         """
-        batch_size, _, _ = tf.unstack(tf.shape(inputs))
+        current_state = states[0] if isinstance(states, (list, tuple)) else states
 
-        # Gate 계산 (전체 시퀀스에 대해)
-        gates = self.gate_proj(inputs)  # [B, T, 2H] or [B, T, H]
+        # Gate 계산
+        gates = self.gate_proj(inputs)  # [B, 2H or H]
 
         if self.use_reset_gate:
-            forget_gates, reset_gates = tf.split(gates, 2, axis=-1)
-            forget_gates = tf.sigmoid(forget_gates)
-            reset_gates = tf.sigmoid(reset_gates)
+            forget_gate, reset_gate = tf.split(gates, 2, axis=-1)
+            forget_gate = tf.sigmoid(forget_gate)
+            reset_gate = tf.sigmoid(reset_gate)
         else:
-            forget_gates = tf.sigmoid(gates)
-            reset_gates = 1.0 - forget_gates
+            forget_gate = tf.sigmoid(gates)
+            reset_gate = 1.0 - forget_gate
 
-        # 입력 텐서 재조합: [T, B, D], [T, B, H], [T, B, H]
-        xs = tf.transpose(inputs, [1, 0, 2])          # [T, B, D]
-        fs = tf.transpose(forget_gates, [1, 0, 2])     # [T, B, H]
-        rs = tf.transpose(reset_gates, [1, 0, 2])      # [T, B, H]
-
-        # Initial state
-        if initial_state is None:
-            dtype = inputs.dtype if hasattr(inputs, 'dtype') else tf.float32
-            initial_state = tf.zeros([batch_size, self.hidden_dim], dtype=dtype)
-
-        # Hidden state scan
-        def scan_fn(h, x_f_r):
-            x, f, r = x_f_r
-            return f * h + r * x
-
-        # 각 타임스텝 데이터 묶기
-        elements = (xs, fs, rs)
-
-        h_seq = tf.scan(fn=scan_fn, elems=elements, initializer=initial_state)
-        # h_seq: [T, B, H]
-
-        # Transpose back to [B, T, H]
-        h_seq = tf.transpose(h_seq, [1, 0, 2])
-        h_seq = self.norm_hidden(h_seq)
+        # New state
+        new_state = forget_gate * current_state + reset_gate * inputs
+        new_state = self.norm_hidden(new_state)
 
         # SwiGLU 적용
-        gate_act = tf.nn.silu(self.gate(h_seq))  # [B, T, H]
-        up_val = self.up(h_seq)                  # [B, T, H]
-        swiglu_out = gate_act * up_val           # [B, T, H]
+        gate_act = tf.nn.silu(self.gate(new_state))
+        up_val = self.up(new_state)
+        swiglu_out = gate_act * up_val
 
-        # Output projection
-        outputs = self.down_proj(swiglu_out)     # [B, T, D]
-        outputs = self.norm_output(outputs)
-        outputs = self.dropout(outputs, training=training)
+        # Output
+        output = self.down_proj(swiglu_out)
+        output = self.norm_output(output)
+        output = self.dropout(output, training=training)
 
-        return outputs, h_seq[:, -1, :]  # [B, T, D], [B, H]
+        return output, new_state
 
     @property
     def state_size(self):
         return self.hidden_dim
 
+    @property
+    def output_size(self):
+        return self.input_dim
+
     def get_initial_state(self, batch_size=None, dtype=None):
-        actual_dtype = dtype if dtype is not None else self.dtype if hasattr(self, 'dtype') else tf.float32
+        actual_dtype = dtype if dtype is not None else self.dtype
         return tf.zeros(shape=[batch_size, self.state_size], dtype=actual_dtype)
+
 
 encoder_input = tf.keras.Input(shape=(max_enc_len,))
 encoder_emb = tf.keras.layers.Embedding(vocab_size, 200)(encoder_input)
