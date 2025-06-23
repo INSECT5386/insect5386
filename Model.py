@@ -164,7 +164,7 @@ class RecurrentFFN(tf.keras.layers.Layer):
 
         return output, new_hidden
 
-    def call(self, inputs, training=False, initial_state=None):
+    def call(self, inputs, initial_state=None, training=False):
         batch_size, seq_len, _ = tf.shape(inputs)
 
         if initial_state is None:
