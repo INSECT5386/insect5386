@@ -203,3 +203,24 @@ class SimpleX(tf.keras.Model):
             current_input = pred_id
 
         return tf.concat(generated, axis=1)
+
+# 모델 생성
+model = SimpleX(vocab_size=vocab_size, dim=200)
+
+# 손실 함수 & 옵티마이저
+loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
+optimizer = tf.keras.optimizers.Adam(3e-4)
+
+# 컴파일
+model.compile(optimizer=optimizer, loss=loss_fn)
+
+# 학습 실행
+model.fit(dataset, epochs=10)
+
+input_sentence = ["<start> 오늘 날씨는 어때 <sep>"]
+tokenized = [sp.encode(s) for s in input_sentence]
+padded = tf.keras.preprocessing.sequence.pad_sequences(tokenized, maxlen=max_enc_len, padding='post', truncating='post')
+output = model.generate(padded, start_id=start_id, max_len=64)
+
+print("입력:", input_sentence[0])
+print("생성 결과:", sp.decode(output.numpy()[0]))
