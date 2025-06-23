@@ -34,7 +34,7 @@ for conversations in df["conversations"]:
             response = item2.get("value", "").strip().replace("\n", " ")
             full = f"<start> {prompt} <sep> {response} <end>"
             train_sentences.append(full)
-train_sentences = train_sentences[:128] # 예제용 소량
+train_sentences = train_sentences[:1280] # 예제용 소량
 print(f"총 문장 개수: {len(train_sentences)}")
 
 # ⬇️ 토크나이저 불러오기
@@ -53,7 +53,7 @@ print(f"✅ Vocabulary size: {vocab_size}")
 # ⬇️ 전처리 하이퍼파라미터
 max_enc_len = 128 # 인코더 최대 길이 (질문 부분)
 max_dec_len = 128 # 디코더 최대 길이 (답변 부분)
-batch_size = 32
+batch_size = 64
 
 # ⬇️ 전처리 결과 저장할 리스트
 encoder_inputs = []
