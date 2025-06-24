@@ -1,3 +1,4 @@
+
 import tensorflow as tf
 from tensorflow.keras.layers import Input, Embedding, Dense, LayerNormalization, Dropout, RNN
 from tensorflow.keras.models import Model
@@ -123,7 +124,7 @@ class FGRU(tf.keras.layers.Layer):
         self.activation = tf.keras.activations.get(activation)
 
         # Gating & Projection
-        self.gate_proj = Dense(units)
+        self.gate_proj = Dense(units + units)
         self.ffn = Dense(units)
 
         # Optional Normalization
