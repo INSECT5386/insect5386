@@ -117,9 +117,6 @@ dataset = tf.data.Dataset.from_generator(
 dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 print("dataset ok")
 
-import tensorflow as tf
-from tensorflow.keras import layers
-
 class FGRU(tf.keras.layers.Layer):
     def __init__(self, units, use_norm=True, **kwargs):
         super().__init__(**kwargs)
@@ -141,25 +138,24 @@ class FGRU(tf.keras.layers.Layer):
         ])
 
     def build(self, input_shape):
+        # 입력 shape을 기반으로 내부 레이어 build 강제 실행
+        assert len(input_shape) == 1 or input_shape is None, "Input shape must be 1D"
+        self.in_proj.build((None, input_shape[-1]))
+        self.h_proj.build((None, self.units))
+        self.gate_net.build((None, self.units + self.units))  # gate_input size
         self.built = True
 
     def call(self, inputs, states, training=False):
         h_prev = states[0]
 
-        # Project input and hidden
         x = tf.nn.silu(self.in_proj(inputs))
         h = tf.nn.silu(self.h_proj(h_prev))
 
-        # Compute interaction tensor (outer product)
         interaction = tf.einsum('bi,bj->bij', x, h)
+        gate_input = tf.concat([x, h], axis=-1)
+        gate = self.gate_net(gate_input)
 
-        # Gate scalar per batch
-        gate = self.gate_net(tf.concat([x, h], axis=-1))  # [B, 1]
-
-        # Flatten interaction
         flat_interaction = tf.reshape(interaction, [tf.shape(x)[0], -1])
-
-        # New hidden state
         new_h = gate * flat_interaction[:, :self.units] + (1 - gate) * h
 
         if self.use_norm:
@@ -176,22 +172,20 @@ class FGRU(tf.keras.layers.Layer):
         return self.units
 
 
-encoder_input = tf.keras.Input(shape=(max_enc_len,))
-encoder_emb = tf.keras.layers.Embedding(vocab_size, 200)(encoder_input)
+# 인코더
+encoder_input = Input(shape=(max_enc_len,))
+encoder_emb = Embedding(vocab_size, 200)(encoder_input)
 
 rnn_cell = FGRU(units=200)
-rnn_cell.bulid(None, max_enc_len)
-encoder = tf.keras.layers.RNN(rnn_cell, return_sequences=True, return_state=True, name='encoder')
+encoder = RNN(rnn_cell, return_sequences=True, return_state=True, name='encoder')
 encoder_output, encoder_final_state = encoder(encoder_emb)
 
 # 디코더
-decoder_input = tf.keras.Input(shape=(max_dec_len,))
-decoder_emb = tf.keras.layers.Embedding(vocab_size, 200)(decoder_input)
+decoder_input = Input(shape=(max_dec_len,))
+decoder_emb = Embedding(vocab_size, 200)(decoder_input)
 
 rnn_cell_decoder = FGRU(units=200)
-rnn_cell_decoder.bulid(None, max_dec_len)
-
-decoder = tf.keras.layers.RNN(
+decoder = RNN(
     rnn_cell_decoder,
     return_sequences=True,
     return_state=True,
@@ -201,13 +195,11 @@ decoder = tf.keras.layers.RNN(
 decoder_output, _ = decoder(decoder_emb, initial_state=encoder_final_state)
 
 # 출력층
-decoder_dense = tf.keras.layers.TimeDistributed(
-    tf.keras.layers.Dense(vocab_size)
-)
+decoder_dense = tf.keras.layers.TimeDistributed(Dense(vocab_size))
 decoder_outputs = decoder_dense(decoder_output)
 
 # 모델 정의
-model = tf.keras.Model(inputs=[encoder_input, decoder_input], outputs=decoder_outputs)
+model = Model(inputs=[encoder_input, decoder_input], outputs=decoder_outputs)
 
 model.compile(optimizer='adam', loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True))
 
