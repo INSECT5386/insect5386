@@ -111,72 +111,74 @@ from tensorflow.keras.layers import Input, Embedding, Dense, Concatenate
 from tensorflow.keras.models import Model
 from tensorflow.keras.activations import gelu, sigmoid, swish
 
-embed_dim = 256
-# ---- Encoder ----
-def build_encoder():
-    inputs = Input(shape=(None,), dtype=tf.int32)
-    x = Embedding(vocab_size, embed_dim)(inputs)
+# 1. SwiGatedBlock: SwiGLU + Sigmoid Gate
+class SwiGatedBlock(tf.keras.layers.Layer):
+    def __init__(self, dim, name="block", **kwargs):
+        super().__init__(name=name, **kwargs)
+        self.dim = dim
+
+        # FFN with SwiGLU
+        self.gate = tf.keras.layers.Dense(dim)
+        self.up = tf.keras.layers.Dense(dim)
+
+        # Norms
+        self.norm = tf.keras.layers.LayerNormalization()
+
+    def call(self, x):
+        # SwiGLU 계산
+        gate = tf.nn.silu(self.gate(x))
+        up = self.up(x)
+        ff_out = gate * up
+
+        # Gate 계산: sigmoid(x) * ff_out
+        x = tf.sigmoid(x) * ff_out
+        x = self.norm(x)
+
+        return x
+
+
+# 2. Encoder
+class SimpleX_Encoder(tf.keras.Model):
+    def __init__(self, vocab_size, dim=200, name="encoder", **kwargs):
+        super().__init__(name=name, **kwargs)
+        self.embed = tf.keras.layers.Embedding(vocab_size, dim)
+        self.block = SwiGatedBlock(dim)
+
+    def call(self, x):
+        x = self.embed(x)
+        return self.block(x)
+
+
+# 3. Decoder
+class SimpleX_Decoder(tf.keras.Model):
+    def __init__(self, vocab_size, dim=200, name="decoder", **kwargs):
+        super().__init__(name=name, **kwargs)
+        self.embed = tf.keras.layers.Embedding(vocab_size, dim)
+        self.first_block = SwiGatedBlock(dim)
+        self.second_block = SwiGatedBlock(dim)
+
+    def call(self, x, enc_out):
+        x = self.embed(x)
+        x = self.first_block(x)
+        x = tf.concat([x, enc_out], axis=-1)
+        return self.second_block(x)
+
+
+# 4. 전체 모델
+class SimpleX(tf.keras.Model):
+    def __init__(self, vocab_size, dim=200, name="simplex", **kwargs):
+        super().__init__(name=name, **kwargs)
+        self.encoder = SimpleX_Encoder(vocab_size, dim)
+        self.decoder = SimpleX_Decoder(vocab_size, dim)
+        self.final_proj = tf.keras.layers.Dense(vocab_size)
+
+    def call(self, inputs, targets):
+        enc_out = self.encoder(inputs)
+        dec_out = self.decoder(targets, enc_out)
+        return self.final_proj(dec_out)
+
     
-    # GeLU × Sigmoid
-    g = tf.keras.activations.gelu(x)
-    s = tf.keras.activations.sigmoid(x)
-    x = g * s  # Element-wise multiplication
-    
-    return Model(inputs=inputs, outputs=x, name="SimpleEncoder")
-
-from tensorflow.keras.layers import Input, Embedding, Dense, Concatenate, Lambda, Layer
-from tensorflow.keras.models import Model
-import tensorflow as tf
-
-def build_decoder():
-    dec_inputs = Input(shape=(None,), dtype=tf.int32)
-    enc_outputs = Input(shape=(None, embed_dim), dtype=tf.float32)
-
-    x = Embedding(vocab_size, embed_dim)(dec_inputs)
-    
-    # SiLU (Swish)
-    x = tf.keras.activations.swish(x)
-    
-    # concat with encoder output
-    def repeat_and_tile(inputs):
-        x_dec, x_enc = inputs
-        batch_size = tf.shape(x_dec)[0]
-        seq_len = tf.shape(x_dec)[1]
-
-        # 인코더 출력 확장 및 타일링
-        x_enc_expanded = tf.expand_dims(x_enc, axis=1)  # [B, 1, T_enc, D]
-        x_enc_tiled = tf.tile(x_enc_expanded, [1, seq_len, 1, 1])  # [B, T_dec, T_enc, D]
-        return tf.reshape(x_enc_tiled, [batch_size, seq_len, -1])  # [B, T_dec, D*T_enc]
-
-    merge_layer = Lambda(repeat_and_tile)
-    context = merge_layer([x, enc_outputs])
-
-    x = Concatenate(axis=-1)([x, context])
-    
-    # SiLU × Sigmoid
-    x = Dense(embed_dim)(x)
-    g = tf.keras.activations.swish(x)
-    s = tf.keras.activations.sigmoid(x)
-    x = g * s
-    
-    logits = Dense(vocab_size)(x)
-    
-    return Model(inputs=[dec_inputs, enc_outputs], outputs=logits, name="SimpleDecoder")
-
-
-class SimpleS2S(tf.keras.Model):
-    def __init__(self, vocab_size, **kwargs):
-        super().__init__(**kwargs)
-        self.encoder = build_encoder()
-        self.decoder = build_decoder()
-
-    def call(self, inputs):
-        src, tgt = inputs
-        memory = self.encoder(src)
-        logits = self.decoder([tgt, memory])
-        return logits
-
-model = SimpleS2S(vocab_size=vocab_size)
+model = SimpleX(vocab_size=vocab_size)
 
 model.compile(
     optimizer='adam',
