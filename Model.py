@@ -117,44 +117,55 @@ dataset = tf.data.Dataset.from_generator(
 dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 print("dataset ok")
 
-class FastFGRU(tf.keras.layers.Layer):
-    def __init__(self, units, activation="swish", use_norm=True, **kwargs):
+import tensorflow as tf
+from tensorflow.keras import layers
+
+class FGRU(tf.keras.layers.Layer):
+    def __init__(self, units, use_norm=True, **kwargs):
         super().__init__(**kwargs)
         self.units = units
-        self.activation = tf.keras.activations.get(activation)
+        self.use_norm = use_norm
 
         # Input projection
-        self.input_proj = Dense(units)
-        # Hidden state projection
-        self.state_proj = Dense(units)
+        self.in_proj = layers.Dense(units)
+        # Hidden state interaction
+        self.h_proj = layers.Dense(units)
 
-        # Optional Norm
-        self.use_norm = use_norm
         if use_norm:
-            self.norm = LayerNormalization()
+            self.norm = layers.LayerNormalization()
+
+        # Gate controller
+        self.gate_net = tf.keras.Sequential([
+            layers.Dense(units, activation='sigmoid'),
+            layers.Dense(1, activation='sigmoid')
+        ])
 
     def build(self, input_shape):
-        # 각각 입력/상태 차원에 맞춰 자동 빌드됨
         self.built = True
 
     def call(self, inputs, states, training=False):
-        if isinstance(states, (list, tuple)):
-            h_prev = states[0]
-        else:
-            h_prev = states
+        h_prev = states[0]
 
-        # 각각 독립적으로 변환
-        x = self.input_proj(inputs)
-        h = self.state_proj(h_prev)
+        # Project input and hidden
+        x = tf.nn.silu(self.in_proj(inputs))
+        h = tf.nn.silu(self.h_proj(h_prev))
 
-        # 한 번에 결합
-        combined = x + h  # 또는 tf.add(x, h)
-        out = self.activation(combined)
+        # Compute interaction tensor (outer product)
+        interaction = tf.einsum('bi,bj->bij', x, h)
+
+        # Gate scalar per batch
+        gate = self.gate_net(tf.concat([x, h], axis=-1))  # [B, 1]
+
+        # Flatten interaction
+        flat_interaction = tf.reshape(interaction, [tf.shape(x)[0], -1])
+
+        # New hidden state
+        new_h = gate * flat_interaction[:, :self.units] + (1 - gate) * h
 
         if self.use_norm:
-            out = self.norm(out)
+            new_h = self.norm(new_h)
 
-        return out, out  # output, next_state
+        return new_h, new_h  # output, next_state
 
     @property
     def state_size(self):
