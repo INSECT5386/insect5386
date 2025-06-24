@@ -66,11 +66,11 @@ for sentence in train_sentences:
         continue
 
     sep_index = sentence.index("<sep>")
-    input_text = sentence[:sep_index].strip() # 질문 부분
-    target_text = sentence[sep_index + len("<sep>"):].strip() # 답변 부분
+    input_text = sentence[:sep_index].strip()  # 질문 부분
+    target_text = sentence[sep_index + len("<sep>"):].strip()  # 답변 부분
 
     # 인코더 입력: 질문 + <sep>
-    enc_ids = sp.encode(input_text + " <sep>")[:max_enc_len]
+    enc_ids = sp.encode(input_text + " <sep>")[:max_enc_len - 1]  # <sep> 포함
 
     # 디코더 입력: <start> + 답변
     dec_input_ids = [start_id] + sp.encode(target_text)[:max_dec_len - 1]
@@ -87,35 +87,24 @@ for sentence in train_sentences:
     decoder_inputs.append(dec_padded)
     targets.append(target_padded)
 
-# ⬇️ 넘파이 배열로 변환
+# 넘파이 배열로 변환
 encoder_inputs = np.array(encoder_inputs, dtype=np.int32)
 decoder_inputs = np.array(decoder_inputs, dtype=np.int32)
 targets = np.array(targets, dtype=np.int32)
 
-# ⬇️ TensorFlow Dataset 생성
-def data_generator():
-    for enc, dec, tgt in zip(encoder_inputs, decoder_inputs, targets):
-        # 딕셔너리 대신 튜플 형태로 반환
-        yield (enc, dec), tgt
+def tf_dataset():
+    def gen():
+        for enc, dec, tgt in zip(encoder_inputs, decoder_inputs, targets):
+            yield (enc, dec), tgt
 
-output_types = (
-    (tf.int32, tf.int32), # 두 개의 입력 텐서에 대한 타입
-    tf.int32 # 타겟에 대한 타입
-)
+    return tf.data.Dataset.from_tensor_slices(((encoder_inputs, decoder_inputs), targets))
 
-output_shapes = (
-    (tf.TensorShape([max_enc_len]), tf.TensorShape([max_dec_len])), # 두 개의 입력 텐서에 대한 모양
-    tf.TensorShape([max_dec_len]) # 타겟에 대한 모양
-)
+dataset = tf.data.Dataset.from_tensor_slices(((encoder_inputs, decoder_inputs), targets))
+dataset = dataset.shuffle(buffer_size=1024)
+dataset = dataset.batch(batch_size)
+dataset = dataset.prefetch(tf.data.AUTOTUNE)
 
-dataset = tf.data.Dataset.from_generator(
-    data_generator,
-    output_types=output_types,
-    output_shapes=output_shapes
-)
-
-dataset = dataset.shuffle(16384).batch(batch_size).prefetch(tf.data.AUTOTUNE)
-print("dataset ok")
+print("✅ 데이터셋 준비 완료")
 
 class DynamicKernelGenerator(tf.keras.layers.Layer):
     def __init__(self, kernel_size=3, filters=64, hidden_dim=128, **kwargs):
@@ -233,89 +222,47 @@ class DynamicConvS2S(tf.keras.Model):
         logits = self.decoder([tgt, memory])
         return logits
 
-# 모델 정의
-model = Model(inputs=[encoder_input, decoder_input], outputs=decoder_outputs)
 
-model.compile(optimizer='adam', loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True))
+# 올바른 방식: DynamicConvS2S 모델 인스턴스 생성
+model = DynamicConvS2S(vocab_size=vocab_size)
+model.compile(
+    optimizer='adam',
+    loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+    metrics=['accuracy']
+)
 
 model.summary()
+
+# 학습 실행
 model.fit(dataset, epochs=1, steps_per_epoch=len(train_sentences) // batch_size)
-model.save("model.keras") # 최선의 선택
-def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=False):
-    """
-    사용자 입력 문장을 받아 AI 응답 생성
-    :param model: 훈련된 Seq2Seq 모델
-    :param sp: SentencePiece Tokenizer
-    :param input_text: 사용자 입력 (str)
-    :param max_dec_len: 최대 생성 길이
-    :param temperature: 샘플링 온도 (낮을수록 greedy, 높을수록 창의적)
-    :param verbose: 디버깅 메시지 출력 여부
-    :return: 생성된 텍스트
-    """
+
+# 저장
+model.save("dynamic_conv_seq2seq_model.keras")
+
+def generate_response(model, sp, input_text, max_len=128):
     start_id = sp.piece_to_id("<start>")
-    end_id = sp.piece_to_id("<end>")
     sep_id = sp.piece_to_id("<sep>")
+    end_id = sp.piece_to_id("<end>")
 
-    # 인코더 입력 전처리
-    enc_ids = sp.encode(input_text + " <sep>")
-    enc_ids = enc_ids[:max_enc_len]
-    enc_ids += [sp.pad_id()] * (max_enc_len - len(enc_ids))
-    enc_tensor = tf.constant([enc_ids], dtype=tf.int32)
+    # 질문 처리
+    enc_tokens = sp.encode(input_text + " <sep>")
+    enc_padded = enc_tokens + [pad_id] * (max_enc_len - len(enc_tokens))
+    enc_input = np.array([enc_padded], dtype=np.int32)
 
-    if verbose:
-        print("Encoder Input:", input_text)
-        print("Encoded:", enc_ids)
+    # 디코더 초기 입력
+    dec_input = np.array([[start_id]], dtype=np.int32)
 
-    # 인코더 실행 (인코더 임베딩 -> RNN)
-    encoder_emb_layer = model.get_layer('embedding') # 인코더 임베딩
-    encoder_rnn_layer = model.get_layer('encoder') # 인코더 RNN
+    generated = []
 
-    encoder_emb_out = encoder_emb_layer(enc_tensor)
-    encoder_output, encoder_state = encoder_rnn_layer(encoder_emb_out, training=False)
+    for _ in range(max_len):
+        logits = model.predict((enc_input, dec_input))
+        next_token = tf.argmax(logits[:, -1, :], axis=-1, output_type=tf.int32)
 
-    # 디코더 준비
-    decoder_emb_layer = model.get_layer('embedding_1') # 디코더 임베딩
-    decoder_rnn_layer = model.get_layer('decoder') # 디코더 RNN
-    decoder_dense_layer = model.get_layer('time_distributed') # TimeDistributed(Dense)
-
-    # 디코더 초기 입력: <start>
-    dec_input = tf.constant([[start_id]], dtype=tf.int32)
-    current_state = encoder_state
-    generated_ids = []
-
-    for step in range(max_dec_len):
-        dec_emb = decoder_emb_layer(dec_input) # 입력 임베딩
-
-        decoder_output, next_state = decoder_rnn_layer(
-            dec_emb, initial_state=current_state, training=False
-        )
-
-        logits = decoder_dense_layer(decoder_output) # (batch_size, 1, vocab_size)
-        logits = tf.squeeze(logits, axis=1) # (batch_size, vocab_size)
-
-        # 온도 조절 샘플링
-        if temperature == 0.:
-            pred_id = tf.argmax(logits, axis=-1, output_type=tf.int32)
-        else:
-            logits = logits / temperature
-            pred_id = tf.random.categorical(logits, 1, dtype=tf.int32)
-
-        pred_id = tf.squeeze(pred_id, axis=1) # (1,)
-
-        # 종료 토큰 체크
-        if int(pred_id[0]) == end_id:
+        if int(next_token[0]) == end_id:
             break
 
-        generated_ids.append(int(pred_id[0]))
-        dec_input = pred_id[:, tf.newaxis] # 다음 입력으로 업데이트
-        current_state = next_state
+        generated.append(int(next_token[0]))
+        dec_input = tf.concat([dec_input, tf.expand_dims(next_token, axis=0)], axis=-1)
 
-        if verbose:
-            print(f"Step {step}: ID={int(pred_id[0])}, Token='{sp.decode([int(pred_id[0])])}'")
+    return sp.decode(generated)
 
-    decoded_text = sp.decode(generated_ids)
-    return decoded_text
-
-input_text = "안녕하세요"
-
-generate(model, sp, input_text)
