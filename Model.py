@@ -135,45 +135,46 @@ class RMSNorm(tf.keras.layers.Layer):
         return self.scale * x / tf.sqrt(norm ** 2 + self.epsilon)
 
 class FGRU(tf.keras.layers.Layer):
-    def __init__(self, units, activation="swish", use_norm=True, norm_type="rms", **kwargs):
+    def __init__(self, units, activation="silu", use_norm=True, **kwargs):
         super().__init__(**kwargs)
         self.units = units
         self.activation = tf.keras.activations.get(activation)
 
         # Gating & Projection
         self.gate_proj = Dense(units * 2)  # GLU style
-        self.ffn = Dense(units)
+        self.ffn = Dense(units)            # output: units
 
         # Optional Normalization
         self.use_norm = use_norm
         if use_norm:
-            if norm_type == "rms":
-                self.norm = RMSNorm()
-            else:
-                self.norm = LayerNormalization()
+            self.norm = LayerNormalization()
 
     def build(self, input_shape):
         combined_dim = input_shape[-1] + self.units
         self.gate_proj.build((None, combined_dim))
-        self.ffn.build((None, combined_dim))
+        self.ffn.build((None, self.units))  # <-- 여기가 바뀜: combined_dim 대신 units
         self.built = True
 
     def call(self, inputs, states, training=False):
-        h_prev = states[0] if isinstance(states, (list, tuple)) else states
+        if isinstance(states, (list, tuple)):
+            h_prev = states[0]
+        else:
+            h_prev = states
+
         combined = tf.concat([inputs, h_prev], axis=-1)
 
-        # GLU style gating
+        # GLU-style gating
         proj = self.gate_proj(combined)
         a, b = tf.split(proj, 2, axis=-1)
         x = a * tf.sigmoid(b)
 
-        x = self.ffn(x)
+        x = self.ffn(x)  # 이제 (None, units) 입력 가능
         x = self.activation(x)
 
         if self.use_norm:
             x = self.norm(x)
 
-        return x, x
+        return x, x  # output, next_state
 
     @property
     def state_size(self):
