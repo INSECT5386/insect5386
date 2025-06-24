@@ -111,13 +111,7 @@ from tensorflow.keras.layers import Input, Embedding, Dense, Concatenate
 from tensorflow.keras.models import Model
 from tensorflow.keras.activations import gelu, sigmoid, swish
 
-# 사용할 하이퍼파라미터
-vocab_size = 32000
 embed_dim = 256
-max_enc_len = 128
-max_dec_len = 128
-pad_id = sp.piece_to_id("<pad>")
-
 # ---- Encoder ----
 def build_encoder():
     inputs = Input(shape=(None,), dtype=tf.int32)
@@ -130,7 +124,10 @@ def build_encoder():
     
     return Model(inputs=inputs, outputs=x, name="SimpleEncoder")
 
-# ---- Decoder ----
+from tensorflow.keras.layers import Input, Embedding, Dense, Concatenate, Lambda, Layer
+from tensorflow.keras.models import Model
+import tensorflow as tf
+
 def build_decoder():
     dec_inputs = Input(shape=(None,), dtype=tf.int32)
     enc_outputs = Input(shape=(None, embed_dim), dtype=tf.float32)
@@ -140,16 +137,21 @@ def build_decoder():
     # SiLU (Swish)
     x = tf.keras.activations.swish(x)
     
-    # Concat with encoder output
-    batch_size = tf.shape(dec_inputs)[0]
-    seq_len = tf.shape(dec_inputs)[1]
-    
-    # Repeat encoder output to match decoder's sequence length
-    enc_expanded = tf.expand_dims(enc_outputs, axis=1)  # [B, 1, T_enc, D]
-    enc_tiled = tf.tile(enc_expanded, [1, seq_len, 1, 1])  # [B, T_dec, T_enc, D]
-    enc_flattened = tf.reshape(enc_tiled, [batch_size, seq_len, -1])  # [B, T_dec, D*T_enc]
+    # concat with encoder output
+    def repeat_and_tile(inputs):
+        x_dec, x_enc = inputs
+        batch_size = tf.shape(x_dec)[0]
+        seq_len = tf.shape(x_dec)[1]
 
-    x = Concatenate(axis=-1)([x, enc_flattened])
+        # 인코더 출력 확장 및 타일링
+        x_enc_expanded = tf.expand_dims(x_enc, axis=1)  # [B, 1, T_enc, D]
+        x_enc_tiled = tf.tile(x_enc_expanded, [1, seq_len, 1, 1])  # [B, T_dec, T_enc, D]
+        return tf.reshape(x_enc_tiled, [batch_size, seq_len, -1])  # [B, T_dec, D*T_enc]
+
+    merge_layer = Lambda(repeat_and_tile)
+    context = merge_layer([x, enc_outputs])
+
+    x = Concatenate(axis=-1)([x, context])
     
     # SiLU × Sigmoid
     x = Dense(embed_dim)(x)
