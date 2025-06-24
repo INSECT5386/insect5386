@@ -117,62 +117,121 @@ dataset = tf.data.Dataset.from_generator(
 dataset = dataset.shuffle(16384).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 print("dataset ok")
 
-import tensorflow as tf
-
-class FastRNNCell(tf.keras.layers.Layer):
-    def __init__(self, units, **kwargs):
+class DynamicKernelGenerator(tf.keras.layers.Layer):
+    def __init__(self, kernel_size=3, filters=64, hidden_dim=128, **kwargs):
         super().__init__(**kwargs)
-        self.units = units
-        self.W_f = tf.keras.layers.Dense(units)
+        self.kernel_size = kernel_size
+        self.filters = filters
+        self.hidden_dim = hidden_dim
 
-    def call(self, inputs, states):
-        h_prev = states[0]
+        # 커널 생성 네트워크
+        self.net = tf.keras.Sequential([
+            tf.keras.layers.Dense(hidden_dim, activation='relu'),
+            tf.keras.layers.Dense(kernel_size * filters, activation=None),
+        ])
 
-        # Forget gate
-        f_t = tf.sigmoid(self.W_f(inputs))
+    def call(self, inputs):
+        B, T, D = tf.shape(inputs)[0], tf.shape(inputs)[1], tf.shape(inputs)[2]
 
-        # State update
-        h_t = f_t * h_prev + (1 - f_t) * inputs
+        # 커널 생성: [B, T, K * F]
+        kernels = self.net(inputs)
 
-        # Non-linearity
-        h_t = tf.tanh(h_t)
+        # reshape to [B, T, K, F] → 각 타임스텝마다 다른 커널
+        kernels = tf.reshape(kernels, [B, T, self.kernel_size, self.filters])
 
-        return h_t, [h_t]  # output, new_state
+        return kernels
 
+class DynamicConv1D(tf.keras.layers.Layer):
+    def __init__(self, filters, kernel_size=3, **kwargs):
+        super().__init__(**kwargs)
+        self.filters = filters
+        self.kernel_size = kernel_size
 
-    @property
-    def state_size(self):
-        return self.units
+    def call(self, x, kernels):
+        """
+        x: [B, T, D]
+        kernels: [B, T, K, F]
+        returns: [B, T, F]
+        """
+        B, T, D = tf.shape(x)[0], tf.shape(x)[1], tf.shape(x)[2]
+        K, F = self.kernel_size, self.filters
 
-    @property
-    def output_size(self):
-        return self.units
+        # 패딩 추가 ( causal 또는 same )
+        x = tf.pad(x, [[0, 0], [K // 2, K // 2], [0, 0]])
 
-# 인코더
-encoder_input = Input(shape=(max_enc_len,))
-encoder_emb = Embedding(vocab_size, 200)(encoder_input)
+        # sliding window로 local patch 만들기
+        patches = tf.image.extract_patches(
+            images=tf.expand_dims(x, axis=1),  # [B, 1, T+K-1, D]
+            sizes=[1, 1, K, 1],
+            strides=[1, 1, 1, 1],
+            rates=[1, 1, 1, 1],
+            padding='VALID'
+        )  # [B, 1, T, K*D]
+        patches = tf.reshape(patches, [B, T, K, D])  # [B, T, K, D]
 
-rnn_cell = FastRNNCell(units=200)
-encoder = RNN(rnn_cell, return_sequences=True, return_state=True, name='encoder')
-encoder_output, encoder_final_state = encoder(encoder_emb)
+        # 커널과 내적 계산
+        output = tf.einsum('btkd,btkf->btf', patches, kernels)  # [B, T, F]
 
-# 디코더
-decoder_input = Input(shape=(max_dec_len,))
-decoder_emb = Embedding(vocab_size, 200)(decoder_input)
+        return output
 
-rnn_cell_decoder = FastRNNCell(units=200)
-decoder = RNN(
-    rnn_cell_decoder,
-    return_sequences=True,
-    return_state=True,
-    name='decoder',
-)
+class DynamicConvBlock(tf.keras.layers.Layer):
+    def __init__(self, filters, kernel_size=3, **kwargs):
+        super().__init__(**kwargs)
+        self.filters = filters
+        self.kernel_gen = DynamicKernelGenerator(kernel_size=kernel_size, filters=filters)
+        self.conv = DynamicConv1D(filters, kernel_size)
+        self.norm = tf.keras.layers.LayerNormalization()
+        self.dropout = tf.keras.layers.Dropout(0.1)
 
-decoder_output, _ = decoder(decoder_emb, initial_state=encoder_final_state)
+    def call(self, x, training=False):
+        B, T, D = tf.shape(x)[0], tf.shape(x)[1], tf.shape(x)[2]
 
-# 출력층
-decoder_dense = tf.keras.layers.TimeDistributed(Dense(vocab_size))
-decoder_outputs = decoder_dense(decoder_output)
+        kernels = self.kernel_gen(x)  # [B, T, K, F]
+        conv_out = self.conv(x, kernels)  # [B, T, F]
+
+        out = self.norm(conv_out + x)  # residual connection
+        out = tf.nn.relu(out)
+        out = self.dropout(out, training=training)
+
+        return out
+
+def build_encoder(vocab_size, embed_dim=256, num_layers=4, filters=256):
+    inputs = tf.keras.Input(shape=(None,), dtype=tf.int32)
+
+    x = tf.keras.layers.Embedding(vocab_size, embed_dim)(inputs)
+
+    for _ in range(num_layers):
+        x = DynamicConvBlock(filters)(x)
+
+    return tf.keras.Model(inputs=inputs, outputs=x, name="encoder")
+
+def build_decoder(vocab_size, embed_dim=256, num_layers=4, filters=256):
+    dec_inputs = tf.keras.Input(shape=(None,), dtype=tf.int32)
+    enc_outputs = tf.keras.Input(shape=(None, filters))
+
+    x = tf.keras.layers.Embedding(vocab_size, embed_dim)(dec_inputs)
+
+    for _ in range(num_layers):
+        x = DynamicConvBlock(filters)(x)
+
+    # Attention (선택사항)
+    x = tf.keras.layers.Attention()([x, enc_outputs])
+
+    logits = tf.keras.layers.Dense(vocab_size)(x)
+
+    return tf.keras.Model(inputs=[dec_inputs, enc_outputs], outputs=logits, name="decoder")
+
+class DynamicConvS2S(tf.keras.Model):
+    def __init__(self, vocab_size, embed_dim=256, filters=256, num_layers=4, **kwargs):
+        super().__init__(**kwargs)
+        self.encoder = build_encoder(vocab_size, embed_dim, num_layers, filters)
+        self.decoder = build_decoder(vocab_size, embed_dim, num_layers, filters)
+
+    def call(self, inputs, training=False):
+        src, tgt = inputs
+        memory = self.encoder(src)
+        logits = self.decoder([tgt, memory])
+        return logits
 
 # 모델 정의
 model = Model(inputs=[encoder_input, decoder_input], outputs=decoder_outputs)
