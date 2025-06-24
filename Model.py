@@ -268,4 +268,4 @@ def generate_response(model, sp, input_text, max_len=128):
 
 input_text = "안녕하세요"
 
-generate(model, sp, input_text)
+generate_response(model, sp, input_text)
