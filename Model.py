@@ -114,7 +114,7 @@ dataset = tf.data.Dataset.from_generator(
     output_shapes=output_shapes
 )
 
-dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
+dataset = dataset.shuffle(16384).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 print("dataset ok")
 
 import tensorflow as tf
