@@ -106,125 +106,76 @@ dataset = dataset.prefetch(tf.data.AUTOTUNE)
 
 print("✅ 데이터셋 준비 완료")
 
-class DynamicKernelGenerator(tf.keras.layers.Layer):
-    def __init__(self, kernel_size=3, filters=64, hidden_dim=128, **kwargs):
-        super().__init__(**kwargs)
-        self.kernel_size = kernel_size
-        self.filters = filters
-        self.hidden_dim = hidden_dim
+import tensorflow as tf
+from tensorflow.keras.layers import Input, Embedding, Dense, Concatenate
+from tensorflow.keras.models import Model
+from tensorflow.keras.activations import gelu, sigmoid, swish
 
-        # 커널 생성 네트워크
-        self.net = tf.keras.Sequential([
-            tf.keras.layers.Dense(hidden_dim, activation='relu'),
-            tf.keras.layers.Dense(kernel_size * filters, activation=None),
-        ])
+# 사용할 하이퍼파라미터
+vocab_size = 32000
+embed_dim = 256
+max_enc_len = 128
+max_dec_len = 128
+pad_id = sp.piece_to_id("<pad>")
+
+# ---- Encoder ----
+def build_encoder():
+    inputs = Input(shape=(None,), dtype=tf.int32)
+    x = Embedding(vocab_size, embed_dim)(inputs)
+    
+    # GeLU × Sigmoid
+    g = tf.keras.activations.gelu(x)
+    s = tf.keras.activations.sigmoid(x)
+    x = g * s  # Element-wise multiplication
+    
+    return Model(inputs=inputs, outputs=x, name="SimpleEncoder")
+
+# ---- Decoder ----
+def build_decoder():
+    dec_inputs = Input(shape=(None,), dtype=tf.int32)
+    enc_outputs = Input(shape=(None, embed_dim), dtype=tf.float32)
+
+    x = Embedding(vocab_size, embed_dim)(dec_inputs)
+    
+    # SiLU (Swish)
+    x = tf.keras.activations.swish(x)
+    
+    # Concat with encoder output
+    batch_size = tf.shape(dec_inputs)[0]
+    seq_len = tf.shape(dec_inputs)[1]
+    
+    # Repeat encoder output to match decoder's sequence length
+    enc_expanded = tf.expand_dims(enc_outputs, axis=1)  # [B, 1, T_enc, D]
+    enc_tiled = tf.tile(enc_expanded, [1, seq_len, 1, 1])  # [B, T_dec, T_enc, D]
+    enc_flattened = tf.reshape(enc_tiled, [batch_size, seq_len, -1])  # [B, T_dec, D*T_enc]
+
+    x = Concatenate(axis=-1)([x, enc_flattened])
+    
+    # SiLU × Sigmoid
+    x = Dense(embed_dim)(x)
+    g = tf.keras.activations.swish(x)
+    s = tf.keras.activations.sigmoid(x)
+    x = g * s
+    
+    logits = Dense(vocab_size)(x)
+    
+    return Model(inputs=[dec_inputs, enc_outputs], outputs=logits, name="SimpleDecoder")
+
+
+class SimpleS2S(tf.keras.Model):
+    def __init__(self, vocab_size, **kwargs):
+        super().__init__(**kwargs)
+        self.encoder = build_encoder()
+        self.decoder = build_decoder()
 
     def call(self, inputs):
-        B, T, D = tf.shape(inputs)[0], tf.shape(inputs)[1], tf.shape(inputs)[2]
-
-        # 커널 생성: [B, T, K * F]
-        kernels = self.net(inputs)
-
-        # reshape to [B, T, K, F] → 각 타임스텝마다 다른 커널
-        kernels = tf.reshape(kernels, [B, T, self.kernel_size, self.filters])
-
-        return kernels
-
-class DynamicConv1D(tf.keras.layers.Layer):
-    def __init__(self, filters, kernel_size=3, **kwargs):
-        super().__init__(**kwargs)
-        self.filters = filters
-        self.kernel_size = kernel_size
-
-    def call(self, x, kernels):
-        """
-        x: [B, T, D]
-        kernels: [B, T, K, F]
-        returns: [B, T, F]
-        """
-        B, T, D = tf.shape(x)[0], tf.shape(x)[1], tf.shape(x)[2]
-        K, F = self.kernel_size, self.filters
-
-        # 패딩 추가 ( causal 또는 same )
-        x = tf.pad(x, [[0, 0], [K // 2, K // 2], [0, 0]])
-
-        # sliding window로 local patch 만들기
-        patches = tf.image.extract_patches(
-            images=tf.expand_dims(x, axis=1),  # [B, 1, T+K-1, D]
-            sizes=[1, 1, K, 1],
-            strides=[1, 1, 1, 1],
-            rates=[1, 1, 1, 1],
-            padding='VALID'
-        )  # [B, 1, T, K*D]
-        patches = tf.reshape(patches, [B, T, K, D])  # [B, T, K, D]
-
-        # 커널과 내적 계산
-        output = tf.einsum('btkd,btkf->btf', patches, kernels)  # [B, T, F]
-
-        return output
-
-class DynamicConvBlock(tf.keras.layers.Layer):
-    def __init__(self, filters, kernel_size=3, **kwargs):
-        super().__init__(**kwargs)
-        self.filters = filters
-        self.kernel_gen = DynamicKernelGenerator(kernel_size=kernel_size, filters=filters)
-        self.conv = DynamicConv1D(filters, kernel_size)
-        self.norm = tf.keras.layers.LayerNormalization()
-        self.dropout = tf.keras.layers.Dropout(0.1)
-
-    def call(self, x, training=False):
-        B, T, D = tf.shape(x)[0], tf.shape(x)[1], tf.shape(x)[2]
-
-        kernels = self.kernel_gen(x)  # [B, T, K, F]
-        conv_out = self.conv(x, kernels)  # [B, T, F]
-
-        out = self.norm(conv_out + x)  # residual connection
-        out = tf.nn.relu(out)
-        out = self.dropout(out, training=training)
-
-        return out
-
-def build_encoder(vocab_size, embed_dim=256, num_layers=4, filters=256):
-    inputs = tf.keras.Input(shape=(None,), dtype=tf.int32)
-
-    x = tf.keras.layers.Embedding(vocab_size, embed_dim)(inputs)
-
-    for _ in range(num_layers):
-        x = DynamicConvBlock(filters)(x)
-
-    return tf.keras.Model(inputs=inputs, outputs=x, name="encoder")
-
-def build_decoder(vocab_size, embed_dim=256, num_layers=4, filters=256):
-    dec_inputs = tf.keras.Input(shape=(None,), dtype=tf.int32)
-    enc_outputs = tf.keras.Input(shape=(None, filters))
-
-    x = tf.keras.layers.Embedding(vocab_size, embed_dim)(dec_inputs)
-
-    for _ in range(num_layers):
-        x = DynamicConvBlock(filters)(x)
-
-    # Attention (선택사항)
-    x = tf.keras.layers.Attention()([x, enc_outputs])
-
-    logits = tf.keras.layers.Dense(vocab_size)(x)
-
-    return tf.keras.Model(inputs=[dec_inputs, enc_outputs], outputs=logits, name="decoder")
-
-class DynamicConvS2S(tf.keras.Model):
-    def __init__(self, vocab_size, embed_dim=256, filters=256, num_layers=4, **kwargs):
-        super().__init__(**kwargs)
-        self.encoder = build_encoder(vocab_size, embed_dim, num_layers, filters)
-        self.decoder = build_decoder(vocab_size, embed_dim, num_layers, filters)
-
-    def call(self, inputs, training=False):
         src, tgt = inputs
         memory = self.encoder(src)
         logits = self.decoder([tgt, memory])
         return logits
 
+model = SimpleS2S(vocab_size=vocab_size)
 
-# 올바른 방식: DynamicConvS2S 모델 인스턴스 생성
-model = DynamicConvS2S(vocab_size=vocab_size)
 model.compile(
     optimizer='adam',
     loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
@@ -233,11 +184,10 @@ model.compile(
 
 model.summary()
 
-# 학습 실행
+# 데이터셋은 기존 dataset 그대로 사용
 model.fit(dataset, epochs=1, steps_per_epoch=len(train_sentences) // batch_size)
 
-# 저장
-model.save("dynamic_conv_seq2seq_model.keras")
+model.save("simple_s2s_model.keras")
 
 def generate_response(model, sp, input_text, max_len=128):
     start_id = sp.piece_to_id("<start>")
