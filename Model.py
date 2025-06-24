@@ -135,8 +135,10 @@ class FGRU(tf.keras.layers.Layer):
             self.norm = layers.LayerNormalization()
 
         # Gate controller
-        self.gate_net = layers.Dense(units, activation='sigmoid'),
-        self.gate_netO = layers.Dense(1, activation='sigmoid')
+        self.gate_net = tf.keras.Sequential([
+            layers.Dense(units, activation='sigmoid'),
+            layers.Dense(1, activation='sigmoid')
+        ])
 
     def build(self, input_shape):
         self.built = True
@@ -152,8 +154,7 @@ class FGRU(tf.keras.layers.Layer):
         interaction = tf.einsum('bi,bj->bij', x, h)
 
         # Gate scalar per batch
-        gate = self.gate_net(tf.concat([x, h], axis=-1))
-        gate = self.gate_netO(gate)
+        gate = self.gate_net(tf.concat([x, h], axis=-1))  # [B, 1]
 
         # Flatten interaction
         flat_interaction = tf.reshape(interaction, [tf.shape(x)[0], -1])
@@ -179,6 +180,7 @@ encoder_input = tf.keras.Input(shape=(max_enc_len,))
 encoder_emb = tf.keras.layers.Embedding(vocab_size, 200)(encoder_input)
 
 rnn_cell = FGRU(units=200)
+rnn_cell.bulid(None, max_enc_len)
 encoder = tf.keras.layers.RNN(rnn_cell, return_sequences=True, return_state=True, name='encoder')
 encoder_output, encoder_final_state = encoder(encoder_emb)
 
@@ -187,6 +189,7 @@ decoder_input = tf.keras.Input(shape=(max_dec_len,))
 decoder_emb = tf.keras.layers.Embedding(vocab_size, 200)(decoder_input)
 
 rnn_cell_decoder = FGRU(units=200)
+rnn_cell_decoder.bulid(None, max_dec_len)
 
 decoder = tf.keras.layers.RNN(
     rnn_cell_decoder,
