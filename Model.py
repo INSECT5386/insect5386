@@ -117,20 +117,40 @@ dataset = tf.data.Dataset.from_generator(
 dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 print("dataset ok")
 
+class RMSNorm(tf.keras.layers.Layer):
+    def __init__(self, epsilon=1e-6, **kwargs):
+        super().__init__(**kwargs)
+        self.epsilon = epsilon
+
+    def build(self, input_shape):
+        self.scale = self.add_weight(
+            shape=(input_shape[-1],),
+            initializer="ones",
+            name="scale"
+        )
+        self.built = True
+
+    def call(self, x):
+        norm = tf.norm(x, axis=-1, keepdims=True)
+        return self.scale * x / tf.sqrt(norm ** 2 + self.epsilon)
+
 class FGRU(tf.keras.layers.Layer):
-    def __init__(self, units, activation="silu", use_norm=True, **kwargs):
+    def __init__(self, units, activation="swish", use_norm=True, norm_type="rms", **kwargs):
         super().__init__(**kwargs)
         self.units = units
         self.activation = tf.keras.activations.get(activation)
 
         # Gating & Projection
-        self.gate_proj = Dense(units + units)
+        self.gate_proj = Dense(units * 2)  # GLU style
         self.ffn = Dense(units)
 
         # Optional Normalization
         self.use_norm = use_norm
         if use_norm:
-            self.norm = LayerNormalization()
+            if norm_type == "rms":
+                self.norm = RMSNorm()
+            else:
+                self.norm = LayerNormalization()
 
     def build(self, input_shape):
         combined_dim = input_shape[-1] + self.units
@@ -139,28 +159,21 @@ class FGRU(tf.keras.layers.Layer):
         self.built = True
 
     def call(self, inputs, states, training=False):
-        # 이전 상태 가져오기
-        if isinstance(states, (list, tuple)):
-            h_prev = states[0]
-        else:
-            h_prev = states
-
-        # Concat: input + hidden_state
+        h_prev = states[0] if isinstance(states, (list, tuple)) else states
         combined = tf.concat([inputs, h_prev], axis=-1)
 
-        # Gate 계산: x * sigmoid(x)
-        gate = tf.sigmoid(self.gate_proj(combined))
-        x = combined * gate
+        # GLU style gating
+        proj = self.gate_proj(combined)
+        a, b = tf.split(proj, 2, axis=-1)
+        x = a * tf.sigmoid(b)
 
-        # FFN + Nonlinearity
         x = self.ffn(x)
         x = self.activation(x)
 
-        # Optional Norm
         if self.use_norm:
             x = self.norm(x)
 
-        return x, x  # output, next_state
+        return x, x
 
     @property
     def state_size(self):
