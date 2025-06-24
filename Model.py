@@ -116,111 +116,171 @@ dataset = tf.data.Dataset.from_generator(
 dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 print("dataset ok")
 
-import tensorflow as tf
+class FGRU(tf.keras.layers.Layer):
+    def __init__(self, units, activation="silu", use_norm=True, **kwargs):
+        super().__init__(**kwargs)
+        self.units = units
+        self.activation = tf.keras.activations.get(activation)
 
-# 1. SwiGatedBlock: SwiGLU + Sigmoid Gate
-class SwiGatedBlock(tf.keras.layers.Layer):
-    def __init__(self, dim, name="block", **kwargs):
-        super().__init__(name=name, **kwargs)
-        self.dim = dim
+        # Gating & Projection
+        self.gate_proj = Dense(units)
+        self.ffn = Dense(units)
 
-        # FFN with SwiGLU
-        self.gate = tf.keras.layers.Dense(dim)
-        self.up = tf.keras.layers.Dense(dim)
+        # Optional Normalization
+        self.use_norm = use_norm
+        if use_norm:
+            self.norm = LayerNormalization()
 
-        # Norms
-        self.norm = tf.keras.layers.LayerNormalization()
+    def build(self, input_shape):
+        combined_dim = input_shape[-1] + self.units
+        self.gate_proj.build((None, combined_dim))
+        self.ffn.build((None, combined_dim))
+        self.built = True
 
-    def call(self, x):
-        # SwiGLU 계산
-        gate = tf.nn.silu(self.gate(x))
-        up = self.up(x)
-        ff_out = gate * up
+    def call(self, inputs, states, training=False):
+        # 이전 상태 가져오기
+        if isinstance(states, (list, tuple)):
+            h_prev = states[0]
+        else:
+            h_prev = states
 
-        # Gate 계산: sigmoid(x) * ff_out
-        x = tf.sigmoid(x) * ff_out
-        x = self.norm(x)
+        # Concat: input + hidden_state
+        combined = tf.concat([inputs, h_prev], axis=-1)
 
-        return x
+        # Gate 계산: x * sigmoid(x)
+        gate = tf.sigmoid(self.gate_proj(combined))
+        x = combined * gate
 
+        # FFN + Nonlinearity
+        x = self.ffn(x)
+        x = self.activation(x)
 
-# 2. Encoder
-class SimpleX_Encoder(tf.keras.Model):
-    def __init__(self, vocab_size, dim=200, name="encoder", **kwargs):
-        super().__init__(name=name, **kwargs)
-        self.embed = tf.keras.layers.Embedding(vocab_size, dim)
-        self.block = SwiGatedBlock(dim)
+        # Optional Norm
+        if self.use_norm:
+            x = self.norm(x)
 
-    def call(self, x):
-        x = self.embed(x)
-        return self.block(x)
+        return x, x  # output, next_state
 
+    @property
+    def state_size(self):
+        return self.units
 
-# 3. Decoder
-class SimpleX_Decoder(tf.keras.Model):
-    def __init__(self, vocab_size, dim=200, name="decoder", **kwargs):
-        super().__init__(name=name, **kwargs)
-        self.embed = tf.keras.layers.Embedding(vocab_size, dim)
-        self.first_block = SwiGatedBlock(dim)
-        self.second_block = SwiGatedBlock(dim)
-
-    def call(self, x, enc_out):
-        x = self.embed(x)
-        x = self.first_block(x)
-        x = tf.concat([x, enc_out], axis=-1)
-        return self.second_block(x)
+    @property
+    def output_size(self):
+        return self.units
 
 
-# 4. 전체 모델
-class SimpleX(tf.keras.Model):
-    def __init__(self, vocab_size, dim=200, name="simplex", **kwargs):
-        super().__init__(name=name, **kwargs)
-        self.encoder = SimpleX_Encoder(vocab_size, dim)
-        self.decoder = SimpleX_Decoder(vocab_size, dim)
-        self.final_proj = tf.keras.layers.Dense(vocab_size)
+encoder_input = tf.keras.Input(shape=(max_enc_len,))
+encoder_emb = tf.keras.layers.Embedding(vocab_size, 200)(encoder_input)
 
-    def call(self, inputs, targets):
-        enc_out = self.encoder(inputs)
-        dec_out = self.decoder(targets, enc_out)
-        return self.final_proj(dec_out)
+rnn_cell = FGRU(units=200)
+encoder = tf.keras.layers.RNN(rnn_cell, return_sequences=True, return_state=True, name='encoder')
+encoder_output, encoder_final_state = encoder(encoder_emb)
 
-    def generate(self, input_ids, start_id, max_len=128, temperature=1.0):
-        enc_out = self.encoder(input_ids)
+# 디코더
+decoder_input = tf.keras.Input(shape=(max_dec_len,))
+decoder_emb = tf.keras.layers.Embedding(vocab_size, 200)(decoder_input)
 
-        batch_size = tf.shape(input_ids)[0]
-        current_input = tf.constant([[start_id]] * batch_size)
+rnn_cell_decoder = FGRU(units=200)
 
-        generated = [current_input]
+decoder = tf.keras.layers.RNN(
+    rnn_cell_decoder,
+    return_sequences=True,
+    return_state=True,
+    name='decoder',
+)
 
-        for _ in range(max_len):
-            logits = self.decoder(current_input, enc_out)
-            logits = self.final_proj(logits)
-            logits = logits[:, -1, :] / temperature
-            probs = tf.nn.softmax(logits, axis=-1)
-            pred_id = tf.random.categorical(probs, 1)
+decoder_output, _ = decoder(decoder_emb, initial_state=encoder_final_state)
 
-            generated.append(pred_id)
-            current_input = pred_id
+# 출력층
+decoder_dense = tf.keras.layers.TimeDistributed(
+    tf.keras.layers.Dense(vocab_size)
+)
+decoder_outputs = decoder_dense(decoder_output)
 
-        return tf.concat(generated, axis=1)
+# 모델 정의
+model = tf.keras.Model(inputs=[encoder_input, decoder_input], outputs=decoder_outputs)
 
-# 모델 생성
-model = SimpleX(vocab_size=vocab_size, dim=200)
-
-# 손실 함수 & 옵티마이저
-loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
-optimizer = tf.keras.optimizers.Adam(3e-4)
-
-# 컴파일
-model.compile(optimizer=optimizer, loss=loss_fn)
+model.compile(optimizer='adam', loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True))
 
 model.summary()
 model.fit(dataset, epochs=1, steps_per_epoch=len(train_sentences) // batch_size)
+model.save("model.keras") # 최선의 선택
+def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=False):
+    """
+    사용자 입력 문장을 받아 AI 응답 생성
+    :param model: 훈련된 Seq2Seq 모델
+    :param sp: SentencePiece Tokenizer
+    :param input_text: 사용자 입력 (str)
+    :param max_dec_len: 최대 생성 길이
+    :param temperature: 샘플링 온도 (낮을수록 greedy, 높을수록 창의적)
+    :param verbose: 디버깅 메시지 출력 여부
+    :return: 생성된 텍스트
+    """
+    start_id = sp.piece_to_id("<start>")
+    end_id = sp.piece_to_id("<end>")
+    sep_id = sp.piece_to_id("<sep>")
 
-input_sentence = ["<start> 오늘 날씨는 어때 <sep>"]
-tokenized = [sp.encode(s) for s in input_sentence]
-padded = tf.keras.preprocessing.sequence.pad_sequences(tokenized, maxlen=max_enc_len, padding='post', truncating='post')
-output = model.generate(padded, start_id=start_id, max_len=64)
+    # 인코더 입력 전처리
+    enc_ids = sp.encode(input_text + " <sep>")
+    enc_ids = enc_ids[:max_enc_len]
+    enc_ids += [sp.pad_id()] * (max_enc_len - len(enc_ids))
+    enc_tensor = tf.constant([enc_ids], dtype=tf.int32)
 
-print("입력:", input_sentence[0])
-print("생성 결과:", sp.decode(output.numpy()[0]))
+    if verbose:
+        print("Encoder Input:", input_text)
+        print("Encoded:", enc_ids)
+
+    # 인코더 실행 (인코더 임베딩 -> RNN)
+    encoder_emb_layer = model.get_layer('embedding') # 인코더 임베딩
+    encoder_rnn_layer = model.get_layer('encoder') # 인코더 RNN
+
+    encoder_emb_out = encoder_emb_layer(enc_tensor)
+    encoder_output, encoder_state = encoder_rnn_layer(encoder_emb_out, training=False)
+
+    # 디코더 준비
+    decoder_emb_layer = model.get_layer('embedding_1') # 디코더 임베딩
+    decoder_rnn_layer = model.get_layer('decoder') # 디코더 RNN
+    decoder_dense_layer = model.get_layer('time_distributed') # TimeDistributed(Dense)
+
+    # 디코더 초기 입력: <start>
+    dec_input = tf.constant([[start_id]], dtype=tf.int32)
+    current_state = encoder_state
+    generated_ids = []
+
+    for step in range(max_dec_len):
+        dec_emb = decoder_emb_layer(dec_input) # 입력 임베딩
+
+        decoder_output, next_state = decoder_rnn_layer(
+            dec_emb, initial_state=current_state, training=False
+        )
+
+        logits = decoder_dense_layer(decoder_output) # (batch_size, 1, vocab_size)
+        logits = tf.squeeze(logits, axis=1) # (batch_size, vocab_size)
+
+        # 온도 조절 샘플링
+        if temperature == 0.:
+            pred_id = tf.argmax(logits, axis=-1, output_type=tf.int32)
+        else:
+            logits = logits / temperature
+            pred_id = tf.random.categorical(logits, 1, dtype=tf.int32)
+
+        pred_id = tf.squeeze(pred_id, axis=1) # (1,)
+
+        # 종료 토큰 체크
+        if int(pred_id[0]) == end_id:
+            break
+
+        generated_ids.append(int(pred_id[0]))
+        dec_input = pred_id[:, tf.newaxis] # 다음 입력으로 업데이트
+        current_state = next_state
+
+        if verbose:
+            print(f"Step {step}: ID={int(pred_id[0])}, Token='{sp.decode([int(pred_id[0])])}'")
+
+    decoded_text = sp.decode(generated_ids)
+    return decoded_text
+
+input_text = "안녕하세요"
+
+generate(model, sp, input_text)
