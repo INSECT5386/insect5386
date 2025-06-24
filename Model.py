@@ -135,10 +135,8 @@ class FGRU(tf.keras.layers.Layer):
             self.norm = layers.LayerNormalization()
 
         # Gate controller
-        self.gate_net = tf.keras.Sequential([
-            layers.Dense(units, activation='sigmoid'),
-            layers.Dense(1, activation='sigmoid')
-        ])
+        self.gate_net = layers.Dense(units, activation='sigmoid'),
+        self.gate_netO = layers.Dense(1, activation='sigmoid')
 
     def build(self, input_shape):
         self.built = True
@@ -154,7 +152,8 @@ class FGRU(tf.keras.layers.Layer):
         interaction = tf.einsum('bi,bj->bij', x, h)
 
         # Gate scalar per batch
-        gate = self.gate_net(tf.concat([x, h], axis=-1))  # [B, 1]
+        gate = self.gate_net(tf.concat([x, h], axis=-1))
+        gate = self.gate_netO(gate)
 
         # Flatten interaction
         flat_interaction = tf.reshape(interaction, [tf.shape(x)[0], -1])
