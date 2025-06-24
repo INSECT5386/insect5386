@@ -117,66 +117,33 @@ dataset = tf.data.Dataset.from_generator(
 dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 print("dataset ok")
 
-class FGRU(tf.keras.layers.Layer):
-    def __init__(self, units, use_norm=True, **kwargs):
+import tensorflow as tf
+
+class FastRNNCell(tf.keras.layers.Layer):
+    def __init__(self, units, **kwargs):
         super().__init__(**kwargs)
         self.units = units
-        self.use_norm = use_norm
+        self.W_f = tf.keras.layers.Dense(units)
 
-        # Input projection
-        self.in_proj = layers.Dense(units)
-        # Hidden state interaction
-        self.h_proj = layers.Dense(units)
-
-        if use_norm:
-            self.norm = layers.LayerNormalization()
-
-        # Gate controller
-        self.gate_net = tf.keras.Sequential([
-            layers.Dense(units, activation='sigmoid'),
-            layers.Dense(1, activation='sigmoid')
-        ])
-
-    def build(self, input_shape):
-        # 입력 shape을 기반으로 내부 레이어 build 강제 실행
-        assert len(input_shape) == 1 or input_shape is None, "Input shape must be 1D"
-        self.in_proj.build((None, input_shape[-1]))
-        self.h_proj.build((None, self.units))
-        self.gate_net.build((None, self.units + self.units))  # gate_input size
-        self.built = True
-
-    def call(self, inputs, states, training=False):
+    def call(self, inputs, states):
         h_prev = states[0]
 
-        x = tf.nn.silu(self.in_proj(inputs))
-        h = tf.nn.silu(self.h_proj(h_prev))
+        # Forget gate
+        f_t = tf.sigmoid(self.W_f(inputs))
 
-        interaction = tf.einsum('bi,bj->bij', x, h)
-        gate_input = tf.concat([x, h], axis=-1)
-        gate = self.gate_net(gate_input)
+        # State update
+        h_t = f_t * h_prev + (1 - f_t) * inputs
 
-        flat_interaction = tf.reshape(interaction, [tf.shape(x)[0], -1])
-        new_h = gate * flat_interaction[:, :self.units] + (1 - gate) * h
+        # Non-linearity
+        h_t = tf.tanh(h_t)
 
-        if self.use_norm:
-            new_h = self.norm(new_h)
-
-        return new_h, new_h  # output, next_state
-
-    @property
-    def state_size(self):
-        return self.units
-
-    @property
-    def output_size(self):
-        return self.units
-
+        return h_t, [h_t]  # output, new_state
 
 # 인코더
 encoder_input = Input(shape=(max_enc_len,))
 encoder_emb = Embedding(vocab_size, 200)(encoder_input)
 
-rnn_cell = FGRU(units=200)
+rnn_cell = FastRNNCell(units=200)
 encoder = RNN(rnn_cell, return_sequences=True, return_state=True, name='encoder')
 encoder_output, encoder_final_state = encoder(encoder_emb)
 
@@ -184,7 +151,7 @@ encoder_output, encoder_final_state = encoder(encoder_emb)
 decoder_input = Input(shape=(max_dec_len,))
 decoder_emb = Embedding(vocab_size, 200)(decoder_input)
 
-rnn_cell_decoder = FGRU(units=200)
+rnn_cell_decoder = FastRNNCell(units=200)
 decoder = RNN(
     rnn_cell_decoder,
     return_sequences=True,
