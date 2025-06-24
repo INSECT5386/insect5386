@@ -117,42 +117,24 @@ dataset = tf.data.Dataset.from_generator(
 dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 print("dataset ok")
 
-class RMSNorm(tf.keras.layers.Layer):
-    def __init__(self, epsilon=1e-6, **kwargs):
-        super().__init__(**kwargs)
-        self.epsilon = epsilon
-
-    def build(self, input_shape):
-        self.scale = self.add_weight(
-            shape=(input_shape[-1],),
-            initializer="ones",
-            name="scale"
-        )
-        self.built = True
-
-    def call(self, x):
-        norm = tf.norm(x, axis=-1, keepdims=True)
-        return self.scale * x / tf.sqrt(norm ** 2 + self.epsilon)
-
-class FGRU(tf.keras.layers.Layer):
-    def __init__(self, units, activation="silu", use_norm=True, **kwargs):
+class FastFGRU(tf.keras.layers.Layer):
+    def __init__(self, units, activation="swish", use_norm=True, **kwargs):
         super().__init__(**kwargs)
         self.units = units
         self.activation = tf.keras.activations.get(activation)
 
-        # Gating & Projection
-        self.gate_proj = Dense(units * 2)  # GLU style
-        self.ffn = Dense(units)            # output: units
+        # Input projection
+        self.input_proj = Dense(units)
+        # Hidden state projection
+        self.state_proj = Dense(units)
 
-        # Optional Normalization
+        # Optional Norm
         self.use_norm = use_norm
         if use_norm:
             self.norm = LayerNormalization()
 
     def build(self, input_shape):
-        combined_dim = input_shape[-1] + self.units
-        self.gate_proj.build((None, combined_dim))
-        self.ffn.build((None, self.units))  # <-- 여기가 바뀜: combined_dim 대신 units
+        # 각각 입력/상태 차원에 맞춰 자동 빌드됨
         self.built = True
 
     def call(self, inputs, states, training=False):
@@ -161,20 +143,18 @@ class FGRU(tf.keras.layers.Layer):
         else:
             h_prev = states
 
-        combined = tf.concat([inputs, h_prev], axis=-1)
+        # 각각 독립적으로 변환
+        x = self.input_proj(inputs)
+        h = self.state_proj(h_prev)
 
-        # GLU-style gating
-        proj = self.gate_proj(combined)
-        a, b = tf.split(proj, 2, axis=-1)
-        x = a * tf.sigmoid(b)
-
-        x = self.ffn(x)  # 이제 (None, units) 입력 가능
-        x = self.activation(x)
+        # 한 번에 결합
+        combined = x + h  # 또는 tf.add(x, h)
+        out = self.activation(combined)
 
         if self.use_norm:
-            x = self.norm(x)
+            out = self.norm(out)
 
-        return x, x  # output, next_state
+        return out, out  # output, next_state
 
     @property
     def state_size(self):
