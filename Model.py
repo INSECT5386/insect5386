@@ -139,6 +139,15 @@ class FastRNNCell(tf.keras.layers.Layer):
 
         return h_t, [h_t]  # output, new_state
 
+
+    @property
+    def state_size(self):
+        return self.units
+
+    @property
+    def output_size(self):
+        return self.units
+
 # 인코더
 encoder_input = Input(shape=(max_enc_len,))
 encoder_emb = Embedding(vocab_size, 200)(encoder_input)
