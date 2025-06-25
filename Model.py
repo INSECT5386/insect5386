@@ -143,7 +143,7 @@ from tensorflow.keras import layers, Model
 
 
 # Input Layer
-inputs = layers.Input(shape=(seq_length,))
+encoder_input = layers.Input(shape=(seq_length,))
 x = layers.Embedding(input_dim=vocab_size, output_dim=embedding_dim)(inputs)
 
 # Encoder (NoParamRNN)
