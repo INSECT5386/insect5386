@@ -117,37 +117,13 @@ dataset = tf.data.Dataset.from_generator(
 dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 print("dataset ok")
 
-class NoParamRNNCell(tf.keras.layers.Layer):
-    def __init__(self, units=200, **kwargs):
-        super().__init__(**kwargs)
-        self._units = units
-
-    def build(self, input_shape):
-        self.built = True
-
-    def call(self, inputs, states):
-        h_prev = states[0]
-        gate = tf.sigmoid(inputs * h_prev)
-        C_t = gate + h_prev
-        h_t = tf.tanh(C_t)
-        return h_t, [h_t]
-
-    @property
-    def state_size(self): return self._units
-    @property
-    def output_size(self): return self._units
-
-from tensorflow.keras import layers, Model
-
-
 # Input Layer
 encoder_input = layers.Input(shape=(max_enc_len,))
 x = layers.Embedding(input_dim=vocab_size, output_dim=200)(encoder_input)
 
-encoder_rnn_1 = layers.RNN(NoParamRNNCell(units=200), return_sequences=False, return_state=True)
-encoder_output, encoder_state = encoder_rnn_1(x)
+x = Dense(200, activation='silu')(x)
+encoder_output = x
 
-# Trainable head
 a = layers.Dense(200, activation='tanh')(encoder_output)
 b = layers.Dense(200, activation='gelu')(encoder_output)
 context_vector = a * b
@@ -156,9 +132,9 @@ context_vector = a * b
 decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
 decoder_emb = Embedding(input_dim=vocab_size, output_dim=200)(decoder_input)
 
-decoder_rnn_1 = layers.RNN(NoParamRNNCell(units=200), return_sequences=True, return_state=True)
-decoder_output, _ = decoder_rnn_1(decoder_emb, initial_state=[context_vector]) # ✅ 임베딩된 값 사용
-
+y = Dense(200, activation='silu')(decoder_emb)
+z = concat(context_vector, y)
+decoder_output = z
 
 # 디코더 출력 후처리
 decoder_a = layers.Dense(200)(decoder_output)
