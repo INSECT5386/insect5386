@@ -117,8 +117,6 @@ dataset = tf.data.Dataset.from_generator(
 dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 print("dataset ok")
 
-import tensorflow as tf
-
 class NoParamRNNCell(tf.keras.layers.Layer):
     def __init__(self, units=200, **kwargs):
         super().__init__(**kwargs)
@@ -128,16 +126,24 @@ class NoParamRNNCell(tf.keras.layers.Layer):
         self.built = True
 
     def call(self, inputs, states):
-        h_prev = states[0]
+        h_prev, C_prev = states  # 두 개의 상태
+        
         gate = tf.sigmoid(inputs * h_prev)
-        C_t = gate + h_prev
-        h_t = tf.tanh(C_t)
-        return h_t, [h_t]
+        C_new = gate * C_prev + (1 - gate) * h_prev
+        
+        t_s1 = tf.tanh(C_new)
+        t_s2 = tf.gelu(C_new)
+        h_t = t_s1 * t_s2  # 하이브리드 활성화
+
+        return h_t, [h_t, C_new]
 
     @property
-    def state_size(self): return self._units
+    def state_size(self): 
+        return (self._units, self._units)
+
     @property
-    def output_size(self): return self._units
+    def output_size(self): 
+        return self._units
 
 from tensorflow.keras import layers, Model
 
@@ -146,12 +152,13 @@ from tensorflow.keras import layers, Model
 encoder_input = layers.Input(shape=(max_enc_len,))
 x = layers.Embedding(input_dim=vocab_size, output_dim=200)(encoder_input)
 
-# Encoder (NoParamRNN)
 encoder_rnn_1 = layers.RNN(NoParamRNNCell(units=200), return_sequences=False, return_state=True)
 encoder_output, encoder_state = encoder_rnn_1(x)
 
 # Trainable head
-context_vector = layers.Dense(200, activation='tanh')(encoder_output)
+a = layers.Dense(200, activation='tanh')(encoder_output)
+b = layers.Dense(200, activation='gelu')(encoder_output)
+context_vector = a * b
 
 # 디코더
 decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
@@ -160,8 +167,9 @@ decoder_emb = Embedding(input_dim=vocab_size, output_dim=200)(decoder_input)
 decoder_rnn_1 = layers.RNN(NoParamRNNCell(units=200), return_sequences=True, return_state=True)
 decoder_output, _ = decoder_rnn_1(decoder_emb, initial_state=[context_vector])  # ✅ 임베딩된 값 사용
 
-decoder_o = layers.Dense(200)(decoder_output)
-decoder_o = layers.Activation(tf.nn.gelu)(decoder_o)
+decoder_a = layers.Dense(200)(decoder_output)
+decoder_b = layers.Activation(tf.nn.silu)(decoder_output)
+decoder_o = decoder_a * decoder_b
 decoder_dense = layers.TimeDistributed(Dense(vocab_size))(decoder_o)
 
 # 모델 정의
