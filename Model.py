@@ -120,7 +120,7 @@ print("dataset ok")
 import tensorflow as tf
 
 class NoParamRNNCell(tf.keras.layers.Layer):
-    def __init__(self, units=16, **kwargs):
+    def __init__(self, units=200, **kwargs):
         super().__init__(**kwargs)
         self._units = units
 
@@ -143,37 +143,36 @@ from tensorflow.keras import layers, Model
 
 
 # Input Layer
-encoder_input = layers.Input(shape=(seq_length,))
-x = layers.Embedding(input_dim=vocab_size, output_dim=embedding_dim)(encoder_input)
+encoder_input = layers.Input(shape=(max_enc_len,))
+x = layers.Embedding(input_dim=vocab_size, output_dim=200)(encoder_input)
 
 # Encoder (NoParamRNN)
-encoder_rnn_1 = layers.RNN(NoParamRNNCell(rnn_units), return_sequences=False, return_state=True)
+encoder_rnn_1 = layers.RNN(NoParamRNNCell(units=200), return_sequences=False, return_state=True)
 encoder_output, encoder_state = encoder_rnn_1(x)
 
 # Trainable head
 context_vector = layers.Dense(200, activation='tanh')(encoder_output)
 
 # 디코더
-decoder_input = Input(shape=(max_dec_len,))
-decoder_emb = Embedding(vocab_size, 200)(decoder_input)
-decoder_rnn_1 = layers.RNN(NoParamRNNCell(rnn_units), return_sequences=True, return_state=True)
-decoder_output, _ = decoder_rnn_1(decoder_input, initial_state=[context_vector])
+decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
+decoder_emb = Embedding(input_dim=vocab_size, output_dim=200)(decoder_input)
 
-# decoder_output은 RNN 출력 (텐서)
-decoder_o = layers.Dense(200)(decoder_output)  # dim은 적절한 값으로 설정하세요 (예: embedding_dim)
-decoder_o = tf.nn.gelu(decoder_o)
+decoder_rnn_1 = layers.RNN(NoParamRNNCell(units=200), return_sequences=True, return_state=True)
+decoder_output, _ = decoder_rnn_1(decoder_emb, initial_state=[context_vector])  # ✅ 임베딩된 값 사용
 
-decoder_dense = tf.keras.layers.TimeDistributed(Dense(vocab_size))
-decoder_outputs = decoder_dense(decoder_o)
+decoder_o = layers.Dense(200)(decoder_output)
+decoder_o = layers.Activation(tf.nn.gelu)(decoder_o)
+decoder_dense = layers.TimeDistributed(Dense(vocab_size))(decoder_o)
 
 # 모델 정의
-model = Model(inputs=[encoder_input, decoder_input], outputs=decoder_outputs)
+model = Model(inputs=[encoder_input, decoder_input], outputs=decoder_dense)
 
 model.compile(optimizer='adam', loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True))
 
 model.summary()
 model.fit(dataset, epochs=1, steps_per_epoch=len(train_sentences) // batch_size)
-model.save("model.keras") # 최선의 선택
+
+
 def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=False):
     """
     사용자 입력 문장을 받아 AI 응답 생성
@@ -201,14 +200,14 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
 
     # 인코더 실행 (인코더 임베딩 -> RNN)
     encoder_emb_layer = model.get_layer('embedding') # 인코더 임베딩
-    encoder_rnn_layer = model.get_layer('encoder') # 인코더 RNN
+    encoder_rnn_layer = model.get_layer('rnn') # 인코더 RNN
 
     encoder_emb_out = encoder_emb_layer(enc_tensor)
     encoder_output, encoder_state = encoder_rnn_layer(encoder_emb_out, training=False)
 
     # 디코더 준비
     decoder_emb_layer = model.get_layer('embedding_1') # 디코더 임베딩
-    decoder_rnn_layer = model.get_layer('decoder') # 디코더 RNN
+    decoder_rnn_layer = model.get_layer('rnn_1') # 디코더 RNN
     decoder_dense_layer = model.get_layer('time_distributed') # TimeDistributed(Dense)
 
     # 디코더 초기 입력: <start>
