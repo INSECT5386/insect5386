@@ -119,58 +119,45 @@ print("dataset ok")
 
 import tensorflow as tf
 
-class FastRNNCell(tf.keras.layers.Layer):
-    def __init__(self, units, **kwargs):
+class NoParamRNNCell(tf.keras.layers.Layer):
+    def __init__(self, units=16, **kwargs):
         super().__init__(**kwargs)
-        self.units = units
-        self.W_f = tf.keras.layers.Dense(units)
+        self._units = units
+
+    def build(self, input_shape):
+        self.built = True
 
     def call(self, inputs, states):
         h_prev = states[0]
-
-        # Forget gate
-        f_t = tf.sigmoid(self.W_f(inputs))
-
-        # State update
-        h_t = f_t * h_prev + (1 - f_t) * inputs
-
-        # Non-linearity
-        h_t = tf.tanh(h_t)
-
-        return h_t, [h_t]  # output, new_state
-
+        gate = tf.sigmoid(inputs * h_prev)
+        C_t = gate + h_prev
+        h_t = tf.tanh(C_t)
+        return h_t, [h_t]
 
     @property
-    def state_size(self):
-        return self.units
-
+    def state_size(self): return self._units
     @property
-    def output_size(self):
-        return self.units
+    def output_size(self): return self._units
 
-# 인코더
-encoder_input = Input(shape=(max_enc_len,))
-encoder_emb = Embedding(vocab_size, 200)(encoder_input)
+from tensorflow.keras import layers, Model
 
-rnn_cell = FastRNNCell(units=200)
-encoder = RNN(rnn_cell, return_sequences=True, return_state=True, name='encoder')
-encoder_output, encoder_final_state = encoder(encoder_emb)
 
-# 디코더
-decoder_input = Input(shape=(max_dec_len,))
-decoder_emb = Embedding(vocab_size, 200)(decoder_input)
+# Input Layer
+inputs = layers.Input(shape=(seq_length,))
+x = layers.Embedding(input_dim=vocab_size, output_dim=embedding_dim)(inputs)
 
-rnn_cell_decoder = FastRNNCell(units=200)
-decoder = RNN(
-    rnn_cell_decoder,
-    return_sequences=True,
-    return_state=True,
-    name='decoder',
-)
+# Encoder (NoParamRNN)
+encoder_rnn_1 = layers.RNN(NoParamRNNCell(rnn_units), return_sequences=False, return_state=True)
+encoder_output, encoder_state = encoder_rnn_1(x)
 
-decoder_output, _ = decoder(decoder_emb, initial_state=encoder_final_state)
+# Trainable head
+context_vector = layers.Dense(rnn_units, activation='tanh')(encoder_output)
 
-# 출력층
+# Decoder (NoParamRNN)
+decoder_input = tf.expand_dims(tf.zeros_like(context_vector), axis=1)  # dummy start token
+decoder_rnn_1 = layers.RNN(NoParamRNNCell(rnn_units), return_sequences=True, return_state=True)
+decoder_output, _ = decoder_rnn_1(decoder_input, initial_state=[context_vector])
+
 decoder_dense = tf.keras.layers.TimeDistributed(Dense(vocab_size))
 decoder_outputs = decoder_dense(decoder_output)
 
