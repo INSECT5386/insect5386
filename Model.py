@@ -167,10 +167,9 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
     # 특수 토큰 ID 추출
     start_id = sp.piece_to_id("<start>")
     end_id = sp.piece_to_id("<end>")
-    sep_id = sp.piece_to_id("<sep>")
     
     # 인코더 입력 전처리
-    enc_ids = sp.encode(input_text + " <sep>")
+    enc_ids = sp.encode(input_text)
     enc_ids = enc_ids[:max_enc_len]
     enc_ids += [sp.pad_id()] * (max_enc_len - len(enc_ids))
     enc_tensor = tf.constant([enc_ids], dtype=tf.int32)
@@ -180,15 +179,13 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
         print("Encoded:", enc_ids)
 
     # 인코더 실행
-    encoder_emb_layer = model.get_layer('embedding')       # Embedding Layer
-    encoder_dense_layer = model.get_layer('dense')         # Dense(silu)
+    encoder_emb_layer = model.get_layer('embedding')
+    encoder_dense_layer = model.get_layer('dense')         # silu
+    a_layer = model.get_layer('dense_1')                   # tanh
+    b_layer = model.get_layer('dense_2')                   # gelu
 
     encoder_emb_out = encoder_emb_layer(enc_tensor)        # 임베딩
     encoder_output = encoder_dense_layer(encoder_emb_out)  # silu 적용
-
-    # Trainable Head 처리
-    a_layer = model.get_layer('dense_1')                   # tanh
-    b_layer = model.get_layer('dense_2')                   # gelu
     context_vector = a_layer(encoder_output) * b_layer(encoder_output)  # 하이브리드 컨텍스트 벡터
 
     # 디코더 준비
@@ -204,17 +201,12 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
         # 디코더 임베딩
         dec_emb = decoder_emb_layer(dec_input)
 
-        # 디코더 RNN 대신 Dense(silu) + concat with context_vector
-        dec_silu = decoder_dense_layer(dec_emb)  # (batch_size, 1, 200)
+        # 디코더 RNN 대신 Dense(silu)
+        dec_silu = decoder_dense_layer(dec_emb)  # (1, 1, 200)
 
-        # context_vector 복제 및 연결
-        batch_size, seq_len, d_model = tf.shape(dec_silu)[0], tf.shape(dec_silu)[1], tf.shape(dec_silu)[2]
-        tiled_context = tf.tile(
-            tf.reshape(context_vector, shape=(1, 1, d_model)), 
-            multiples=(batch_size, seq_len, 1)
-        )  # (1, 1, 200)
-
-        z = tf.concat([tiled_context, dec_silu], axis=-1)  # (1, 1, 400)
+        # 컨텍스트와 곱셈
+        tiled_context = tf.tile(context_vector, [1, tf.shape(dec_silu)[1], 1])  # (1, 1, 200)
+        z = tiled_context * dec_silu  # 곱셈 (1, 1, 200)
 
         # 후처리
         h_a = model.get_layer('dense_4')(z)                # Dense(200)
@@ -246,6 +238,7 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
 
     decoded_text = sp.decode(generated_ids)
     return decoded_text
+
 
 input_text = "회의록을 요약해 주세요."
 response = generate(model, sp, input_text, temperature=0.7, verbose=True)
