@@ -35,7 +35,7 @@ for conversations in df["conversations"]:
             response = item2.get("value", "").strip().replace("\n", " ")
             full = f"<start> {prompt} <sep> {response} <end>"
             train_sentences.append(full)
-train_sentences = train_sentences[:1280] # 예제용 소량
+train_sentences = train_sentences[:128] # 예제용 소량
 print(f"총 문장 개수: {len(train_sentences)}")
 
 # ⬇️ 토크나이저 불러오기
@@ -176,6 +176,7 @@ model.fit(dataset, epochs=1, steps_per_epoch=len(train_sentences) // batch_size)
 def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=False):
     """
     사용자 입력 문장을 받아 AI 응답 생성
+    
     :param model: 훈련된 Seq2Seq 모델
     :param sp: SentencePiece Tokenizer
     :param input_text: 사용자 입력 (str)
@@ -184,10 +185,11 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
     :param verbose: 디버깅 메시지 출력 여부
     :return: 생성된 텍스트
     """
+    # 특수 토큰 ID 추출
     start_id = sp.piece_to_id("<start>")
     end_id = sp.piece_to_id("<end>")
     sep_id = sp.piece_to_id("<sep>")
-
+    
     # 인코더 입력 전처리
     enc_ids = sp.encode(input_text + " <sep>")
     enc_ids = enc_ids[:max_enc_len]
@@ -198,52 +200,63 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
         print("Encoder Input:", input_text)
         print("Encoded:", enc_ids)
 
-    # 인코더 실행 (인코더 임베딩 -> RNN)
-    encoder_emb_layer = model.get_layer('embedding') # 인코더 임베딩
-    encoder_rnn_layer = model.get_layer('rnn') # 인코더 RNN
+    # 인코더 실행 (인코더 임베딩 -> RNN -> Dense -> Tanh)
+    encoder_emb_layer = model.get_layer('embedding')
+    encoder_rnn_layer = model.get_layer('rnn')
+    context_vector_layer = model.get_layer('dense')  # Trainable head
 
     encoder_emb_out = encoder_emb_layer(enc_tensor)
     encoder_output, encoder_state = encoder_rnn_layer(encoder_emb_out, training=False)
+    context_vector = context_vector_layer(encoder_output)  # 학습된 변환 적용
 
     # 디코더 준비
-    decoder_emb_layer = model.get_layer('embedding_1') # 디코더 임베딩
-    decoder_rnn_layer = model.get_layer('rnn_1') # 디코더 RNN
-    decoder_dense_layer = model.get_layer('time_distributed') # TimeDistributed(Dense)
+    decoder_emb_layer = model.get_layer('embedding_1')
+    decoder_rnn_layer = model.get_layer('rnn_1')
+    decoder_dense1_layer = model.get_layer('dense_1')      # Dense(200)
+    decoder_activation_layer = model.get_layer('activation')  # GELU
+    decoder_final_layer = model.get_layer('time_distributed')  # 최종 출력층
 
-    # 디코더 초기 입력: <start>
+    # 초기 디코더 입력
     dec_input = tf.constant([[start_id]], dtype=tf.int32)
-    current_state = encoder_state
+    current_state = context_vector  # 디코더 초기 상태로 사용
     generated_ids = []
 
     for step in range(max_dec_len):
-        dec_emb = decoder_emb_layer(dec_input) # 입력 임베딩
+        # 디코더 임베딩
+        dec_emb = decoder_emb_layer(dec_input)
 
+        # 디코더 RNN 단계 수행
         decoder_output, next_state = decoder_rnn_layer(
-            dec_emb, initial_state=current_state, training=False
+            dec_emb, initial_state=[current_state], training=False
         )
 
-        logits = decoder_dense_layer(decoder_output) # (batch_size, 1, vocab_size)
-        logits = tf.squeeze(logits, axis=1) # (batch_size, vocab_size)
+        # 학습 시 사용된 레이어들을 그대로 추론에 활용
+        h = decoder_dense1_layer(decoder_output)          # Dense(200)
+        h = decoder_activation_layer(h)                   # GELU 활성화
+        logits = decoder_final_layer(h)                   # 최종 출력
 
-        # 온도 조절 샘플링
+        # 확률 분포 계산
+        logits = tf.squeeze(logits, axis=1)  # (batch_size, vocab_size)
+
         if temperature == 0.:
             pred_id = tf.argmax(logits, axis=-1, output_type=tf.int32)
         else:
             logits = logits / temperature
             pred_id = tf.random.categorical(logits, 1, dtype=tf.int32)
 
-        pred_id = tf.squeeze(pred_id, axis=1) # (1,)
+        pred_id = tf.squeeze(pred_id, axis=1)  # (1,)
 
         # 종료 토큰 체크
         if int(pred_id[0]) == end_id:
             break
 
         generated_ids.append(int(pred_id[0]))
-        dec_input = pred_id[:, tf.newaxis] # 다음 입력으로 업데이트
-        current_state = next_state
+        dec_input = pred_id[:, tf.newaxis]  # 다음 입력으로 업데이트
+        current_state = next_state  # 상태 갱신
 
         if verbose:
-            print(f"Step {step}: ID={int(pred_id[0])}, Token='{sp.decode([int(pred_id[0])])}'")
+            token_str = sp.decode([int(pred_id[0])])
+            print(f"Step {step}: ID={int(pred_id[0])}, Token='{token_str}'")
 
     decoded_text = sp.decode(generated_ids)
     return decoded_text
