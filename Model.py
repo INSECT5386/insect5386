@@ -215,40 +215,43 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
         print("Encoder Input:", input_text)
         print("Encoded:", enc_ids)
 
-    # 인코더 실행 (인코더 임베딩 -> RNN -> Dense -> Tanh)
+    # 인코더 실행
     encoder_emb_layer = model.get_layer('embedding')
-    encoder_rnn_layer = model.get_layer('rnn')
-    context_vector_layer = model.get_layer('dense')  # Trainable head
+    encoder_rnn_layer = model.get_layer('rnn')  # NoParamRNNCell 기반
 
     encoder_emb_out = encoder_emb_layer(enc_tensor)
     encoder_output, encoder_state = encoder_rnn_layer(encoder_emb_out, training=False)
-    context_vector = context_vector_layer(encoder_output)  # 학습된 변환 적용
+
+    # Trainable Head 처리
+    a = model.get_layer('dense')(encoder_output)          # tanh 적용된 상태
+    b = model.get_layer('dense_1')(encoder_output)       # gelu 적용된 상태
+    context_vector = a * b  # 하이브리드 컨텍스트 벡터
 
     # 디코더 준비
-    decoder_emb_layer = model.get_layer('embedding_1')
-    decoder_rnn_layer = model.get_layer('rnn_1')
-    decoder_dense1_layer = model.get_layer('dense_1')      # Dense(200)
-    decoder_activation_layer = model.get_layer('activation')  # GELU
-    decoder_final_layer = model.get_layer('time_distributed')  # 최종 출력층
+    decoder_emb_layer = model.get_layer('embedding_1')   # 디코더 임베딩
+    decoder_rnn_layer = model.get_layer('rnn_1')         # NoParamRNNCell 기반 디코더
+    decoder_dense1 = model.get_layer('dense_2')          # Dense(200)
+    decoder_activation = model.get_layer('activation')   # silu
+    decoder_final = model.get_layer('time_distributed')  # 최종 출력층
 
     # 초기 디코더 입력
     dec_input = tf.constant([[start_id]], dtype=tf.int32)
-    current_state = context_vector  # 디코더 초기 상태로 사용
+    current_h, current_C = context_vector[0], context_vector[0]  # h와 C 초기화
     generated_ids = []
 
     for step in range(max_dec_len):
         # 디코더 임베딩
         dec_emb = decoder_emb_layer(dec_input)
 
-        # 디코더 RNN 단계 수행
+        # 디코더 RNN 단계 수행 (상태 포함)
         decoder_output, next_state = decoder_rnn_layer(
-            dec_emb, initial_state=[current_state], training=False
+            dec_emb, initial_state=[current_h, current_C], training=False
         )
 
-        # 학습 시 사용된 레이어들을 그대로 추론에 활용
-        h = decoder_dense1_layer(decoder_output)          # Dense(200)
-        h = decoder_activation_layer(h)                   # GELU 활성화
-        logits = decoder_final_layer(h)                   # 최종 출력
+        # 디코더 후처리
+        h_a = decoder_dense1(decoder_output)              # Dense(200)
+        h_b = decoder_activation(h_a)                     # silu 활성화
+        logits = decoder_final(h_b)                       # vocab_size 출력
 
         # 확률 분포 계산
         logits = tf.squeeze(logits, axis=1)  # (batch_size, vocab_size)
@@ -267,7 +270,7 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
 
         generated_ids.append(int(pred_id[0]))
         dec_input = pred_id[:, tf.newaxis]  # 다음 입력으로 업데이트
-        current_state = next_state  # 상태 갱신
+        current_h, current_C = next_state  # 상태 갱신
 
         if verbose:
             token_str = sp.decode([int(pred_id[0])])
