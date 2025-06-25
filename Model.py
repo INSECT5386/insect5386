@@ -1,4 +1,5 @@
 
+
 import tensorflow as tf
 from tensorflow.keras.layers import Input, Embedding, Dense, LayerNormalization, Dropout, RNN
 from tensorflow.keras.models import Model
@@ -129,25 +130,30 @@ b = layers.Dense(200, activation='gelu')(encoder_output) # 학습 가능
 context_vector = a * b # 하이브리드 컨텍스트 벡터
 
 # 디코더
-decoder_input = Input(shape=(1,), name='decoder_input')  # ← 여기 변경!
+decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
 decoder_emb = Embedding(input_dim=vocab_size, output_dim=200)(decoder_input)
-y = Dense(200, activation='silu')(decoder_emb)
 
-# 컨텍스트와 곱셈
-z = context_vector * y  # 요소별 곱셈
+y = Dense(200, activation='silu')(decoder_emb) # 학습 가능
+z = context_vector * y # 수동 연산
+decoder_output = z
 
-# 후처리
-decoder_a = Dense(200)(z)
-decoder_b = Activation(tf.nn.silu)(z)
-decoder_o = decoder_a * decoder_b
-logits = TimeDistributed(Dense(vocab_size))(decoder_o)  # 여전히 사용 가능
+# 디코더 출력 후처리
+decoder_a = layers.Dense(200)(decoder_output) # 학습 가능
+decoder_b = layers.Activation(tf.nn.silu)(decoder_output) # 수동 활성화
+decoder_o = decoder_a * decoder_b # 수동 조합
+decoder_dense = layers.TimeDistributed(Dense(vocab_size))(decoder_o) # 학습 가능
 
-model = Model(inputs=[encoder_input, decoder_input], outputs=logits)
+model = Model(inputs=[encoder_input, decoder_input], outputs=decoder_dense)
+
+# 모델 정의
+model = Model(inputs=[encoder_input, decoder_input], outputs=decoder_dense)
 
 model.compile(optimizer='adam', loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True))
 
 model.summary()
 model.fit(dataset, epochs=1, steps_per_epoch=len(train_sentences) // batch_size)
+
+
 
 def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=False):
     """
@@ -161,11 +167,10 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
     :param verbose: 디버깅 메시지 출력 여부
     :return: 생성된 텍스트
     """
-    # 특수 토큰 ID 추출
     start_id = sp.piece_to_id("<start>")
     end_id = sp.piece_to_id("<end>")
     
-    # 인코더 입력 전처리
+    # 1. 인코더 입력 처리
     enc_ids = sp.encode(input_text)
     enc_ids = enc_ids[:max_enc_len]
     enc_ids += [sp.pad_id()] * (max_enc_len - len(enc_ids))
@@ -175,44 +180,15 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
         print("Encoder Input:", input_text)
         print("Encoded:", enc_ids)
 
-    # 인코더 실행
-    encoder_emb_layer = model.get_layer('embedding')
-    encoder_dense_layer = model.get_layer('dense')         # silu
-    a_layer = model.get_layer('dense_1')                   # tanh
-    b_layer = model.get_layer('dense_2')                   # gelu
-
-    encoder_emb_out = encoder_emb_layer(enc_tensor)        # 임베딩
-    encoder_output = encoder_dense_layer(encoder_emb_out)  # silu 적용
-    context_vector = a_layer(encoder_output) * b_layer(encoder_output)  # 하이브리드 컨텍스트 벡터
-
-    # 디코더 준비
-    decoder_emb_layer = model.get_layer('embedding_1')     # 디코더 임베딩
-    decoder_dense_layer = model.get_layer('dense_3')       # silu
-    decoder_final_layer = model.get_layer('time_distributed')  # 최종 출력층
-
-    # 초기 디코더 입력
+    # 2. 디코더 초기화
     dec_input = tf.constant([[start_id]], dtype=tf.int32)
     generated_ids = []
 
     for step in range(max_dec_len):
-        # 디코더 임베딩
-        dec_emb = decoder_emb_layer(dec_input)
-
-        # 디코더 RNN 대신 Dense(silu)
-        dec_silu = decoder_dense_layer(dec_emb)  # (1, 1, 200)
-
-        # 컨텍스트와 곱셈
-        tiled_context = tf.tile(context_vector, [1, tf.shape(dec_silu)[1], 1])  # (1, 1, 200)
-        z = tiled_context * dec_silu  # 곱셈 (1, 1, 200)
-
-        # 후처리
-        h_a = model.get_layer('dense_4')(z)                # Dense(200)
-        h_b = model.get_layer('activation')(z)              # silu
-        h = h_a * h_b                                       # 곱셈 조합
-        logits = decoder_final_layer(h)                     # (1, 1, vocab_size)
-
-        # 확률 분포 계산
-        logits = tf.squeeze(logits, axis=1)  # 이제는 (1, vocab_size) → OK
+        # 현재까지의 디코더 입력 반복적으로 모델에 넣음
+        decoder_output = model.predict([enc_tensor, dec_input])
+        
+        logits = decoder_output[:, -1, :]  # 마지막 타임 스텝만 사용
 
         if temperature == 0.:
             pred_id = tf.argmax(logits, axis=-1, output_type=tf.int32)
@@ -220,14 +196,14 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
             logits = logits / temperature
             pred_id = tf.random.categorical(logits, 1, dtype=tf.int32)
 
-        pred_id = tf.squeeze(pred_id, axis=1)  # (1,)
+        pred_id = tf.squeeze(pred_id, axis=1)  # (1, )
 
         # 종료 토큰 체크
         if int(pred_id[0]) == end_id:
             break
 
         generated_ids.append(int(pred_id[0]))
-        dec_input = pred_id[:, tf.newaxis]  # 다음 입력으로 업데이트
+        dec_input = tf.concat([dec_input, pred_id[:, tf.newaxis]], axis=1)
 
         if verbose:
             token_str = sp.decode([int(pred_id[0])])
@@ -235,6 +211,9 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
 
     decoded_text = sp.decode(generated_ids)
     return decoded_text
+
+
+
 
 input_text = "회의록을 요약해 주세요."
 response = generate(model, sp, input_text, temperature=0.7, verbose=True)
