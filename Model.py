@@ -132,7 +132,7 @@ decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
 decoder_emb = Embedding(input_dim=vocab_size, output_dim=200)(decoder_input)
 
 y = Dense(200, activation='silu')(decoder_emb)               # 학습 가능
-z = tf.concat([context_vector, y], axis=-1)                   # 수동 연산
+z = tf.concatenate([context_vector, y], axis=-1)                   # 수동 연산
 decoder_output = z
 
 # 디코더 출력 후처리
