@@ -164,9 +164,16 @@ context_vector = a * b
 decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
 decoder_emb = Embedding(input_dim=vocab_size, output_dim=200)(decoder_input)
 
-decoder_rnn_1 = layers.RNN(NoParamRNNCell(units=200), return_sequences=True, return_state=True)
-decoder_output, _ = decoder_rnn_1(decoder_emb, initial_state=[context_vector])  # ✅ 임베딩된 값 사용
+# 디코더 RNN
+initial_h = context_vector
+initial_C = context_vector  # 또는 별도 Dense로 변환 가능
 
+decoder_output, _ = decoder_rnn_1(
+    decoder_emb, 
+    initial_state=[initial_h, initial_C]
+)
+
+# 디코더 출력 후처리
 decoder_a = layers.Dense(200)(decoder_output)
 decoder_b = layers.Activation(tf.nn.silu)(decoder_output)
 decoder_o = decoder_a * decoder_b
