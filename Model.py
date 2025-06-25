@@ -158,8 +158,11 @@ decoder_input = tf.expand_dims(tf.zeros_like(context_vector), axis=1)  # dummy s
 decoder_rnn_1 = layers.RNN(NoParamRNNCell(rnn_units), return_sequences=True, return_state=True)
 decoder_output, _ = decoder_rnn_1(decoder_input, initial_state=[context_vector])
 
+decoder_o = tf.keras.layers.Dense(dim)
+decoder_o = tf.nn.gelu(decoder_o)
+
 decoder_dense = tf.keras.layers.TimeDistributed(Dense(vocab_size))
-decoder_outputs = decoder_dense(decoder_output)
+decoder_outputs = decoder_dense(decoder_o)
 
 # 모델 정의
 model = Model(inputs=[encoder_input, decoder_input], outputs=decoder_outputs)
