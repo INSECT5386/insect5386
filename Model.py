@@ -35,7 +35,7 @@ for conversations in df["conversations"]:
             response = item2.get("value", "").strip().replace("\n", " ")
             full = f"<start> {prompt} <sep> {response} <end>"
             train_sentences.append(full)
-train_sentences = train_sentences[:128] # 예제용 소량
+train_sentences = train_sentences[:64] # 예제용 소량
 print(f"총 문장 개수: {len(train_sentences)}")
 
 # ⬇️ 토크나이저 불러오기
@@ -126,24 +126,16 @@ class NoParamRNNCell(tf.keras.layers.Layer):
         self.built = True
 
     def call(self, inputs, states):
-        h_prev, C_prev = states  # 두 개의 상태
-        
+        h_prev = states[0]
         gate = tf.sigmoid(inputs * h_prev)
-        C_new = gate * C_prev + (1 - gate) * h_prev
-        
-        t_s1 = tf.tanh(C_new)
-        t_s2 = tf.gelu(C_new)
-        h_t = t_s1 * t_s2  # 하이브리드 활성화
-
-        return h_t, [h_t, C_new]
+        C_t = gate + h_prev
+        h_t = tf.tanh(C_t)
+        return h_t, [h_t]
 
     @property
-    def state_size(self): 
-        return (self._units, self._units)
-
+    def state_size(self): return self._units
     @property
-    def output_size(self): 
-        return self._units
+    def output_size(self): return self._units
 
 from tensorflow.keras import layers, Model
 
@@ -164,14 +156,9 @@ context_vector = a * b
 decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
 decoder_emb = Embedding(input_dim=vocab_size, output_dim=200)(decoder_input)
 
-# 디코더 RNN
-initial_h = context_vector
-initial_C = context_vector  # 또는 별도 Dense로 변환 가능
+decoder_rnn_1 = layers.RNN(NoParamRNNCell(units=200), return_sequences=True, return_state=True)
+decoder_output, _ = decoder_rnn_1(decoder_emb, initial_state=[context_vector]) # ✅ 임베딩된 값 사용
 
-decoder_output, _ = decoder_rnn_1(
-    decoder_emb, 
-    initial_state=[initial_h, initial_C]
-)
 
 # 디코더 출력 후처리
 decoder_a = layers.Dense(200)(decoder_output)
@@ -236,7 +223,7 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
 
     # 초기 디코더 입력
     dec_input = tf.constant([[start_id]], dtype=tf.int32)
-    current_h, current_C = context_vector[0], context_vector[0]  # h와 C 초기화
+    current_h = context_vector[0]
     generated_ids = []
 
     for step in range(max_dec_len):
@@ -245,12 +232,13 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
 
         # 디코더 RNN 단계 수행 (상태 포함)
         decoder_output, next_state = decoder_rnn_layer(
-            dec_emb, initial_state=[current_h, current_C], training=False
+            dec_emb, initial_state=[current_h], training=False
         )
 
         # 디코더 후처리
         h_a = decoder_dense1(decoder_output)              # Dense(200)
-        h_b = decoder_activation(h_a)                     # silu 활성화
+        h_b = decoder_activation(decoder_output)  
+        h_b = h_a * h_b
         logits = decoder_final(h_b)                       # vocab_size 출력
 
         # 확률 분포 계산
@@ -270,7 +258,7 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
 
         generated_ids.append(int(pred_id[0]))
         dec_input = pred_id[:, tf.newaxis]  # 다음 입력으로 업데이트
-        current_h, current_C = next_state  # 상태 갱신
+        current_h = next_state  # 상태 갱신
 
         if verbose:
             token_str = sp.decode([int(pred_id[0])])
