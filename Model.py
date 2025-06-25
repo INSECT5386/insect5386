@@ -7,6 +7,7 @@ import numpy as np
 import sentencepiece as spm
 import pandas as pd
 import requests
+from tensorflow.keras import layers
 
 # ⬇️ 파일 다운로드 함수
 def download_file(url, save_path):
@@ -120,37 +121,33 @@ print("dataset ok")
 # 인코더
 encoder_input = layers.Input(shape=(max_enc_len,))
 x = layers.Embedding(input_dim=vocab_size, output_dim=200)(encoder_input)
-x = Dense(200, activation='silu')(x)  # 학습 가능
+x = Dense(200, activation='silu')(x) # 학습 가능
 encoder_output = x
 
-a = layers.Dense(200, activation='tanh')(encoder_output)     # 학습 가능
-b = layers.Dense(200, activation='gelu')(encoder_output)     # 학습 가능
-context_vector = a * b  # 하이브리드 컨텍스트 벡터
+a = layers.Dense(200, activation='tanh')(encoder_output) # 학습 가능
+b = layers.Dense(200, activation='gelu')(encoder_output) # 학습 가능
+context_vector = a * b # 하이브리드 컨텍스트 벡터
 
 # 디코더
-decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
+decoder_input = Input(shape=(1,), name='decoder_input')  # ← 여기 변경!
 decoder_emb = Embedding(input_dim=vocab_size, output_dim=200)(decoder_input)
+y = Dense(200, activation='silu')(decoder_emb)
 
-y = Dense(200, activation='silu')(decoder_emb)               # 학습 가능
-z = tf.concatenate([context_vector, y], axis=-1)                   # 수동 연산
-decoder_output = z
+# 컨텍스트와 곱셈
+z = context_vector * y  # 요소별 곱셈
 
-# 디코더 출력 후처리
-decoder_a = layers.Dense(200)(decoder_output)                 # 학습 가능
-decoder_b = layers.Activation(tf.nn.silu)(decoder_output)     # 수동 활성화
-decoder_o = decoder_a * decoder_b                             # 수동 조합
-decoder_dense = layers.TimeDistributed(Dense(vocab_size))(decoder_o)  # 학습 가능
+# 후처리
+decoder_a = Dense(200)(z)
+decoder_b = Activation(tf.nn.silu)(z)
+decoder_o = decoder_a * decoder_b
+logits = TimeDistributed(Dense(vocab_size))(decoder_o)  # 여전히 사용 가능
 
-model = Model(inputs=[encoder_input, decoder_input], outputs=decoder_dense)
-
-# 모델 정의
-model = Model(inputs=[encoder_input, decoder_input], outputs=decoder_dense)
+model = Model(inputs=[encoder_input, decoder_input], outputs=logits)
 
 model.compile(optimizer='adam', loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True))
 
 model.summary()
 model.fit(dataset, epochs=1, steps_per_epoch=len(train_sentences) // batch_size)
-
 
 def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=False):
     """
@@ -215,7 +212,7 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
         logits = decoder_final_layer(h)                     # (1, 1, vocab_size)
 
         # 확률 분포 계산
-        logits = tf.squeeze(logits, axis=1)  # (batch_size, vocab_size)
+        logits = tf.squeeze(logits, axis=1)  # 이제는 (1, vocab_size) → OK
 
         if temperature == 0.:
             pred_id = tf.argmax(logits, axis=-1, output_type=tf.int32)
@@ -238,7 +235,6 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
 
     decoded_text = sp.decode(generated_ids)
     return decoded_text
-
 
 input_text = "회의록을 요약해 주세요."
 response = generate(model, sp, input_text, temperature=0.7, verbose=True)
