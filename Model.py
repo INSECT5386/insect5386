@@ -156,7 +156,7 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
     """
     사용자 입력 문장을 받아 AI 응답 생성
     
-    :param model: 훈련된 Seq2Seq 모델
+    :param model: 훈련된 DustTransformer 모델
     :param sp: SentencePiece Tokenizer
     :param input_text: 사용자 입력 (str)
     :param max_dec_len: 최대 생성 길이
@@ -180,43 +180,47 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
         print("Encoded:", enc_ids)
 
     # 인코더 실행
-    encoder_emb_layer = model.get_layer('embedding')
-    encoder_rnn_layer = model.get_layer('rnn')  # NoParamRNNCell 기반
+    encoder_emb_layer = model.get_layer('embedding')       # Embedding Layer
+    encoder_dense_layer = model.get_layer('dense')         # Dense(silu)
 
-    encoder_emb_out = encoder_emb_layer(enc_tensor)
-    encoder_output, encoder_state = encoder_rnn_layer(encoder_emb_out, training=False)
+    encoder_emb_out = encoder_emb_layer(enc_tensor)        # 임베딩
+    encoder_output = encoder_dense_layer(encoder_emb_out)  # silu 적용
 
     # Trainable Head 처리
-    a = model.get_layer('dense')(encoder_output)          # tanh 적용된 상태
-    b = model.get_layer('dense_1')(encoder_output)       # gelu 적용된 상태
-    context_vector = a * b  # 하이브리드 컨텍스트 벡터
+    a_layer = model.get_layer('dense_1')                   # tanh
+    b_layer = model.get_layer('dense_2')                   # gelu
+    context_vector = a_layer(encoder_output) * b_layer(encoder_output)  # 하이브리드 컨텍스트 벡터
 
     # 디코더 준비
-    decoder_emb_layer = model.get_layer('embedding_1')   # 디코더 임베딩
-    decoder_rnn_layer = model.get_layer('rnn_1')         # NoParamRNNCell 기반 디코더
-    decoder_dense1 = model.get_layer('dense_2')          # Dense(200)
-    decoder_activation = model.get_layer('activation')   # silu
-    decoder_final = model.get_layer('time_distributed')  # 최종 출력층
+    decoder_emb_layer = model.get_layer('embedding_1')     # 디코더 임베딩
+    decoder_dense_layer = model.get_layer('dense_3')       # silu
+    decoder_final_layer = model.get_layer('time_distributed')  # 최종 출력층
 
     # 초기 디코더 입력
     dec_input = tf.constant([[start_id]], dtype=tf.int32)
-    current_h = context_vector[0]
     generated_ids = []
 
     for step in range(max_dec_len):
         # 디코더 임베딩
         dec_emb = decoder_emb_layer(dec_input)
 
-        # 디코더 RNN 단계 수행 (상태 포함)
-        decoder_output, next_state = decoder_rnn_layer(
-            dec_emb, initial_state=[current_h], training=False
-        )
+        # 디코더 RNN 대신 Dense(silu) + concat with context_vector
+        dec_silu = decoder_dense_layer(dec_emb)  # (batch_size, 1, 200)
 
-        # 디코더 후처리
-        h_a = decoder_dense1(decoder_output)              # Dense(200)
-        h_b = decoder_activation(decoder_output)  
-        h_b = h_a * h_b
-        logits = decoder_final(h_b)                       # vocab_size 출력
+        # context_vector 복제 및 연결
+        batch_size, seq_len, d_model = tf.shape(dec_silu)[0], tf.shape(dec_silu)[1], tf.shape(dec_silu)[2]
+        tiled_context = tf.tile(
+            tf.reshape(context_vector, shape=(1, 1, d_model)), 
+            multiples=(batch_size, seq_len, 1)
+        )  # (1, 1, 200)
+
+        z = tf.concat([tiled_context, dec_silu], axis=-1)  # (1, 1, 400)
+
+        # 후처리
+        h_a = model.get_layer('dense_4')(z)                # Dense(200)
+        h_b = model.get_layer('activation')(z)              # silu
+        h = h_a * h_b                                       # 곱셈 조합
+        logits = decoder_final_layer(h)                     # (1, 1, vocab_size)
 
         # 확률 분포 계산
         logits = tf.squeeze(logits, axis=1)  # (batch_size, vocab_size)
@@ -235,7 +239,6 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
 
         generated_ids.append(int(pred_id[0]))
         dec_input = pred_id[:, tf.newaxis]  # 다음 입력으로 업데이트
-        current_h = next_state  # 상태 갱신
 
         if verbose:
             token_str = sp.decode([int(pred_id[0])])
@@ -244,6 +247,6 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
     decoded_text = sp.decode(generated_ids)
     return decoded_text
 
-input_text = "안녕하세요"
-
-generate(model, sp, input_text)
+input_text = "회의록을 요약해 주세요."
+response = generate(model, sp, input_text, temperature=0.7, verbose=True)
+print("AI Response:", response)
