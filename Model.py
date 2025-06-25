@@ -144,21 +144,23 @@ from tensorflow.keras import layers, Model
 
 # Input Layer
 encoder_input = layers.Input(shape=(seq_length,))
-x = layers.Embedding(input_dim=vocab_size, output_dim=embedding_dim)(inputs)
+x = layers.Embedding(input_dim=vocab_size, output_dim=embedding_dim)(encoder_input)
 
 # Encoder (NoParamRNN)
 encoder_rnn_1 = layers.RNN(NoParamRNNCell(rnn_units), return_sequences=False, return_state=True)
 encoder_output, encoder_state = encoder_rnn_1(x)
 
 # Trainable head
-context_vector = layers.Dense(rnn_units, activation='tanh')(encoder_output)
+context_vector = layers.Dense(200, activation='tanh')(encoder_output)
 
-# Decoder (NoParamRNN)
-decoder_input = tf.expand_dims(tf.zeros_like(context_vector), axis=1)  # dummy start token
+# 디코더
+decoder_input = Input(shape=(max_dec_len,))
+decoder_emb = Embedding(vocab_size, 200)(decoder_input)
 decoder_rnn_1 = layers.RNN(NoParamRNNCell(rnn_units), return_sequences=True, return_state=True)
 decoder_output, _ = decoder_rnn_1(decoder_input, initial_state=[context_vector])
 
-decoder_o = tf.keras.layers.Dense(dim)
+# decoder_output은 RNN 출력 (텐서)
+decoder_o = layers.Dense(200)(decoder_output)  # dim은 적절한 값으로 설정하세요 (예: embedding_dim)
 decoder_o = tf.nn.gelu(decoder_o)
 
 decoder_dense = tf.keras.layers.TimeDistributed(Dense(vocab_size))
