@@ -123,8 +123,7 @@ x = layers.Embedding(input_dim=vocab_size, output_dim=200)(encoder_input)
 t_s1 = Dense(200)(x)
 t_s2 = Dense(200)(x)
 t_s3 = layers.Activation('sigmoid')(t_s2)
-context_vector = t_s1 * t_s3
-
+context_vector = LayerNormalization()(t_s1 * t_s3)
 
 decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
 decoder_emb = Embedding(input_dim=vocab_size, output_dim=200)(decoder_input)
@@ -132,7 +131,7 @@ decoder_emb = Embedding(input_dim=vocab_size, output_dim=200)(decoder_input)
 y_t = Dense(200)(decoder_emb) # 학습 가능
 y_t1 = Dense(200)(decoder_emb) # 학습 가능
 yt_s1 = layers.Activation(tf.nn.gelu)(y_t)
-decoder_output = y_t * y_t1 * context_vector
+decoder_output = LayerNormalization()(y_t * y_t1 * context_vector)
 
 # 디코더 출력 후처리
 decoder_a = layers.Dense(200)(decoder_output) 
