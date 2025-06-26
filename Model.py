@@ -117,9 +117,35 @@ dataset = tf.data.Dataset.from_generator(
 dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 print("dataset ok")
 
+class LearnablePositionalEmbedding(layers.Layer):
+    def __init__(self, max_length, d_model, **kwargs):
+        super().__init__(**kwargs)
+        self.max_length = max_length
+        self.d_model = d_model
+        self.pos_emb = tf.keras.initializers.RandomNormal()(
+            shape=[max_length, d_model]
+        )
+        self.embedding = layers.Embedding(
+            input_dim=max_length,
+            output_dim=d_model,
+            embeddings_initializer=tf.keras.initializers.Constant(self.pos_emb),
+            trainable=True,
+            name='positional_embedding'
+        )
+
+    def call(self, inputs):
+        batch_size, seq_len, d_model = tf.shape(inputs)[0], tf.shape(inputs)[1], tf.shape(inputs)[2]
+        positions = tf.range(start=0, limit=seq_len, delta=1)  # [seq_len]
+        pos_emb = self.embedding(positions)  # [seq_len, d_model]
+        pos_emb = tf.expand_dims(pos_emb, axis=0)  # [1, seq_len, d_model]
+        return inputs + pos_emb[:, :seq_len, :]
+
+
 # 인코더
 encoder_input = layers.Input(shape=(max_enc_len,))
 x = layers.Embedding(input_dim=vocab_size, output_dim=200)(encoder_input)
+x = LearnablePositionalEmbedding(max_enc_len, 200)(x)
+
 t_s1 = Dense(200)(x)
 t_s2 = Dense(200)(x)
 t_s3 = layers.Activation('sigmoid')(t_s2)
