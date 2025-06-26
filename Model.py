@@ -122,24 +122,21 @@ print("dataset ok")
 # 인코더
 encoder_input = layers.Input(shape=(max_enc_len,))
 x = layers.Embedding(input_dim=vocab_size, output_dim=200)(encoder_input)
-x = Dense(200, activation='silu')(x) # 학습 가능
-encoder_output = x
+t_s1 = Dense(200)(x)
+t_s2 = layers.Activation(sigmoid)(x)
+context_vector = t_s1 * t_s2
 
-a = layers.Dense(200, activation='tanh')(encoder_output) # 학습 가능
-b = layers.Dense(200, activation='gelu')(encoder_output) # 학습 가능
-context_vector = a * b # 하이브리드 컨텍스트 벡터
 
-# 디코더
 decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
 decoder_emb = Embedding(input_dim=vocab_size, output_dim=200)(decoder_input)
 
-y = Dense(200, activation='silu')(decoder_emb) # 학습 가능
-z = context_vector * y # 수동 연산
-decoder_output = z
+y = Dense(200)(decoder_emb) # 학습 가능
+yt_s1 = layers.Activation(tf.nn.gelu)(decoder_emb)
+decoder_output = y * yt_s1 * context_vector
 
 # 디코더 출력 후처리
-decoder_a = layers.Dense(200)(decoder_output) # 학습 가능
-decoder_b = layers.Activation(tf.nn.silu)(decoder_output) # 수동 활성화
+decoder_a = layers.Dense(200)(decoder_output) 
+decoder_b = layers.Activation(tf.nn.gelu)(a) 
 decoder_o = decoder_a * decoder_b # 수동 조합
 decoder_dense = layers.TimeDistributed(Dense(vocab_size))(decoder_o) # 학습 가능
 
