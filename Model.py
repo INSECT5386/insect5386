@@ -136,7 +136,7 @@ decoder_output = y * yt_s1 * context_vector
 
 # 디코더 출력 후처리
 decoder_a = layers.Dense(200)(decoder_output) 
-decoder_b = layers.Activation(tf.nn.gelu)(a) 
+decoder_b = layers.Activation(tf.nn.gelu)(decoder_a) 
 decoder_o = decoder_a * decoder_b # 수동 조합
 decoder_dense = layers.TimeDistributed(Dense(vocab_size))(decoder_o) # 학습 가능
 
