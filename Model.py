@@ -123,21 +123,24 @@ print("dataset ok")
 encoder_input = layers.Input(shape=(max_enc_len,))
 x = layers.Embedding(input_dim=vocab_size, output_dim=200)(encoder_input)
 t_s1 = Dense(200)(x)
-t_s2 = layers.Activation(sigmoid)(t_s1)
-context_vector = t_s1 * t_s2
+t_s2 = Dense(200)(x)
+t_s3 = layers.Activation('sigmoid')(t_s2)
+context_vector = t_s1 * t_s3
 
 
 decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
 decoder_emb = Embedding(input_dim=vocab_size, output_dim=200)(decoder_input)
 
-y = Dense(200)(decoder_emb) # 학습 가능
-yt_s1 = layers.Activation(tf.nn.gelu)(decoder_emb)
-decoder_output = y * yt_s1 * context_vector
+y_t = Dense(200)(decoder_emb) # 학습 가능
+y_t1 = Dense(200)(decoder_emb) # 학습 가능
+yt_s1 = layers.Activation(tf.nn.gelu)(y_t)
+decoder_output = y_t * y_t1 * context_vector
 
 # 디코더 출력 후처리
 decoder_a = layers.Dense(200)(decoder_output) 
-decoder_b = layers.Activation(tf.nn.gelu)(decoder_a) 
-decoder_o = decoder_a * decoder_b # 수동 조합
+decoder_b = layers.Dense(200)(decoder_output) 
+decoder_c = layers.Activation(tf.nn.gelu)(decoder_a) 
+decoder_o = decoder_b * decoder_c
 decoder_dense = layers.TimeDistributed(Dense(vocab_size))(decoder_o) # 학습 가능
 
 model = Model(inputs=[encoder_input, decoder_input], outputs=decoder_dense)
