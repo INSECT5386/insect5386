@@ -154,6 +154,10 @@ context_vector = LayerNormalization()(t_s1 * t_s3)
 decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
 decoder_emb = Embedding(input_dim=vocab_size, output_dim=200)(decoder_input)
 
+decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
+decoder_emb = Embedding(input_dim=vocab_size, output_dim=200)(decoder_input)
+
+decoder_emb = LearnablePositionalEmbedding(max_dec_len, 200)(decoder_emb)
 y_t = Dense(200)(decoder_emb) # 학습 가능
 y_t1 = Dense(200)(decoder_emb) # 학습 가능
 yt_s1 = layers.Activation(tf.nn.gelu)(y_t)
