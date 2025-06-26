@@ -1,5 +1,3 @@
-
-
 import tensorflow as tf
 from tensorflow.keras.layers import Input, Embedding, Dense, LayerNormalization, Dropout, RNN
 from tensorflow.keras.models import Model
@@ -170,7 +168,7 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
     start_id = sp.piece_to_id("<start>")
     end_id = sp.piece_to_id("<end>")
     
-    # 1. 인코더 입력 처리
+    # 인코더 입력 전처리
     enc_ids = sp.encode(input_text)
     enc_ids = enc_ids[:max_enc_len]
     enc_ids += [sp.pad_id()] * (max_enc_len - len(enc_ids))
@@ -180,15 +178,20 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
         print("Encoder Input:", input_text)
         print("Encoded:", enc_ids)
 
-    # 2. 디코더 초기화
+    # 초기 디코더 입력 설정
     dec_input = tf.constant([[start_id]], dtype=tf.int32)
     generated_ids = []
 
     for step in range(max_dec_len):
-        # 현재까지의 디코더 입력 반복적으로 모델에 넣음
-        decoder_output = model.predict([enc_tensor, dec_input])
+        # 디코더 입력을 max_dec_len으로 패딩
+        padded_dec_input = tf.pad(dec_input, [[0, 0], [0, max_dec_len - tf.shape(dec_input)[1]]],
+                                  constant_values=sp.pad_id())
+
+        # 전체 모델 예측
+        decoder_output = model.predict([enc_tensor, padded_dec_input])
         
-        logits = decoder_output[:, -1, :]  # 마지막 타임 스텝만 사용
+        # 현재 스텝의 로짓 추출
+        logits = decoder_output[:, step, :]  # 현재 step 위치의 로짓
 
         if temperature == 0.:
             pred_id = tf.argmax(logits, axis=-1, output_type=tf.int32)
@@ -211,9 +214,6 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
 
     decoded_text = sp.decode(generated_ids)
     return decoded_text
-
-
-
 
 input_text = "회의록을 요약해 주세요."
 response = generate(model, sp, input_text, temperature=0.7, verbose=True)
