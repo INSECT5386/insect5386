@@ -141,34 +141,57 @@ class LearnablePositionalEmbedding(layers.Layer):
         return inputs + pos_emb[:, :seq_len, :]
 
 
-# 인코더
-encoder_input = layers.Input(shape=(max_enc_len,))
-x = layers.Embedding(input_dim=vocab_size, output_dim=200)(encoder_input)
+from tensorflow.keras.layers import Input, Embedding, Dense, LayerNormalization, Multiply, Activation
+from tensorflow.keras.models import Model
+import tensorflow as tf
+
+# 가정: max_enc_len, max_dec_len, vocab_size 등은 이미 정의되어 있음
+
+# --- 인코더 ---
+encoder_input = Input(shape=(max_enc_len,), name='encoder_input')
+x = Embedding(input_dim=vocab_size, output_dim=200)(encoder_input)
 x = LearnablePositionalEmbedding(max_enc_len, 200)(x)
 
 t_s1 = Dense(200)(x)
 t_s2 = Dense(200)(x)
-t_s3 = layers.Activation('sigmoid')(t_s2)
-context_vector = LayerNormalization()(t_s1 * t_s3)
+t_s3 = Activation('sigmoid')(t_s2)
+encoder_output = LayerNormalization()(t_s1 * t_s3)  # [batch, enc_len, d_model]
 
+# --- 디코더 ---
 decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
 decoder_emb = Embedding(input_dim=vocab_size, output_dim=200)(decoder_input)
-
-decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
-decoder_emb = Embedding(input_dim=vocab_size, output_dim=200)(decoder_input)
-
 decoder_emb = LearnablePositionalEmbedding(max_dec_len, 200)(decoder_emb)
-y_t = Dense(200)(decoder_emb) # 학습 가능
-y_t1 = Dense(200)(decoder_emb) # 학습 가능
-yt_s1 = layers.Activation(tf.nn.gelu)(y_t)
-decoder_output = LayerNormalization()(y_t * y_t1 * context_vector)
 
-# 디코더 출력 후처리
-decoder_a = layers.Dense(200)(decoder_output) 
-decoder_b = layers.Dense(200)(decoder_output) 
-decoder_c = layers.Activation(tf.nn.gelu)(decoder_a) 
-decoder_o = decoder_b * decoder_c
-decoder_dense = layers.TimeDistributed(Dense(vocab_size))(decoder_o) # 학습 가능
+y_t = Dense(200)(decoder_emb)
+y_t1 = Dense(200)(decoder_emb)
+yt_s1 = Activation(tf.nn.gelu)(y_t)
+decoder_output = LayerNormalization()(y_t * y_t1 * encoder_output[:, None, :, :])  # broad-casting 주의
+
+# --- 하드 어텐션 대체 (Multiply 기반) ---
+# Step 1: 디코더 상태로 게이트 생성
+gate_signal = Dense(200)(decoder_output)  # [batch, dec_len, d_model]
+gate_activation = Activation('sigmoid')(gate_signal)  # [0~1] 범위, 중요도 제어
+
+# Step 2: 인코더 출력에 gate 적용
+attended_context = Multiply()([encoder_output[:, None, :, :], gate_activation[:, :, None, :]])
+# shape: [batch, dec_len, enc_len, d_model]
+
+# Step 3: 각 타임 스텝마다 가장 중요한 정보 추출 (max-pooling 유사)
+context_vector = tf.reduce_max(attended_context, axis=2)  # [batch, dec_len, d_model]
+
+# Step 4: 디코더 출력에 컨텍스트 결합
+decoder_with_attention = LayerNormalization()(
+    decoder_output + context_vector
+)
+
+# --- 최종 출력 처리 ---
+decoder_a = Dense(200)(decoder_with_attention)
+decoder_b = Dense(200)(decoder_with_attention)
+decoder_c = Activation(tf.nn.gelu)(decoder_a)
+decoder_o = decoder_b * decoder_c  # 추가 게이팅
+decoder_dense = layers.TimeDistributed(Dense(vocab_size))(decoder_o)  # 최종 출력
+
+
 
 model = Model(inputs=[encoder_input, decoder_input], outputs=decoder_dense)
 
