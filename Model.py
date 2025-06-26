@@ -35,7 +35,7 @@ for conversations in df["conversations"]:
             response = item2.get("value", "").strip().replace("\n", " ")
             full = f"<start> {prompt} <sep> {response} <end>"
             train_sentences.append(full)
-train_sentences = train_sentences[:64] # 예제용 소량
+train_sentences = train_sentences[:6004] # 예제용 소량
 print(f"총 문장 개수: {len(train_sentences)}")
 
 # ⬇️ 토크나이저 불러오기
@@ -117,92 +117,71 @@ dataset = tf.data.Dataset.from_generator(
 dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 print("dataset ok")
 
+import tensorflow as tf
+from tensorflow.keras import layers, Model, Input, Dense
+from tensorflow.keras.initializers import RandomNormal
+
+# 커스텀 Position Embedding
 class LearnablePositionalEmbedding(layers.Layer):
     def __init__(self, max_length, d_model, **kwargs):
         super().__init__(**kwargs)
         self.max_length = max_length
         self.d_model = d_model
-        self.pos_emb = tf.keras.initializers.RandomNormal()(
-            shape=[max_length, d_model]
-        )
-        self.embedding = layers.Embedding(
-            input_dim=max_length,
-            output_dim=d_model,
-            embeddings_initializer=tf.keras.initializers.Constant(self.pos_emb),
+        pos_emb = RandomNormal()(shape=[max_length, d_model])
+        self.pos_emb = tf.Variable(
+            initial_value=pos_emb,
             trainable=True,
             name='positional_embedding'
         )
 
     def call(self, inputs):
-        batch_size, seq_len, d_model = tf.shape(inputs)[0], tf.shape(inputs)[1], tf.shape(inputs)[2]
-        positions = tf.range(start=0, limit=seq_len, delta=1)  # [seq_len]
-        pos_emb = self.embedding(positions)  # [seq_len, d_model]
-        pos_emb = tf.expand_dims(pos_emb, axis=0)  # [1, seq_len, d_model]
-        return inputs + pos_emb[:, :seq_len, :]
+        seq_len = tf.shape(inputs)[1]
+        return inputs + self.pos_emb[tf.newaxis, :seq_len, :]
 
 
-from tensorflow.keras.layers import Input, Embedding, Dense, LayerNormalization, Multiply, Activation
-from tensorflow.keras.models import Model
-import tensorflow as tf
+# 하이퍼파라미터 예시
+vocab_size = 20000
+max_enc_len = 100
+max_dec_len = 100
+d_model = 128
 
-# 가정: max_enc_len, max_dec_len, vocab_size 등은 이미 정의되어 있음
 
-# --- 인코더 ---
+# 인코더 부분
 encoder_input = Input(shape=(max_enc_len,), name='encoder_input')
-x = Embedding(input_dim=vocab_size, output_dim=200)(encoder_input)
-x = LearnablePositionalEmbedding(max_enc_len, 200)(x)
+x = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(encoder_input)
+x = LearnablePositionalEmbedding(max_enc_len, d_model)(x)
 
-t_s1 = Dense(200)(x)
-t_s2 = Dense(200)(x)
-t_s3 = Activation('sigmoid')(t_s2)
-encoder_output = LayerNormalization()(t_s1 * t_s3)  # [batch, enc_len, d_model]
+# 간단한 문맥 벡터 계산
+t_s1 = Dense(d_model)(x)
+t_s2 = Dense(d_model)(x)
+t_gate = layers.Activation('sigmoid')(t_s2)
+context_vector = layers.LayerNormalization()([t_s1 * t_gate])
 
-# --- 디코더 ---
+
+# 디코더 부분
 decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
-decoder_emb = Embedding(input_dim=vocab_size, output_dim=200)(decoder_input)
-decoder_emb = LearnablePositionalEmbedding(max_dec_len, 200)(decoder_emb)
+y = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(decoder_input)
+y = LearnablePositionalEmbedding(max_dec_len, d_model)(y)
 
-y_t = Dense(200)(decoder_emb)
-y_t1 = Dense(200)(decoder_emb)
-yt_s1 = Activation(tf.nn.gelu)(y_t)
-decoder_output = LayerNormalization()(y_t * y_t1 * encoder_output[:, None, :, :])  # broad-casting 주의
+# 디코더 처리
+y_t = Dense(d_model)(y)
+y_act = layers.Activation(tf.nn.gelu)(y_t)
+y = layers.LayerNormalization()([y_t * y_act])
 
-# --- 하드 어텐션 대체 (Multiply 기반) ---
-# Step 1: 디코더 상태로 게이트 생성
-gate_signal = Dense(200)(decoder_output)  # [batch, dec_len, d_model]
-gate_activation = Activation('sigmoid')(gate_signal)  # [0~1] 범위, 중요도 제어
+# Context와 결합
+decoder_output = layers.Multiply()([y, context_vector])
 
-# Step 2: 인코더 출력에 gate 적용
-attended_context = Multiply()([encoder_output[:, None, :, :], gate_activation[:, :, None, :]])
-# shape: [batch, dec_len, enc_len, d_model]
-
-# Step 3: 각 타임 스텝마다 가장 중요한 정보 추출 (max-pooling 유사)
-context_vector = tf.reduce_max(attended_context, axis=2)  # [batch, dec_len, d_model]
-
-# Step 4: 디코더 출력에 컨텍스트 결합
-decoder_with_attention = LayerNormalization()(
-    decoder_output + context_vector
-)
-
-# --- 최종 출력 처리 ---
-decoder_a = Dense(200)(decoder_with_attention)
-decoder_b = Dense(200)(decoder_with_attention)
-decoder_c = Activation(tf.nn.gelu)(decoder_a)
-decoder_o = decoder_b * decoder_c  # 추가 게이팅
-decoder_dense = layers.TimeDistributed(Dense(vocab_size))(decoder_o)  # 최종 출력
-
-
-
-model = Model(inputs=[encoder_input, decoder_input], outputs=decoder_dense)
+# 최종 출력
+logits = layers.Dense(vocab_size)(decoder_output)
 
 # 모델 정의
-model = Model(inputs=[encoder_input, decoder_input], outputs=decoder_dense)
+model = Model(inputs=[encoder_input, decoder_input], outputs=logits)
 
+# 컴파일
 model.compile(optimizer='adam', loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True))
 
 model.summary()
 model.fit(dataset, epochs=1, steps_per_epoch=len(train_sentences) // batch_size)
-
 
 
 def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=False):
