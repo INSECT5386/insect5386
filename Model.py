@@ -123,7 +123,7 @@ print("dataset ok")
 encoder_input = layers.Input(shape=(max_enc_len,))
 x = layers.Embedding(input_dim=vocab_size, output_dim=200)(encoder_input)
 t_s1 = Dense(200)(x)
-t_s2 = layers.Activation(sigmoid)(x)
+t_s2 = layers.Activation(sigmoid)(t_s1)
 context_vector = t_s1 * t_s2
 
 
