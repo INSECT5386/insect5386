@@ -147,7 +147,8 @@ x = LearnablePositionalEmbedding(max_enc_len, d_model)(x)
 t_s1 = Dense(d_model)(x)
 t_s2 = Dense(d_model)(x)
 t_gate = layers.Activation('sigmoid')(t_s2)
-context_vector = layers.LayerNormalization()(t_s1 * t_gate)
+t_gate1 = layers.Activation(tf.nn.gelu)(t_s1)
+context_vector = layers.LayerNormalization()(t_gate * t_gate1)
 
 
 # 디코더 부분
@@ -157,7 +158,7 @@ y = LearnablePositionalEmbedding(max_dec_len, d_model)(y)
 
 # 디코더 처리
 y_t = Dense(d_model)(y)
-y_act = layers.Activation(tf.nn.silu)(y_t)
+y_act = layers.Activation(tf.nn.gelu)(y_t)
 y = layers.LayerNormalization()(y_t * y_act)
 
 # Context와 결합
@@ -165,7 +166,7 @@ decoder_output = layers.Multiply()([y, context_vector])
 
 # 마지막 연산
 z_t = Dense(d_model)(decoder_output)
-z_act = layers.Activation(tf.nn.gelu)(z_t)
+z_act = layers.Activation(tf.nn.silu)(z_t)
 decoder_output = layers.LayerNormalization()(z_t * z_act)
 
 # 최종 출력
