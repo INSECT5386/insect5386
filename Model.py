@@ -166,7 +166,7 @@ decoder_output = layers.Multiply()([y, context_vector])
 
 # 마지막 연산
 z_t = Dense(d_model)(decoder_output)
-z_act = layers.Activation(tf.nn.silu)(z_t)
+z_act = layers.Activation(tf.nn.gelu)(z_t)
 decoder_output = layers.LayerNormalization()(z_t * z_act)
 
 # 최종 출력
