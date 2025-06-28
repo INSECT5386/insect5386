@@ -123,6 +123,11 @@ from tensorflow.keras.initializers import RandomNormal
 import tensorflow as tf
 from tensorflow.keras import layers, Model, Input
 
+import tensorflow as tf
+from tensorflow.keras import layers, Model, Input
+from tensorflow.keras.initializers import RandomNormal
+
+# 1. 가변 위치 인코딩
 class LearnablePositionalEmbedding(layers.Layer):
     def __init__(self, max_length, d_model, **kwargs):
         super().__init__(**kwargs)
@@ -139,73 +144,76 @@ class LearnablePositionalEmbedding(layers.Layer):
         seq_len = tf.shape(inputs)[1]
         return inputs + self.pos_emb[tf.newaxis, :seq_len, :]
 
+
+# 2. 인코더 블록
 class Encoder(layers.Layer):
     def __init__(self, dim, **kwargs):
-        super().__init__(**kwarg)
+        super().__init__(**kwargs)
         self.w = layers.Dense(dim)
         self.w1 = layers.Dense(dim)
 
     def call(self, inputs):
         x = inputs
-        ts1 = w(x)
-        ts2 = w1(x)
+        ts1 = self.w(x)
+        ts2 = self.w1(x)
         ts3 = layers.Activation(tf.nn.gelu)(ts1)
         ts4 = layers.Activation('sigmoid')(ts2)
         output = layers.LayerNormalization()(ts4 * ts3)
         return output
 
+
+# 3. 디코더 블록
 class Decoder(layers.Layer):
     def __init__(self, dim, **kwargs):
-        super().__init__(**kwarg)
+        super().__init__(**kwargs)
         self.w = layers.Dense(dim)
         self.w1 = layers.Dense(dim)
 
     def call(self, inputs):
         x = inputs
-        ts1 = w(x)
-        ts2 = w1(x)
+        ts1 = self.w(x)
+        ts2 = self.w1(x)
         ts3 = layers.Activation(tf.nn.gelu)(ts1)
         output = layers.LayerNormalization()(ts2 * ts3)
         return output
 
+
+# 4. 히든 코더 (하이브리드 게이팅)
 class HiddenCoder(layers.Layer):
     def __init__(self, dim, **kwargs):
-        super().__init__(**kwarg)
+        super().__init__(**kwargs)
         self.w = layers.Dense(dim)
         self.w1 = layers.Dense(dim)
-        self.wo = Layers.Dense(dim)
-        self.w3 = layers.Dense(dim, activation='silu')
+        self.wo = layers.Dense(dim)
+        self.w3 = layers.Dense(dim, activation=tf.nn.silu)  # silu == swish
 
     def call(self, x, z):
-        ts1 = w(x)
-        ts2 = w1(z)
+        ts1 = self.w(x)
+        ts2 = self.w1(z)
         ts3 = layers.Activation(tf.nn.gelu)(ts1)
         ts4 = layers.Activation('sigmoid')(ts2)
         o = layers.LayerNormalization()(ts3 * ts4)
-        o1 = w3(o)
-        o2 = wo(o)
-        output = LayerNormalization()(o1 * o2)
+        o1 = self.w3(o)
+        o2 = self.wo(o)
+        output = layers.LayerNormalization()(o1 * o2)
         return output
 
-d_model = 256
 
+# ===== 모델 구성 =====
+d_model = 256       # 잠재 차원
 
-# ===== 모델 =====
 encoder_input = Input(shape=(max_enc_len,), name='encoder_input')
 x = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(encoder_input)
 x = LearnablePositionalEmbedding(max_enc_len, d_model)(x)
 context_vector = Encoder(d_model)(x)
 
-# 디코더 부분
 decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
 y = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(decoder_input)
 y = LearnablePositionalEmbedding(max_dec_len, d_model)(y)
 y = Decoder(d_model)(y)
 
-# 마지막 연산
 decoder_output = HiddenCoder(d_model)(y, context_vector)
 logits = layers.Dense(vocab_size)(decoder_output)
-
 
 model = Model(inputs=[encoder_input, decoder_input], outputs=logits, name='SePord')
 # ==== /모델 ====
