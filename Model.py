@@ -146,57 +146,8 @@ class LearnablePositionalEmbedding(layers.Layer):
         return self.add([inputs, self.pos_emb[tf.newaxis, :seq_len, :]])
 
 
-class HiddenCoder(layers.Layer):
-    def __init__(self, dim, expansion_factor=2, **kwargs):
-        super().__init__(**kwargs)
-        self.dim = dim
-
-        # Query-like path (from decoder input)
-        self.q_proj = layers.Dense(dim)
-
-        
-        # Value-like path (context projection)
-        self.v_proj = layers.Dense(dim)
-
-        # Gate projections
-        self.gate_up = layers.Dense(dim * expansion_factor)
-        self.gate_act = layers.Activation(tf.nn.silu)  # 명시적 활성화
-        self.gate_down = layers.Dense(dim)
-
-        # Final projection and norm
-        self.out_proj = layers.Dense(dim)
-        self.ln = layers.LayerNormalization()
-        self.multi = layers.Multiply()
-        self.add = layers.Add()
-
-    def call(self, x, z):
-        """
-        x: 디코더 입력 (target side)
-        z: 인코더 출력 (source/context side)
-        """
-
-        # 1. Q, K, V 유사한 경로 (단, Dot Product Attention X)
-        q = self.q_proj(x)         # [B, T_t, D]    # [B, T_s, D]
-        v = self.v_proj(z)         # [B, T_s, D]
-
-        # 2. 문맥 벡터 생성
-        context_vector = tf.reduce_mean(v, axis=1, keepdims=True)  # [B, 1, D]
-
-        # 3. 게이팅 기반 처리
-        gate_input = q + context_vector  # 결합
-        gate = self.gate_up(gate_input)
-        gate = self.gate_act(gate)
-        gate = self.gate_down(gate)
-        gate = tf.sigmoid(gate)
-
-        # 4. 최종 출력
-        output = self.out_proj(self.multi([gate, q]))
-        output = self.ln(self.add([output, x]))  # Residual connection
-
-        return output
-
 # 2. 인코더 블록
-class Encoder(layers.Layer):
+class Gate(layers.Layer):
     def __init__(self, dim, **kwargs):
         super().__init__(**kwargs)
         self.w = layers.Dense(dim)
@@ -209,13 +160,12 @@ class Encoder(layers.Layer):
         ts1 = self.w(x)
         ts2 = self.w1(x)
         ts3 = layers.Activation(tf.nn.gelu)(ts1)
-        ts4 = layers.Activation('sigmoid')(ts2)
-        output = self.norm(self.multi([ts4 * ts3]))
+        output = self.norm(self.multi([ts2, ts3]))
         return output
 
 
 # 3. 디코더 블록
-class Decoder(layers.Layer):
+class Core(layers.Layer):
     def __init__(self, dim, **kwargs):
         super().__init__(**kwargs)
         self.w = layers.Dense(dim)
@@ -227,8 +177,8 @@ class Decoder(layers.Layer):
         x = inputs
         ts1 = self.w(x)
         ts2 = self.w1(x)
-        ts3 = layers.Activation(tf.nn.gelu)(ts1)
-        output = self.norm(self.multi([ts2 * ts3]))
+        ts3 = layers.Activation(tf.nn.silu)(ts1)
+        output = self.norm(self.multi([ts2, ts3]))
         return output
 
 
