@@ -139,6 +139,20 @@ class LearnablePositionalEmbedding(layers.Layer):
         seq_len = tf.shape(inputs)[1]
         return inputs + self.pos_emb[tf.newaxis, :seq_len, :]
 
+class Decoder(layers.Layer):
+    def __init__(self, dim, **kwargs):
+        super().__init__(**kwarg)
+        self.w = layers.Dense(dim)
+        self.w1 = layers.Dense(dim)
+
+    def call(self, inputs):
+        x = inputs
+        ts1 = w(x)
+        ts2 = w1(x)
+        ts3 = layers.Activation(tf.nn.gelu)(ts1)
+        output = layers.LayerNormalization()(ts2 * ts3)
+        return output
+
 d_model = 256
 # 인코더 부분
 encoder_input = Input(shape=(max_enc_len,), name='encoder_input')
@@ -158,11 +172,7 @@ decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
 y = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(decoder_input)
 y = LearnablePositionalEmbedding(max_dec_len, d_model)(y)
 
-# 디코더 처리
-y_t = Dense(d_model)(y)
-y_act = layers.Activation(tf.nn.gelu)(y_t)
-y = layers.LayerNormalization()(y_t * y_act)
-
+y = Decoder(d_model)(y)
 # Context와 결합
 decoder_output = layers.Multiply()([y, context_vector])
 
