@@ -173,15 +173,18 @@ class HiddenCoder(layers.Layer):
         super().__init__(**kwarg)
         self.w = layers.Dense(dim)
         self.w1 = layers.Dense(dim)
+        self.wo = Layers.Dense(dim)
+        self.w3 = layers.Dense(dim, activation='silu')
 
-    def call(self, q, kv):
-        q = x
-        kv = z
+    def call(self, x, z):
         ts1 = w(x)
         ts2 = w1(z)
         ts3 = layers.Activation(tf.nn.gelu)(ts1)
         ts4 = layers.Activation('sigmoid')(ts2)
-        output = layers.LayerNormalization()(ts2 * ts4)
+        o = layers.LayerNormalization()(ts3 * ts4)
+        o1 = w3(o)
+        o2 = wo(o)
+        output = LayerNormalization()(o1 * o2)
         return output
 
 d_model = 256
