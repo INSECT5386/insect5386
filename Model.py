@@ -186,12 +186,14 @@ class Core(layers.Layer):
 class OMAU(layers.Layer):
     def __init__(self, dim, **kwargs):
         super().__init__(**kwargs)
-        self.norm = layers.LayerNormalization()
+        self.transform_z = layers.Dense(dim)
         self.multi = layers.Multiply()
+        self.norm = layers.LayerNormalization()
         self.add = layers.Add()
 
     def call(self, x, z):
-        y = self.multi([x, z])
+        z_proj = self.transform_z(z)
+        y = self.multi([x, z_proj])
         y = self.norm(y)
         output = self.add([x, y])
         return output
