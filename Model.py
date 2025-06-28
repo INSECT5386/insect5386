@@ -168,6 +168,22 @@ class Decoder(layers.Layer):
         output = layers.LayerNormalization()(ts2 * ts3)
         return output
 
+class HiddenCoder(layers.Layer):
+    def __init__(self, dim, **kwargs):
+        super().__init__(**kwarg)
+        self.w = layers.Dense(dim)
+        self.w1 = layers.Dense(dim)
+
+    def call(self, q, kv):
+        q = x
+        kv = z
+        ts1 = w(x)
+        ts2 = w1(z)
+        ts3 = layers.Activation(tf.nn.gelu)(ts1)
+        ts4 = layers.Activation('sigmoid')(ts2)
+        output = layers.LayerNormalization()(ts2 * ts4)
+        return output
+
 d_model = 256
 
 
@@ -175,22 +191,16 @@ d_model = 256
 encoder_input = Input(shape=(max_enc_len,), name='encoder_input')
 x = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(encoder_input)
 x = LearnablePositionalEmbedding(max_enc_len, d_model)(x)
-
-
 context_vector = Encoder(d_model)(x)
 
 # 디코더 부분
 decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
 y = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(decoder_input)
 y = LearnablePositionalEmbedding(max_dec_len, d_model)(y)
-
 y = Decoder(d_model)(y)
-# Context와 결합
-decoder_output = layers.Multiply()([y, context_vector])
 
 # 마지막 연산
-decoder_output = Decoder(d_model)(decoder_output)
-# 최종 출력
+decoder_output = HiddenCoder(d_model)(y, context_vector)
 logits = layers.Dense(vocab_size)(decoder_output)
 
 
