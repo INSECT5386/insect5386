@@ -139,7 +139,7 @@ class LearnablePositionalEmbedding(layers.Layer):
         seq_len = tf.shape(inputs)[1]
         return inputs + self.pos_emb[tf.newaxis, :seq_len, :]
 
-class Eecoder(layers.Layer):
+class Encoder(layers.Layer):
     def __init__(self, dim, **kwargs):
         super().__init__(**kwarg)
         self.w = layers.Dense(dim)
