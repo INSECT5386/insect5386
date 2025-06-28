@@ -124,14 +124,20 @@ import tensorflow as tf
 from tensorflow.keras import layers, Model, Input
 
 # 1. 가변 위치 인코딩
+import tensorflow as tf
+from tensorflow.keras import layers, Model, Input
+
+# 1. 가변 위치 인코딩
 class LearnablePositionalEmbedding(layers.Layer):
-    def __init__(self, max_length, d_model, **kwargs):
+    def __init__(self, max_length, d_model, initializer='random_normal', **kwargs):
         super().__init__(**kwargs)
         self.max_length = max_length
         self.d_model = d_model
-        pos_emb = tf.random.normal(shape=[max_length, d_model])
+        self.initializer = tf.keras.initializers.get(initializer)
+
+    def build(self, input_shape):
         self.pos_emb = tf.Variable(
-            initial_value=pos_emb,
+            initial_value=self.initializer(shape=[self.max_length, self.d_model]),
             trainable=True,
             name='positional_embedding'
         )
@@ -141,42 +147,46 @@ class LearnablePositionalEmbedding(layers.Layer):
         return inputs + self.pos_emb[tf.newaxis, :seq_len, :]
 
 
-# 2. Gated Context Layer (GEGLU 스타일 문맥 벡터 계산)
+# 2. Gated Context Layer
 class GatedContextLayer(layers.Layer):
     def __init__(self, d_model, **kwargs):
         super().__init__(**kwargs)
-        self.gate_proj = layers.Dense(d_model)
-        self.act_proj = layers.Dense(d_model)
+        self.proj = layers.Dense(2 * d_model)
         self.ln = layers.LayerNormalization()
+        self.multiply_layer = layers.Multiply()
 
     def call(self, inputs):
-        gate = tf.nn.sigmoid(self.gate_proj(inputs))
-        act = tf.nn.gelu(self.act_proj(inputs))
-        context_vector = gate * act
+        x = self.proj(inputs)
+        gate, act = tf.split(x, num_or_size_splits=2, axis=-1)
+        gate = tf.nn.sigmoid(gate)
+        act = tf.nn.gelu(act)
+        context_vector = self.multiply_layer([gate, act])
         return self.ln(context_vector)
 
 
-# 3. GEGLU Block (Gated Linear Unit + GELU 활성화)
+# 3. GEGLU Block
 class GEGLUBlock(layers.Layer):
     def __init__(self, d_model, expansion_rate=4, use_residual=True, **kwargs):
         super().__init__(**kwargs)
         self.use_residual = use_residual
-        self.dense_1 = layers.Dense(expansion_rate * d_model)
-        self.dense_2 = layers.Dense(d_model)
+        self.expand_dense = layers.Dense(expansion_rate * d_model)
+        self.output_dense = layers.Dense(d_model)
         self.ln = layers.LayerNormalization()
+        self.multiply_layer = layers.Multiply()
 
     def call(self, x):
         residual = x
-        x = self.dense_1(x)
+        x = self.expand_dense(x)
         a, b = tf.split(x, num_or_size_splits=2, axis=-1)
-        x = a * tf.nn.gelu(b)
-        x = self.dense_2(x)
+        b = tf.nn.gelu(b)
+        x = self.multiply_layer([a, b])
+        x = self.output_dense(x)
         if self.use_residual:
-            x = x + residual
+            x += residual
         return self.ln(x)
 
 
-# 4. 전체 모델 구성
+# 4. 전체 모델 구성 (Multiply 기반 Fusion)
 def build_seprod_model(vocab_size, max_enc_len, max_dec_len, d_model=256):
     # 인코더 입력
     encoder_input = Input(shape=(max_enc_len,), dtype='int32', name='encoder_input')
@@ -190,11 +200,11 @@ def build_seprod_model(vocab_size, max_enc_len, max_dec_len, d_model=256):
     y = LearnablePositionalEmbedding(max_dec_len, d_model)(y)
     y = GEGLUBlock(d_model)(y)
 
-    # 문맥 결합: Multiply-based Fusion
-    y = layers.Multiply()([y, context_vector[:, :max_dec_len, :]])
+    # Multiply-based Fusion
+    fused = layers.Multiply()([y, context_vector[:, :max_dec_len, :]])
 
     # 추가 GEGLU 처리
-    decoder_output = GEGLUBlock(d_model)(y)
+    decoder_output = GEGLUBlock(d_model)(fused)
 
     # 최종 출력
     logits = layers.Dense(vocab_size, name='logits')(decoder_output)
@@ -202,8 +212,6 @@ def build_seprod_model(vocab_size, max_enc_len, max_dec_len, d_model=256):
     # 모델 정의
     model = Model(inputs=[encoder_input, decoder_input], outputs=logits, name="SeProd")
     return model
-
-
 
 model = build_seprod_model(vocab_size, max_enc_len, max_dec_len, d_model=256)
 
