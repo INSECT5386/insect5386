@@ -139,6 +139,21 @@ class LearnablePositionalEmbedding(layers.Layer):
         seq_len = tf.shape(inputs)[1]
         return inputs + self.pos_emb[tf.newaxis, :seq_len, :]
 
+class Eecoder(layers.Layer):
+    def __init__(self, dim, **kwargs):
+        super().__init__(**kwarg)
+        self.w = layers.Dense(dim)
+        self.w1 = layers.Dense(dim)
+
+    def call(self, inputs):
+        x = inputs
+        ts1 = w(x)
+        ts2 = w1(x)
+        ts3 = layers.Activation(tf.nn.gelu)(ts1)
+        ts4 = layers.Activation('sigmoid')(ts2)
+        output = layers.LayerNormalization()(ts4 * ts3)
+        return output
+
 class Decoder(layers.Layer):
     def __init__(self, dim, **kwargs):
         super().__init__(**kwarg)
@@ -159,13 +174,8 @@ encoder_input = Input(shape=(max_enc_len,), name='encoder_input')
 x = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(encoder_input)
 x = LearnablePositionalEmbedding(max_enc_len, d_model)(x)
 
-# 간단한 문맥 벡터 계산
-t_s1 = Dense(d_model)(x)
-t_s2 = Dense(d_model)(x)
-t_gate = layers.Activation('sigmoid')(t_s2)
-t_gate1 = layers.Activation(tf.nn.gelu)(t_s1)
-context_vector = layers.LayerNormalization()(t_gate * t_gate1)
 
+context_vector = Encoder(d_model)(x)
 
 # 디코더 부분
 decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
