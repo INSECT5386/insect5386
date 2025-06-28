@@ -153,9 +153,7 @@ class HiddenCoder(layers.Layer):
         # Query-like path (from decoder input)
         self.q_proj = layers.Dense(dim)
 
-        # Key-like path (from encoder context)
-        self.k_proj = layers.Dense(dim)
-
+        
         # Value-like path (context projection)
         self.v_proj = layers.Dense(dim)
 
@@ -175,8 +173,7 @@ class HiddenCoder(layers.Layer):
         """
 
         # 1. Q, K, V 유사한 경로 (단, Dot Product Attention X)
-        q = self.q_proj(x)         # [B, T_t, D]
-        k = self.k_proj(z)         # [B, T_s, D]
+        q = self.q_proj(x)         # [B, T_t, D]    # [B, T_s, D]
         v = self.v_proj(z)         # [B, T_s, D]
 
         # 2. 문맥 벡터 생성
@@ -250,7 +247,7 @@ context_aware_decoder = HiddenCoder(d_model)(decoder_output, encoder_output)
 # 최종 출력
 logits = layers.Dense(vocab_size)(context_aware_decoder)
 
-model = Model(inputs=[encoder_input, decoder_input], outputs=logits, name='SePord')
+model = Model(inputs=[encoder_input, decoder_input], outputs=logits, name='SeProd')
 # ==== /모델 ====
 
 # 컴파일
