@@ -165,6 +165,7 @@ class HiddenCoder(layers.Layer):
         # Final projection and norm
         self.out_proj = layers.Dense(dim)
         self.ln = layers.LayerNormalization()
+        self.multi = layers.Multiply()
 
     def call(self, x, z):
         """
@@ -187,7 +188,7 @@ class HiddenCoder(layers.Layer):
         gate = tf.sigmoid(gate)
 
         # 4. 최종 출력
-        output = self.out_proj(gate * q)
+        output = self.out_proj(self.multi([gate, q]))
         output = self.ln(output + x)  # Residual connection
 
         return output
@@ -199,13 +200,15 @@ class Encoder(layers.Layer):
         self.w = layers.Dense(dim)
         self.w1 = layers.Dense(dim)
         self.norm = layers.LayerNormalization()
+        self.multi = layers.Multiply()
+        
     def call(self, inputs):
         x = inputs
         ts1 = self.w(x)
         ts2 = self.w1(x)
         ts3 = layers.Activation(tf.nn.gelu)(ts1)
         ts4 = layers.Activation('sigmoid')(ts2)
-        output = self.norm(ts4 * ts3)
+        output = self.norm(self.multi([ts4 * ts3]))
         return output
 
 
@@ -216,13 +219,14 @@ class Decoder(layers.Layer):
         self.w = layers.Dense(dim)
         self.w1 = layers.Dense(dim)
         self.norm = layers.LayerNormalization()
+        self.multi = layers.Multiply()
 
     def call(self, inputs):
         x = inputs
         ts1 = self.w(x)
         ts2 = self.w1(x)
         ts3 = layers.Activation(tf.nn.gelu)(ts1)
-        output = self.norm(ts2 * ts3)
+        output = self.norm(self.multi([ts2 * ts3]))
         return output
 
 
