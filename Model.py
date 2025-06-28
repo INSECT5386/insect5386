@@ -188,10 +188,12 @@ class OMAU(layers.Layer):
         super().__init__(**kwargs)
         self.norm = layers.LayerNormalization()
         self.multi = layers.Multiply()
+        self.add = layers.Add()
 
     def call(self, x, z):
         y = self.multi([x, z])
-        output = self.norm(y)
+        y = self.norm(y)
+        output = self.add([x, y])
         return output
 
 # ===== 모델 구성 =====
