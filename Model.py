@@ -180,43 +180,72 @@ class Decoder(layers.Layer):
 
 # 4. 히든 코더 (하이브리드 게이팅)
 class HiddenCoder(layers.Layer):
-    def __init__(self, dim, **kwargs):
+    def __init__(self, dim, expansion_factor=2, **kwargs):
         super().__init__(**kwargs)
-        self.w = layers.Dense(dim)
-        self.w1 = layers.Dense(dim)
-        self.wo = layers.Dense(dim)
-        self.w3 = layers.Dense(dim, activation=tf.nn.silu)  # silu == swish
+        self.dim = dim
+
+        # Query-like path (from decoder input)
+        self.q_proj = layers.Dense(dim)
+
+        # Key-like path (from encoder context)
+        self.k_proj = layers.Dense(dim)
+
+        # Value-like path (context projection)
+        self.v_proj = layers.Dense(dim)
+
+        # Gate projections
+        self.gate_up = layers.Dense(dim * expansion_factor)
+        self.gate_down = layers.Dense(dim)
+
+        # Final projection and norm
+        self.out_proj = layers.Dense(dim)
+        self.ln = layers.LayerNormalization()
 
     def call(self, x, z):
-        ts1 = self.w(x)
-        ts2 = self.w1(z)
-        ts3 = layers.Activation(tf.nn.gelu)(ts1)
-        ts4 = layers.Activation('sigmoid')(ts2)
-        o = layers.LayerNormalization()(ts3 * ts4)
-        o1 = self.w3(o)
-        o2 = self.wo(o)
-        output = layers.LayerNormalization()(o1 * o2)
+        """
+        x: 디코더 입력 (target side)
+        z: 인코더 출력 (source/context side)
+        """
+
+        # 1. Q, K, V 유사한 경로 (단, Dot Product Attention X)
+        q = self.q_proj(x)         # [B, T_t, D]
+        k = self.k_proj(z)         # [B, T_s, D]
+        v = self.v_proj(z)         # [B, T_s, D]
+
+        # 2. 문맥 벡터 생성 (간단한 Weighted Sum 대신 평균 or max pool)
+        context_vector = tf.reduce_mean(v, axis=1, keepdims=True)  # [B, 1, D]
+
+        # 3. 게이팅 기반 처리
+        gate_input = q + context_vector  # 결합 방법은 간단히 덧셈
+        gate = layers.Activation('sigmoid')(self.gate_down(self.gate_up(gate_input)))
+
+        # 4. 최종 출력
+        output = self.out_proj(gate * q)
+        output = self.ln(output + x)  # Residual connection
+
         return output
 
 
 # ===== 모델 구성 =====
 d_model = 256       # 잠재 차원
 
+# 인코더 경로
 encoder_input = Input(shape=(max_enc_len,), name='encoder_input')
-x = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(encoder_input)
-x = LearnablePositionalEmbedding(max_enc_len, d_model)(x)
-encoder = Encoder(d_model)(x)
-context_vector = HiddenCoder(d_model)(encoder, encoder)
+x_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(encoder_input)
+x_pos = LearnablePositionalEmbedding(max_enc_len, d_model)(x_emb)
+encoder_output = Encoder(d_model)(x_pos)
 
+# 디코더 경로
 decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
-y = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(decoder_input)
-y = LearnablePositionalEmbedding(max_dec_len, d_model)(y)
-y = Decoder(d_model)(y)
-y = HiddenCoder(d_model)(y, y)
+y_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(decoder_input)
+y_pos = LearnablePositionalEmbedding(max_dec_len, d_model)(y_emb)
+decoder_output = Decoder(d_model)(y_pos)
 
-decoder_output = HiddenCoder(d_model)(y, context_vector)
+# HiddenCoder로 인코더-디코더 연결
+context_aware_decoder = HiddenCoder(d_model)(decoder_output, encoder_output)
 
-logits = layers.Dense(vocab_size)(decoder_output)
+# 최종 출력
+logits = layers.Dense(vocab_size)(context_aware_decoder)
 
 model = Model(inputs=[encoder_input, decoder_input], outputs=logits, name='SePord')
 # ==== /모델 ====
