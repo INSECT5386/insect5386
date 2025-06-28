@@ -181,6 +181,16 @@ class Core(layers.Layer):
         output = self.norm(self.multi([ts2, ts3]))
         return output
 
+class OMAU(layers.Layer):
+    def __init__(self, dim, **kwargs):
+        super().__init__(**kwargs)
+        self.norm = layers.LayerNormalization()
+        self.multi = layers.Multiply()
+
+    def call(self, x, z):
+        y = self.multi([ts2, ts3])
+        output = self.norm(y)
+        return output
 
 # ===== 모델 구성 =====
 d_model = 256       # 잠재 차원
