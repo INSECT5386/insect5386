@@ -174,6 +174,7 @@ decoder_output = layers.LayerNormalization()(z_t * z_act)
 # 최종 출력
 logits = layers.Dense(vocab_size)(decoder_output)
 
+model = Model(inputs=[encoder_input, decoder_input], outputs=logits, name='SePord')
 
 # 컴파일
 model.compile(optimizer='adam', loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True))
