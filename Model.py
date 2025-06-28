@@ -160,7 +160,8 @@ class Gate(layers.Layer):
         ts1 = self.w(x)
         ts2 = self.w1(x)
         ts3 = layers.Activation(tf.nn.gelu)(ts1)
-        output = self.norm(self.multi([ts2, ts3]))
+        y = self.multi([ts2, ts3])
+        output = self.norm(y)
         return output
 
 
@@ -178,7 +179,8 @@ class Core(layers.Layer):
         ts1 = self.w(x)
         ts2 = self.w1(x)
         ts3 = layers.Activation(tf.nn.silu)(ts1)
-        output = self.norm(self.multi([ts2, ts3]))
+        y = self.multi([ts2, ts3])
+        output = self.norm(y)
         return output
 
 class OMAU(layers.Layer):
