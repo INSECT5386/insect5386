@@ -205,7 +205,7 @@ def build_seprod_model(vocab_size, max_enc_len=160, max_dec_len=130, d_model=256
 
 
 
-model = build_seprod_model(vocab_size, max_enc_len=160, max_dec_len=130, d_model=256)
+model = build_seprod_model(vocab_size, max_enc_len, max_dec_len, d_model=256)
 
 # 컴파일
 model.compile(optimizer='adam', loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True))
