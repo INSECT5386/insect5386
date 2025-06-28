@@ -177,7 +177,7 @@ class GEGLUBlock(layers.Layer):
 
 
 # 4. 전체 모델 구성
-def build_seprod_model(vocab_size, max_enc_len=160, max_dec_len=130, d_model=256):
+def build_seprod_model(vocab_size, max_enc_len, max_dec_len, d_model=256):
     # 인코더 입력
     encoder_input = Input(shape=(max_enc_len,), dtype='int32', name='encoder_input')
     x = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(encoder_input)
