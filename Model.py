@@ -166,6 +166,7 @@ class HiddenCoder(layers.Layer):
         self.out_proj = layers.Dense(dim)
         self.ln = layers.LayerNormalization()
         self.multi = layers.Multiply()
+        self.add = layers.Add()
 
     def call(self, x, z):
         """
@@ -189,7 +190,7 @@ class HiddenCoder(layers.Layer):
 
         # 4. 최종 출력
         output = self.out_proj(self.multi([gate, q]))
-        output = self.ln(output + x)  # Residual connection
+        output = self.ln(self.add([output, x]))  # Residual connection
 
         return output
 
