@@ -205,14 +205,17 @@ d_model = 256       # 잠재 차원
 encoder_input = Input(shape=(max_enc_len,), name='encoder_input')
 x = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(encoder_input)
 x = LearnablePositionalEmbedding(max_enc_len, d_model)(x)
-context_vector = Encoder(d_model)(x)
+encoder = Encoder(d_model)(x)
+context_vector = HiddenCoder(d_model)(encoder, encoder)
 
 decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
 y = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(decoder_input)
 y = LearnablePositionalEmbedding(max_dec_len, d_model)(y)
 y = Decoder(d_model)(y)
+y = HiddenCoder(d_model)(y, y)
 
 decoder_output = HiddenCoder(d_model)(y, context_vector)
+
 logits = layers.Dense(vocab_size)(decoder_output)
 
 model = Model(inputs=[encoder_input, decoder_input], outputs=logits, name='SePord')
