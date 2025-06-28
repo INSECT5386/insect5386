@@ -145,39 +145,6 @@ class LearnablePositionalEmbedding(layers.Layer):
         return inputs + self.pos_emb[tf.newaxis, :seq_len, :]
 
 
-# 2. 인코더 블록
-class Encoder(layers.Layer):
-    def __init__(self, dim, **kwargs):
-        super().__init__(**kwargs)
-        self.w = layers.Dense(dim)
-        self.w1 = layers.Dense(dim)
-
-    def call(self, inputs):
-        x = inputs
-        ts1 = self.w(x)
-        ts2 = self.w1(x)
-        ts3 = layers.Activation(tf.nn.gelu)(ts1)
-        ts4 = layers.Activation('sigmoid')(ts2)
-        output = layers.LayerNormalization()(ts4 * ts3)
-        return output
-
-
-# 3. 디코더 블록
-class Decoder(layers.Layer):
-    def __init__(self, dim, **kwargs):
-        super().__init__(**kwargs)
-        self.w = layers.Dense(dim)
-        self.w1 = layers.Dense(dim)
-
-    def call(self, inputs):
-        x = inputs
-        ts1 = self.w(x)
-        ts2 = self.w1(x)
-        ts3 = layers.Activation(tf.nn.gelu)(ts1)
-        output = layers.LayerNormalization()(ts2 * ts3)
-        return output
-
-
 # 4. 히든 코더 (하이브리드 게이팅)
 class HiddenCoder(layers.Layer):
     def __init__(self, dim, expansion_factor=2, **kwargs):
@@ -223,6 +190,37 @@ class HiddenCoder(layers.Layer):
         output = self.out_proj(gate * q)
         output = self.ln(output + x)  # Residual connection
 
+        return output
+
+# 2. 인코더 블록
+class Encoder(layers.Layer):
+    def __init__(self, dim, **kwargs):
+        super().__init__(**kwargs)
+        self.w = layers.Dense(dim)
+        self.w1 = layers.Dense(dim)
+    def call(self, inputs):
+        x = inputs
+        ts1 = self.w(x)
+        ts2 = self.w1(x)
+        ts3 = layers.Activation(tf.nn.gelu)(ts1)
+        ts4 = layers.Activation('sigmoid')(ts2)
+        output = layers.LayerNormalization()(ts4 * ts3)
+        return output
+
+
+# 3. 디코더 블록
+class Decoder(layers.Layer):
+    def __init__(self, dim, **kwargs):
+        super().__init__(**kwargs)
+        self.w = layers.Dense(dim)
+        self.w1 = layers.Dense(dim)
+
+    def call(self, inputs):
+        x = inputs
+        ts1 = self.w(x)
+        ts2 = self.w1(x)
+        ts3 = layers.Activation(tf.nn.gelu)(ts1)
+        output = layers.LayerNormalization()(ts2 * ts3)
         return output
 
 
