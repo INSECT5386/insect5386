@@ -190,7 +190,7 @@ class OMAU(layers.Layer):
         self.multi = layers.Multiply()
 
     def call(self, x, z):
-        y = self.multi([ts2, ts3])
+        y = self.multi([x, z])
         output = self.norm(y)
         return output
 
@@ -201,19 +201,21 @@ d_model = 256       # 잠재 차원
 encoder_input = Input(shape=(max_enc_len,), name='encoder_input')
 x_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(encoder_input)
 x_pos = LearnablePositionalEmbedding(max_enc_len, d_model)(x_emb)
-encoder_output = Encoder(d_model)(x_pos)
+enc = Gate(d_model)(x_pos)
+context_vector = Core(d_model)(enc)
 
 # 디코더 경로
 decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
 y_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(decoder_input)
 y_pos = LearnablePositionalEmbedding(max_dec_len, d_model)(y_emb)
-decoder_output = Decoder(d_model)(y_pos)
+decoder_output = Gate(d_model)(y_pos)
 
-# HiddenCoder로 인코더-디코더 연결
-context_aware_decoder = HiddenCoder(d_model)(decoder_output, encoder_output)
+cross = OMAU(d_model)(decoder_output, context_vector)
+
+output = Core(d_model)(cross)
 
 # 최종 출력
-logits = layers.Dense(vocab_size)(context_aware_decoder)
+logits = layers.Dense(vocab_size)(output)
 
 model = Model(inputs=[encoder_input, decoder_input], outputs=logits, name='SeProd')
 # ==== /모델 ====
