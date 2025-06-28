@@ -35,7 +35,7 @@ for conversations in df["conversations"]:
             response = item2.get("value", "").strip().replace("\n", " ")
             full = f"<start> {prompt} <sep> {response} <end>"
             train_sentences.append(full)
-train_sentences = train_sentences[:6004] # 예제용 소량
+train_sentences = train_sentences[:100000] # 예제용 소량
 print(f"총 문장 개수: {len(train_sentences)}")
 
 # ⬇️ 토크나이저 불러오기
@@ -114,7 +114,7 @@ dataset = tf.data.Dataset.from_generator(
     output_shapes=output_shapes
 )
 
-dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
+dataset = dataset.shuffle(10000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 print("dataset ok")
 
 
@@ -145,7 +145,6 @@ class LearnablePositionalEmbedding(layers.Layer):
         return inputs + self.pos_emb[tf.newaxis, :seq_len, :]
 
 
-# 4. 히든 코더 (하이브리드 게이팅)
 class HiddenCoder(layers.Layer):
     def __init__(self, dim, expansion_factor=2, **kwargs):
         super().__init__(**kwargs)
@@ -162,6 +161,7 @@ class HiddenCoder(layers.Layer):
 
         # Gate projections
         self.gate_up = layers.Dense(dim * expansion_factor)
+        self.gate_act = layers.Activation(tf.nn.silu)  # 명시적 활성화
         self.gate_down = layers.Dense(dim)
 
         # Final projection and norm
@@ -179,12 +179,15 @@ class HiddenCoder(layers.Layer):
         k = self.k_proj(z)         # [B, T_s, D]
         v = self.v_proj(z)         # [B, T_s, D]
 
-        # 2. 문맥 벡터 생성 (간단한 Weighted Sum 대신 평균 or max pool)
+        # 2. 문맥 벡터 생성
         context_vector = tf.reduce_mean(v, axis=1, keepdims=True)  # [B, 1, D]
 
         # 3. 게이팅 기반 처리
-        gate_input = q + context_vector  # 결합 방법은 간단히 덧셈
-        gate = layers.Activation('sigmoid')(self.gate_down(self.gate_up(gate_input)))
+        gate_input = q + context_vector  # 결합
+        gate = self.gate_up(gate_input)
+        gate = self.gate_act(gate)
+        gate = self.gate_down(gate)
+        gate = tf.sigmoid(gate)
 
         # 4. 최종 출력
         output = self.out_proj(gate * q)
@@ -198,13 +201,14 @@ class Encoder(layers.Layer):
         super().__init__(**kwargs)
         self.w = layers.Dense(dim)
         self.w1 = layers.Dense(dim)
+        self.norm = layers.LayerNormalization()
     def call(self, inputs):
         x = inputs
         ts1 = self.w(x)
         ts2 = self.w1(x)
         ts3 = layers.Activation(tf.nn.gelu)(ts1)
         ts4 = layers.Activation('sigmoid')(ts2)
-        output = layers.LayerNormalization()(ts4 * ts3)
+        output = self.norm(ts4 * ts3)
         return output
 
 
@@ -214,13 +218,14 @@ class Decoder(layers.Layer):
         super().__init__(**kwargs)
         self.w = layers.Dense(dim)
         self.w1 = layers.Dense(dim)
+        self.norm = layers.LayerNormalization()
 
     def call(self, inputs):
         x = inputs
         ts1 = self.w(x)
         ts2 = self.w1(x)
         ts3 = layers.Activation(tf.nn.gelu)(ts1)
-        output = layers.LayerNormalization()(ts2 * ts3)
+        output = self.norm(ts2 * ts3)
         return output
 
 
