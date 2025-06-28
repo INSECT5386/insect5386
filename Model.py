@@ -127,7 +127,16 @@ import tensorflow as tf
 from tensorflow.keras import layers, Model, Input
 from tensorflow.keras.initializers import RandomNormal
 
-# 1. 가변 위치 인코딩
+
+import tensorflow as tf
+from tensorflow.keras import layers, Model, Input
+from tensorflow.keras.initializers import RandomNormal
+from tensorflow.keras.layers import Dropout
+
+d_model = 256          # 잠재 공간 차원
+dropout_rate = 0.1     # 드롭아웃 비율
+
+# ===== 1. 가변 위치 인코딩 =====
 class LearnablePositionalEmbedding(layers.Layer):
     def __init__(self, max_length, d_model, **kwargs):
         super().__init__(**kwargs)
@@ -145,92 +154,104 @@ class LearnablePositionalEmbedding(layers.Layer):
         seq_len = tf.shape(inputs)[1]
         return self.add([inputs, self.pos_emb[tf.newaxis, :seq_len, :]])
 
-
-# 2. 인코더 블록
+# ===== 2. Gate 블록 =====
 class Gate(layers.Layer):
-    def __init__(self, dim, **kwargs):
+    def __init__(self, dim, dropout_rate=0.1, **kwargs):
         super().__init__(**kwargs)
         self.w = layers.Dense(dim)
         self.w1 = layers.Dense(dim)
         self.norm = layers.LayerNormalization()
         self.multi = layers.Multiply()
-        
-    def call(self, inputs):
+        self.dropout = Dropout(dropout_rate)
+
+    def call(self, inputs, training=None):
         x = inputs
         ts1 = self.w(x)
+        ts1 = self.dropout(ts1, training=training)  # Dense -> Dropout
+        ts1 = layers.Activation(tf.nn.gelu)(ts1)
+
         ts2 = self.w1(x)
-        ts3 = layers.Activation(tf.nn.gelu)(ts1)
-        y = self.multi([ts2, ts3])
+        ts2 = self.dropout(ts2, training=training)  # Dense -> Dropout
+        ts3 = layers.Activation(tf.nn.gelu)(ts2)
+
+        y = self.multi([ts1, ts3])
         output = self.norm(y)
         return output
 
-
-# 3. 디코더 블록
+# ===== 3. Core 블록 =====
 class Core(layers.Layer):
-    def __init__(self, dim, **kwargs):
+    def __init__(self, dim, dropout_rate=0.1, **kwargs):
         super().__init__(**kwargs)
         self.w = layers.Dense(dim)
         self.w1 = layers.Dense(dim)
         self.norm = layers.LayerNormalization()
         self.multi = layers.Multiply()
+        self.dropout = Dropout(dropout_rate)
 
-    def call(self, inputs):
+    def call(self, inputs, training=None):
         x = inputs
         ts1 = self.w(x)
+        ts1 = self.dropout(ts1, training=training)
+        ts1 = layers.Activation(tf.nn.silu)(ts1)
+
         ts2 = self.w1(x)
-        ts3 = layers.Activation(tf.nn.silu)(ts1)
-        y = self.multi([ts2, ts3])
+        ts2 = self.dropout(ts2, training=training)
+        ts3 = layers.Activation(tf.nn.silu)(ts2)
+
+        y = self.multi([ts1, ts3])
         output = self.norm(y)
         return output
 
+# ===== 4. OMAU 블록 =====
 class OMAU(layers.Layer):
-    def __init__(self, dim, **kwargs):
+    def __init__(self, dim, dropout_rate=0.1, **kwargs):
         super().__init__(**kwargs)
         self.transform_z = layers.Dense(dim)
         self.multi = layers.Multiply()
         self.norm = layers.LayerNormalization()
         self.add = layers.Add()
+        self.dropout = Dropout(dropout_rate)
 
-    def call(self, x, z):
+    def call(self, x, z, training=None):
         z_proj = self.transform_z(z)
+        z_proj = self.dropout(z_proj, training=training)  # Dense -> Dropout
         y = self.multi([x, z_proj])
-        y = self.norm(y)
-        output = self.add([x, y])
+        output = self.norm(y)
         return output
 
 # ===== 모델 구성 =====
-d_model = 256       # 잠재 차원
-
 # 인코더 경로
 encoder_input = Input(shape=(max_enc_len,), name='encoder_input')
 x_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(encoder_input)
 x_pos = LearnablePositionalEmbedding(max_enc_len, d_model)(x_emb)
-enc = Gate(d_model)(x_pos)
-context_vector = Core(d_model)(enc)
+enc = Gate(d_model, dropout_rate=dropout_rate)(x_pos, training=True)
+context_vector = Core(d_model, dropout_rate=dropout_rate)(enc, training=True)
 
 # 디코더 경로
 decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
 y_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(decoder_input)
 y_pos = LearnablePositionalEmbedding(max_dec_len, d_model)(y_emb)
-decoder_output = Gate(d_model)(y_pos)
+decoder_output = Gate(d_model, dropout_rate=dropout_rate)(y_pos, training=True)
 
-cross = OMAU(d_model)(decoder_output, context_vector)
+cross = OMAU(d_model, dropout_rate=dropout_rate)(decoder_output, context_vector, training=True)
 
-output = Core(d_model)(cross)
+output = Core(d_model, dropout_rate=dropout_rate)(cross, training=True)
 
 # 최종 출력
 logits = layers.Dense(vocab_size)(output)
 
 model = Model(inputs=[encoder_input, decoder_input], outputs=logits, name='SeProd')
-# ==== /모델 ====
 
-# 컴파일
+# ===== 컴파일 및 학습 =====
 model.compile(
     optimizer='adam',
     loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
     metrics=['accuracy']
 )
+
+# 모델 요약
 model.summary()
+
 model.fit(dataset, epochs=1, steps_per_epoch=len(train_sentences) // batch_size)
 
 
