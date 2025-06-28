@@ -221,8 +221,11 @@ model = Model(inputs=[encoder_input, decoder_input], outputs=logits, name='SePro
 # ==== /모델 ====
 
 # 컴파일
-model.compile(optimizer='adam', loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True))
-
+model.compile(
+    optimizer='adam',
+    loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+    metrics=['accuracy']
+)
 model.summary()
 model.fit(dataset, epochs=1, steps_per_epoch=len(train_sentences) // batch_size)
 
