@@ -169,7 +169,9 @@ class Decoder(layers.Layer):
         return output
 
 d_model = 256
-# 인코더 부분
+
+
+# ===== 모델 =====
 encoder_input = Input(shape=(max_enc_len,), name='encoder_input')
 x = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(encoder_input)
 x = LearnablePositionalEmbedding(max_enc_len, d_model)(x)
@@ -191,7 +193,9 @@ decoder_output = Decoder(d_model)(decoder_output)
 # 최종 출력
 logits = layers.Dense(vocab_size)(decoder_output)
 
+
 model = Model(inputs=[encoder_input, decoder_input], outputs=logits, name='SePord')
+# ==== /모델 ====
 
 # 컴파일
 model.compile(optimizer='adam', loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True))
