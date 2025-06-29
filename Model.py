@@ -130,9 +130,11 @@ class SeProdBlock(layers.Layer):
         self.add = layers.Add()
 
         self.dense2 = layers.Dense(dim * 2)  # GLU 스타일로 나눌 준비
+        self.dense3 = layers.Dense(dim)
         self.norm2 = layers.LayerNormalization()
         self.multi = layers.Multiply()
         self.multi1 = layers.Multiply()
+        self.multi2 = layers.Multiply()
 
     def call(self, x, training=None):
         batch_size, seq_len, d_model = tf.shape(x)[0], tf.shape(x)[1], tf.shape(x)[2]
@@ -154,8 +156,8 @@ class SeProdBlock(layers.Layer):
         reverse_out = tf.nn.silu(reverse_out)
 
         # ===== Merge Output =====
-        combined = forward_out + reverse_out  # 또는 Concatenate()([forward_out, reverse_out])
-
+        combined = self.multi2([forward_out, reverse_out])  
+        combined = self.dense3(combined)
         return combined
 
 
