@@ -20,7 +20,7 @@ def download_file(url, save_path):
 download_file('https://huggingface.co/datasets/Yuchan5386/KeraLux4/resolve/main/dataset.parquet?download=true', 'dataset.parquet')
 download_file('https://huggingface.co/datasets/Yuchan5386/KeraLux4/resolve/main/kolig_unigram.model?download=true', 'ko_unigram.model')
 
-# ⬇️ Parquet 데이터 불러오기
+# ⬇️ Parquet 데이터 불러오기  
 df = pd.read_parquet("dataset.parquet", engine="pyarrow")
 
 # ⬇️ <start> 질문 <sep> 답변 <end> 포맷으로 변환
@@ -34,7 +34,7 @@ for conversations in df["conversations"]:
             response = item2.get("value", "").strip().replace("\n", " ")
             full = f"<start> {prompt} <sep> {response} <end>"
             train_sentences.append(full)
-train_sentences = train_sentences[:50000]
+train_sentences = train_sentences[:100000] # 예제용 소량
 print(f"총 문장 개수: {len(train_sentences)}")
 
 # ⬇️ 토크나이저 불러오기
@@ -46,24 +46,18 @@ pad_id = sp.piece_to_id("<pad>") if sp.piece_to_id("<pad>") != -1 else 0
 start_id = sp.piece_to_id("<start>")  
 sep_id = sp.piece_to_id("<sep>")  
 end_id = sp.piece_to_id("<end>")  
-unk_id = sp.piece_to_id("<unk>")  
 
 vocab_size = sp.get_piece_size()
 print(f"✅ Vocabulary size: {vocab_size}")
 
-# ⬇️ 텍스트 <-> ID 변환 함수
-def text_to_ids(text):
-    return sp.encode(text, out_type=int)
-
-def ids_to_text(ids):
-    return sp.decode(ids)
-
 # ⬇️ 전처리 하이퍼파라미터
-max_len = 256
-batch_size = 32
+max_enc_len = 128 # 인코더 최대 길이 (질문 부분)
+max_dec_len = 128 # 디코더 최대 길이 (답변 부분)
+batch_size = 64
 
-# ⬇️ 인풋과 타겟 마스킹 포함된 전처리
-encoded_inputs = []
+# ⬇️ 전처리 결과 저장할 리스트
+encoder_inputs = []
+decoder_inputs = []
 targets = []
 
 for sentence in train_sentences:
@@ -71,55 +65,55 @@ for sentence in train_sentences:
         continue
 
     sep_index = sentence.index("<sep>")
-    input_text = sentence[:sep_index + len("<sep>")].strip()
-    target_text = sentence[sep_index + len("<sep>"):].strip()
+    input_text = sentence[:sep_index].strip() # 질문 부분
+    target_text = sentence[sep_index + len("<sep>"):].strip() # 답변 부분
 
-    input_ids = text_to_ids(input_text)
-    target_ids = text_to_ids(target_text + " <end>")
+    # 인코더 입력: 질문 + <sep>
+    enc_ids = sp.encode(input_text + " <sep>")[:max_enc_len]
 
-    full_input = input_ids + target_ids
-    full_input = full_input[:max_len]
+# 디코더 입력: <start> + 답변[:-1]
+    dec_input_ids = [start_id] + sp.encode(target_text)[:max_dec_len - 2]
 
-    target_mask = [0] * len(input_ids) + [1] * len(target_ids)
-    target_mask = target_mask[:max_len]
+# 정답 라벨: 답변 + <end>
+    target_ids = sp.encode(target_text)[:max_dec_len - 1] + [end_id]
+    # 패딩 추가
+    enc_padded = enc_ids + [pad_id] * (max_enc_len - len(enc_ids))
+    dec_padded = dec_input_ids + [pad_id] * (max_dec_len - len(dec_input_ids))
+    target_padded = target_ids + [pad_id] * (max_dec_len - len(target_ids))
 
-    if len(full_input) < max_len:
-        pad_len = max_len - len(full_input)
-        full_input += [pad_id] * pad_len
-        target_mask += [0] * pad_len
+    encoder_inputs.append(enc_padded)
+    decoder_inputs.append(dec_padded)
+    targets.append(target_padded)
 
-    encoded_inputs.append(full_input)
-
-    target_seq = full_input[1:] + [end_id]
-    target_seq = target_seq[:max_len]
-
-    masked_target = [
-        t if m == 1 else pad_id
-        for t, m in zip(target_seq, target_mask)
-    ]
-
-    targets.append(masked_target)
-
-# ⬇️ 넘파이 변환
-encoded_inputs = np.array(encoded_inputs)
-targets = np.array(targets)
+# ⬇️ 넘파이 배열로 변환
+encoder_inputs = np.array(encoder_inputs, dtype=np.int32)
+decoder_inputs = np.array(decoder_inputs, dtype=np.int32)
+targets = np.array(targets, dtype=np.int32)
 
 # ⬇️ TensorFlow Dataset 생성
 def data_generator():
-    for input_seq, target_seq in zip(encoded_inputs, targets):
-        yield input_seq, target_seq
+    for enc, dec, tgt in zip(encoder_inputs, decoder_inputs, targets):
+        # 딕셔너리 대신 튜플 형태로 반환
+        yield (enc, dec), tgt
+
+output_types = (
+    (tf.int32, tf.int32), # 두 개의 입력 텐서에 대한 타입
+    tf.int32 # 타겟에 대한 타입
+)
+
+output_shapes = (
+    (tf.TensorShape([max_enc_len]), tf.TensorShape([max_dec_len])), # 두 개의 입력 텐서에 대한 모양
+    tf.TensorShape([max_dec_len]) # 타겟에 대한 모양
+)
 
 dataset = tf.data.Dataset.from_generator(
     data_generator,
-    output_signature=(
-        tf.TensorSpec(shape=(max_len,), dtype=tf.int32),
-        tf.TensorSpec(shape=(max_len,), dtype=tf.int32)
-    )
+    output_types=output_types,
+    output_shapes=output_shapes
 )
 
-dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
-
-print("✅ TF Dataset 생성 완료!")
+dataset = dataset.shuffle(10000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
+print("dataset ok")
 
 
 # ===== 1. 가변 위치 인코딩 =====
@@ -180,25 +174,40 @@ class SeProdBlock(layers.Layer):
         return combined
 
 
-# ======================= CobraModel ======================
-class SeProd(tf.keras.Model):
-    def __init__(self, vocab_size, d_model, n_layers, dropout_rate=0.1, max_len):
-        super().__init__()
-        self.token_embedding = layers.Embedding(vocab_size, d_model)
-        self.pos_emb = LearnablePositionalEmbedding(max_len, d_model)
-        self.blocks = [SeProdBlock(d_model, dropout_rate) for _ in range(n_layers)]
-        self.ln_f = layers.LayerNormalization(epsilon=1e-5)
+# ===== 모델 구성 =====
+# 인코더 경로
+encoder_input = Input(shape=(max_enc_len,), name='encoder_input')
+x_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(encoder_input)
+x_pos = LearnablePositionalEmbedding(max_enc_len, d_model)(x_emb)
 
-    def call(self, x, training=False):
-        x = self.token_embedding(x)
-        x = self.pos_emb(x)
+context_vector = SeProdBlock(d_model, dropout_rate=dropout_rate)(x_pos, training=True)
 
-        for block in self.blocks:
-            x = block(x, training=training)
+# 디코더 경로
+decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
+y_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(decoder_input)
+y_pos = LearnablePositionalEmbedding(max_dec_len, d_model)(y_emb)
+decoder_output = SeProdBlock(d_model, dropout_rate=dropout_rate)(y_pos, training=True)
 
-        x = self.ln_f(x)
-        logits = tf.matmul(x, self.token_embedding.embeddings, transpose_b=True)
-        return logits
+cross = layers.Multiply()([decoder_output, context_vector])
+cross = layers.LayerNormalization()(cross)
+output = SeProdBlock(d_model, dropout_rate=dropout_rate)(cross, training=True)
+
+# 최종 출력
+logits = layers.Dense(vocab_size)(output)
+
+model = Model(inputs=[encoder_input, decoder_input], outputs=logits, name='SeProd')
+
+# ===== 컴파일 및 학습 =====
+model.compile(
+    optimizer='adam',
+    loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+    metrics=['accuracy']
+)
+
+# 모델 요약
+model.summary()
+
+model.fit(dataset, epochs=1, steps_per_epoch=len(train_sentences) // batch_size)
 
 
 # 손실 함수 및 메트릭 정의
