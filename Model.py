@@ -163,6 +163,7 @@ class SeProdBlock(layers.Layer):
         self.multi1 = layers.Multiply()
         self.multi2 = layers.Multiply()
         self.multi3 = layers.Multiply()
+        self.multi4 = layers.Multiply()
 
     def call(self, x, z, training=None):
         batch_size, seq_len, d_model = tf.shape(x)[0], tf.shape(x)[1], tf.shape(x)[2]
@@ -183,6 +184,7 @@ class SeProdBlock(layers.Layer):
         dth = self.multi3(d, dt)
 
         z_th = tf.concat([ath, bth, cth, dth], axis=-1)
+        x = multi4([x, z_th])
 
         # ===== Merge Output =====
         combined = self.dense3(combined)
