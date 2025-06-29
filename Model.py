@@ -162,25 +162,20 @@ class SeProdBlock(layers.Layer):
         self.multi = layers.Multiply()
         self.multi1 = layers.Multiply()
         self.multi2 = layers.Multiply()
+        self.multi3 = layers.Multiply()
 
-    def call(self, x, training=None):
+    def call(self, x, z, training=None):
         batch_size, seq_len, d_model = tf.shape(x)[0], tf.shape(x)[1], tf.shape(x)[2]
 
-        # ===== Forward Block =====
-        A = self.dense1(x)
-        B = tf.sigmoid(A)
-        C = self.multi([x, B])
-        D = self.norm1(C)
-        E = tf.nn.silu(D)
-        forward_out = self.add([E, x])
+
 
         # ===== Reverse Block (GLU Style) =====
-        A2 = self.dense2(x)  # [batch, seq, d_model * 2]
-        a, b = tf.split(A2, num_or_size_splits=2, axis=-1)
+        A2 = self.dense2(z)  # [batch, seq, d_model * 2]
+        a, at, b, bt, c, ct, d, dt= tf.split(A2, num_or_size_splits=8, axis=-1)
         a = tf.sigmoid(a)
-        reverse_out = self.multi1([a, b])
-        reverse_out = self.norm2(reverse_out)
-        reverse_out = tf.nn.silu(reverse_out)
+        b = tf.nn.silu(b)
+        c = tf.nn.gelu(c)
+        d = tf.nn.tanh(d)
 
         # ===== Merge Output =====
         combined = self.multi2([forward_out, reverse_out])  
