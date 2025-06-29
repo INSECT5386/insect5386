@@ -187,7 +187,8 @@ class SeProdBlock(layers.Layer):
         combined = self.dense3(combined)
         return combined
 
-
+d_model = 256
+dropout_rate = 0.1
 # ===== 모델 구성 =====
 # 인코더 경로
 encoder_input = Input(shape=(max_enc_len,), name='encoder_input')
