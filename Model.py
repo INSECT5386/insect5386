@@ -176,9 +176,12 @@ class SeProdBlock(layers.Layer):
         b = tf.nn.silu(b)
         c = tf.nn.gelu(c)
         d = tf.nn.tanh(d)
+        
+        ath = self.multi(a, at)
+        bth = self.multi1(b, bt)
+        cth = self.multi2(c, ct)
 
         # ===== Merge Output =====
-        combined = self.multi2([forward_out, reverse_out])  
         combined = self.dense3(combined)
         return combined
 
