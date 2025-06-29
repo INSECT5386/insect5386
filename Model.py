@@ -72,12 +72,11 @@ for sentence in train_sentences:
     # 인코더 입력: 질문 + <sep>
     enc_ids = sp.encode(input_text + " <sep>")[:max_enc_len]
 
-    # 디코더 입력: <start> + 답변
-    dec_input_ids = [start_id] + sp.encode(target_text)[:max_dec_len - 1]
+# 디코더 입력: <start> + 답변[:-1]
+    dec_input_ids = [start_id] + sp.encode(target_text)[:max_dec_len - 2]
 
-    # 정답 라벨: 답변 + <end>
-    target_ids = sp.encode(target_text + " <end>")[:max_dec_len]
-
+# 정답 라벨: 답변 + <end>
+    target_ids = sp.encode(target_text)[:max_dec_len - 1] + [end_id]
     # 패딩 추가
     enc_padded = enc_ids + [pad_id] * (max_enc_len - len(enc_ids))
     dec_padded = dec_input_ids + [pad_id] * (max_dec_len - len(dec_input_ids))
