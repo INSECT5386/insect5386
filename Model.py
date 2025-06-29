@@ -180,6 +180,7 @@ class SeProdBlock(layers.Layer):
         ath = self.multi(a, at)
         bth = self.multi1(b, bt)
         cth = self.multi2(c, ct)
+        dth = self.multi3(d, dt)
 
         # ===== Merge Output =====
         combined = self.dense3(combined)
