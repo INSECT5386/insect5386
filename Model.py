@@ -33,7 +33,7 @@ for conversations in df["conversations"]:
             response = item2.get("value", "").strip().replace("\n", " ")
             full = f"<start> {prompt} <sep> {response} <end>"
             train_sentences.append(full)
-train_sentences = train_sentences[:300000]
+train_sentences = train_sentences[:50000]
 print(f"총 문장 개수: {len(train_sentences)}")
 
 # ⬇️ 토크나이저 불러오기
@@ -166,7 +166,7 @@ class SeProd(tf.keras.Model):
     def __init__(self, vocab_size, d_model, n_layers, dropout_rate=0.1):
         super().__init__()
         self.token_embedding = layers.Embedding(vocab_size, d_model)
-        self.blocks = [SeProdblock(d_model, dropout_rate) for _ in range(n_layers)]
+        self.blocks = [SeProdBlock(d_model, dropout_rate) for _ in range(n_layers)]
         self.ln_f = layers.LayerNormalization(epsilon=1e-5)
 
     def call(self, x, training=False):
