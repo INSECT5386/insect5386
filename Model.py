@@ -151,47 +151,43 @@ class LearnablePositionalEmbedding(layers.Layer):
 class SeProdBlock(layers.Layer):
     def __init__(self, dim, dropout_rate=0.1, **kwargs):
         super().__init__(**kwargs)
+        self.dim = dim
         self.dense1 = layers.Dense(dim)
-        self.norm1 = layers.LayerNormalization()
-        self.dropout = layers.Dropout(dropout_rate)
-        self.add = layers.Add()
-
-        self.dense2 = layers.Dense(dim * 2)  # GLU 스타일로 나눌 준비
+        self.dense2 = layers.Dense(dim * 2)  # GLU Style
         self.dense3 = layers.Dense(dim)
+        self.norm1 = layers.LayerNormalization()
         self.norm2 = layers.LayerNormalization()
-        self.multi = layers.Multiply()
-        self.multi1 = layers.Multiply()
-        self.multi2 = layers.Multiply()
-        self.multi3 = layers.Multiply()
-        self.multi4 = layers.Multiply()
-        self.multi5 = layers.Multiply()
+        self.dropout = layers.Dropout(dropout_rate)
 
     def call(self, x, z, training=None):
         batch_size, seq_len, d_model = tf.shape(x)[0], tf.shape(x)[1], tf.shape(x)[2]
 
-
-
         # ===== Reverse Block (GLU Style) =====
-        A2 = self.dense2(z)  # [batch, seq, d_model * 2]
-        a, at, b, bt, c, ct, d, dt = tf.split(A2, num_or_size_splits=8, axis=-1)
+        A2 = self.dense2(z)  # [B, T, D*2]
+        splits = tf.split(A2, num_or_size_splits=8, axis=-1)
+        a, at, b, bt, c, ct, d, dt = splits
+
         a = tf.sigmoid(a)
         b = tf.nn.silu(b)
         c = tf.nn.gelu(c)
         d = tf.nn.tanh(d)
-        
-        ath = self.multi(a, at)
-        bth = self.multi1(b, bt)
-        cth = self.multi2(c, ct)
-        dth = self.multi3(d, dt)
 
-        z_th = tf.concat([ath, bth, cth, dth], axis=-1)
-        x = multi4([x, z_th])
+        ath = layers.multiply([a, at])
+        bth = layers.multiply([b, bt])
+        cth = layers.multiply([c, ct])
+        dth = layers.multiply([d, dt])
+
+        z_th = tf.concat([ath, bth, cth, dth], axis=-1)  # [B, T, D*2]
+        z_th = self.dense3(z_th)  # [B, T, D]
+        z_th = self.norm1(z_th)
+        x = layers.multiply([x, z_th])  # Gate x with processed z
 
         x = self.dense1(x)
+        x = self.norm2(x)
         f, ft = tf.split(x, num_or_size_splits=2, axis=-1)
         f = tf.nn.silu(f)
-        output = self.multi5(f, ft)
-        
+        output = layers.multiply([f, ft])
+
         return output
 
 d_model = 256
