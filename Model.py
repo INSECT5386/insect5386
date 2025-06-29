@@ -131,6 +131,8 @@ class SeProdBlock(layers.Layer):
 
         self.dense2 = layers.Dense(dim * 2)  # GLU 스타일로 나눌 준비
         self.norm2 = layers.LayerNormalization()
+        self.multi = layers.Multiply()
+        self.multi1 = layers.Multiply()
 
     def call(self, x, training=None):
         batch_size, seq_len, d_model = tf.shape(x)[0], tf.shape(x)[1], tf.shape(x)[2]
@@ -138,7 +140,7 @@ class SeProdBlock(layers.Layer):
         # ===== Forward Block =====
         A = self.dense1(x)
         B = tf.sigmoid(A)
-        C = layers.Multiply()([x, B])
+        C = self.multi([x, B])
         D = self.norm1(C)
         E = tf.nn.silu(D)
         forward_out = self.add([E, x])
@@ -147,7 +149,7 @@ class SeProdBlock(layers.Layer):
         A2 = self.dense2(x)  # [batch, seq, d_model * 2]
         a, b = tf.split(A2, num_or_size_splits=2, axis=-1)
         a = tf.sigmoid(a)
-        reverse_out = a * b + A2  # 또는 a * b 만으로도 OK
+        reverse_out = self.multi1([a, b])
         reverse_out = self.norm2(reverse_out)
         reverse_out = tf.nn.silu(reverse_out)
 
