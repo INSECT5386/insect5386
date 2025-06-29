@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf  
 from tensorflow.keras import layers 
+from tensorflow.keras.initializers import RandomNormal
 import sentencepiece as spm  
 import requests
 
@@ -121,6 +122,24 @@ dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 print("✅ TF Dataset 생성 완료!")
 
 
+# ===== 1. 가변 위치 인코딩 =====
+class LearnablePositionalEmbedding(layers.Layer):
+    def __init__(self, max_length, d_model, **kwargs):
+        super().__init__(**kwargs)
+        self.max_length = max_length
+        self.d_model = d_model
+        self.add = layers.Add()
+        pos_emb = RandomNormal()(shape=[max_length, d_model])
+        self.pos_emb = tf.Variable(
+            initial_value=pos_emb,
+            trainable=True,
+            name='positional_embedding'
+        )
+
+    def call(self, inputs):
+        seq_len = tf.shape(inputs)[1]
+        return self.add([inputs, self.pos_emb[tf.newaxis, :seq_len, :]])
+
 class SeProdBlock(layers.Layer):
     def __init__(self, dim, dropout_rate=0.1, **kwargs):
         super().__init__(**kwargs)
@@ -163,14 +182,16 @@ class SeProdBlock(layers.Layer):
 
 # ======================= CobraModel ======================
 class SeProd(tf.keras.Model):
-    def __init__(self, vocab_size, d_model, n_layers, dropout_rate=0.1):
+    def __init__(self, vocab_size, d_model, n_layers, dropout_rate=0.1, max_len):
         super().__init__()
         self.token_embedding = layers.Embedding(vocab_size, d_model)
+        self.pos_emb = LearnablePositionalEmbedding(max_len, d_model)
         self.blocks = [SeProdBlock(d_model, dropout_rate) for _ in range(n_layers)]
         self.ln_f = layers.LayerNormalization(epsilon=1e-5)
 
     def call(self, x, training=False):
         x = self.token_embedding(x)
+        x = self.pos_emb(x)
 
         for block in self.blocks:
             x = block(x, training=training)
@@ -229,7 +250,8 @@ def create_lr_schedule(initial_lr=5e-5, decay_steps=10000, decay_rate=0.9):
 model = SeProd(
     vocab_size=vocab_size,
     d_model=256,
-    n_layers=6
+    n_layers=6,
+    max_len=256
 )
 
 # 옵티마이저 설정
