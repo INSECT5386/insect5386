@@ -225,121 +225,68 @@ model.summary()
 model.fit(dataset, epochs=1, steps_per_epoch=len(train_sentences) // batch_size)
 
 
-# 손실 함수 및 메트릭 정의
-loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True, reduction='none')
+def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=False):
+    """
+    사용자 입력 문장을 받아 AI 응답 생성
+    
+    :param model: 훈련된 DustTransformer 모델
+    :param sp: SentencePiece Tokenizer
+    :param input_text: 사용자 입력 (str)
+    :param max_dec_len: 최대 생성 길이
+    :param temperature: 샘플링 온도 (낮을수록 greedy, 높을수록 창의적)
+    :param verbose: 디버깅 메시지 출력 여부
+    :return: 생성된 텍스트
+    """
+    start_id = sp.piece_to_id("<start>")
+    end_id = sp.piece_to_id("<end>")
+    
+    # 인코더 입력 전처리
+    enc_ids = sp.encode(input_text)
+    enc_ids = enc_ids[:max_enc_len]
+    enc_ids += [sp.pad_id()] * (max_enc_len - len(enc_ids))
+    enc_tensor = tf.constant([enc_ids], dtype=tf.int32)
 
-def masked_loss(y_true, y_pred):
-    loss = loss_fn(y_true, y_pred)
-    mask = tf.cast(tf.not_equal(y_true, pad_id), tf.float32)
-    masked_loss = tf.reduce_sum(loss * mask) / tf.reduce_sum(mask)
-    return masked_loss
+    if verbose:
+        print("Encoder Input:", input_text)
+        print("Encoded:", enc_ids)
 
-def masked_accuracy(y_true, y_pred):
-    preds = tf.argmax(y_pred, axis=-1, output_type=y_true.dtype)
-    matches = tf.cast(tf.equal(y_true, preds), tf.float32)
-    mask = tf.cast(tf.not_equal(y_true, pad_id), tf.float32)
-    return tf.reduce_sum(matches * mask) / tf.reduce_sum(mask)
+    # 초기 디코더 입력 설정
+    dec_input = tf.constant([[start_id]], dtype=tf.int32)
+    generated_ids = []
 
-def masked_perplexity(y_true, y_pred):
-    loss = loss_fn(y_true, y_pred)
-    mask = tf.cast(tf.not_equal(y_true, pad_id), tf.float32)
-    avg_loss = tf.reduce_sum(loss * mask) / tf.reduce_sum(mask)
-    return tf.exp(tf.minimum(avg_loss, 10.0))  # 수치 안정성 확보
+    for step in range(max_dec_len):
+        # 디코더 입력을 max_dec_len으로 패딩
+        padded_dec_input = tf.pad(dec_input, [[0, 0], [0, max_dec_len - tf.shape(dec_input)[1]]],
+                                  constant_values=sp.pad_id())
 
-def masked_top5_accuracy(y_true, y_pred):
-    top5_preds = tf.nn.top_k(y_pred, k=5).indices
-    top5_preds = tf.cast(top5_preds, dtype=y_true.dtype)  # <-- 이 줄 추가
-    y_true_expanded = tf.expand_dims(y_true, axis=-1)
-    matches = tf.reduce_any(tf.equal(y_true_expanded, top5_preds), axis=-1)
-    matches = tf.cast(matches, tf.float32)
-    mask = tf.cast(tf.not_equal(y_true, pad_id), tf.float32)
-    return tf.reduce_sum(matches * mask) / tf.reduce_sum(mask)
+        # 전체 모델 예측
+        decoder_output = model.predict([enc_tensor, padded_dec_input])
+        
+        # 현재 스텝의 로짓 추출
+        logits = decoder_output[:, step, :]  # 현재 step 위치의 로짓
 
-
-def token_level_loss(y_true, y_pred):
-    loss = loss_fn(y_true, y_pred)
-    mask = tf.cast(tf.not_equal(y_true, pad_id), tf.float32)
-    return tf.reduce_mean(loss * mask)
-
-def create_lr_schedule(initial_lr=5e-5, decay_steps=10000, decay_rate=0.9):
-    return tf.keras.optimizers.schedules.ExponentialDecay(
-        initial_learning_rate=initial_lr,
-        decay_steps=decay_steps,
-        decay_rate=decay_rate,
-        staircase=False
-    )
-
-
-# 모델 생성
-model = SeProd(
-    vocab_size=vocab_size,
-    d_model=256,
-    n_layers=6,
-    max_len=256
-)
-
-# 옵티마이저 설정
-optimizer = tf.keras.optimizers.Adam(
-    learning_rate=create_lr_schedule(),
-    beta_1=0.9,
-    beta_2=0.95,
-    epsilon=1e-8,
-    clipnorm=1.0
-)
-
-# 모델 컴파일
-model.compile(
-    optimizer=optimizer,
-    loss=masked_loss,
-    metrics=[
-        masked_accuracy,
-        masked_perplexity,
-        masked_top5_accuracy,
-        token_level_loss
-    ]
-)
-
-# 더미 인풋으로 모델 초기화
-dummy_input = np.zeros((1, max_len), dtype=np.int32)
-model(dummy_input)
-model.summary()
-
-# 학습 시작
-history = model.fit(
-    dataset,
-    epochs=1,
-    steps_per_epoch = encoded_inputs.shape[0] // batch_size,
-    verbose=1
-)
-
-def generate_text_topp(model, prompt, max_len=100, max_gen=98, p=0.9, temperature=0.8, min_len=20):
-    model_input = text_to_ids(f"<start> {prompt} <sep>")
-    model_input = model_input[:max_len]
-    generated = list(model_input)
-    for step in range(max_gen):
-        if len(generated) > max_len:
-            input_seq = generated[-max_len:]
+        if temperature == 0.:
+            pred_id = tf.argmax(logits, axis=-1, output_type=tf.int32)
         else:
-            input_seq = generated
-        input_padded = np.pad(input_seq, (0, max_len - len(input_seq)), constant_values=pad_id)
-        input_tensor = tf.convert_to_tensor([input_padded])
-        logits = model(input_tensor, training=False)
-        next_token_logits = logits[0, len(input_seq) - 1].numpy()
-        next_token_logits[end_id] -= 5.0
-        next_token_logits[pad_id] -= 10.0
-        probs = tf.nn.softmax(next_token_logits / temperature).numpy()
-        sorted_indices = np.argsort(probs)[::-1]
-        sorted_probs = probs[sorted_indices]
-        cumulative_probs = np.cumsum(sorted_probs)
-        cutoff = np.searchsorted(cumulative_probs, p)
-        top_indices = sorted_indices[:cutoff + 1]
-        top_probs = sorted_probs[:cutoff + 1]
-        top_probs /= np.sum(top_probs)
-        next_token_id = np.random.choice(top_indices, p=top_probs)
-        if next_token_id == end_id and len(generated) >= min_len:
-            break
-        generated.append(int(next_token_id))
-    return ids_to_text(generated)
+            logits = logits / temperature
+            pred_id = tf.random.categorical(logits, 1, dtype=tf.int32)
 
-print("\n\n===== 생성 결과 =====")  
-print(generate_text_topp(model, "안녕", p=0.9))
+        pred_id = tf.squeeze(pred_id, axis=1)  # (1, )
+
+        # 종료 토큰 체크
+        if int(pred_id[0]) == end_id:
+            break
+
+        generated_ids.append(int(pred_id[0]))
+        dec_input = tf.concat([dec_input, pred_id[:, tf.newaxis]], axis=1)
+
+        if verbose:
+            token_str = sp.decode([int(pred_id[0])])
+            print(f"Step {step}: ID={int(pred_id[0])}, Token='{token_str}'")
+
+    decoded_text = sp.decode(generated_ids)
+    return decoded_text
+
+input_text = "회의록을 요약해 주세요."
+response = generate(model, sp, input_text, temperature=0.7, verbose=True)
+print("AI Response:", response)
