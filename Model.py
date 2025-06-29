@@ -182,6 +182,8 @@ class SeProdBlock(layers.Layer):
         cth = self.multi2(c, ct)
         dth = self.multi3(d, dt)
 
+        z_th = tf.concat([ath, bth, cth, dth], axis=-1)
+
         # ===== Merge Output =====
         combined = self.dense3(combined)
         return combined
