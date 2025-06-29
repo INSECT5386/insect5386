@@ -153,35 +153,49 @@ class SeProdBlock(layers.Layer):
         super().__init__(**kwargs)
         self.dim = dim
         self.dense1 = layers.Dense(dim)
-        self.dense2 = layers.Dense(dim * 2)  # GLU Style
-        self.dense3 = layers.Dense(dim)
+        self.dense2 = layers.Dense(dim)
+        self.dense = layers.Dense(dim)
+  
         self.norm1 = layers.LayerNormalization()
         self.norm2 = layers.LayerNormalization()
         self.dropout = layers.Dropout(dropout_rate)
 
     def call(self, x, z, training=None):
         batch_size, seq_len, d_model = tf.shape(x)[0], tf.shape(x)[1], tf.shape(x)[2]
+        x = self.dense(x)
 
         # ===== Reverse Block (GLU Style) =====
         A2 = self.dense2(z)  # [B, T, D*2]
         splits = tf.split(A2, num_or_size_splits=8, axis=-1)
         a, at, b, bt, c, ct, d, dt = splits
+        splits1 = tf.split(x, num_or_size_splits=8, axis=-1)
+        A, A1, B, B1, C, C1, D, D1 = splits1
 
         a = tf.sigmoid(a)
         b = tf.nn.silu(b)
         c = tf.nn.gelu(c)
         d = tf.nn.tanh(d)
 
+
+        A = tf.sigmoid(A)
+        B = tf.nn.silu(B)
+        C = tf.nn.gelu(C)
+        D = tf.nn.tanh(D)
+
+        Ath = layers.multiply([A, A1])
+        Bth = layers.multiply([B, B1])
+        Cth = layers.multiply([C, C1])
+        Dth = layers.multiply([D, D1])
+
         ath = layers.multiply([a, at])
         bth = layers.multiply([b, bt])
         cth = layers.multiply([c, ct])
         dth = layers.multiply([d, dt])
 
-        z_th = tf.concat([ath, bth, cth, dth], axis=-1)  # [B, T, D*2]
-        z_th = self.dense3(z_th)  # [B, T, D]
+        z_th = tf.concat([ath, bth, cth, dth, Ath, Bth, Cth, Dth], axis=-1)  # [B, T, D*2]
+      
         z_th = self.norm1(z_th)
-        x = layers.multiply([x, z_th])  # Gate x with processed z
-
+        x = z_th
         x = self.dense1(x)
         x = self.norm2(x)
         f, ft = tf.split(x, num_or_size_splits=2, axis=-1)
@@ -198,17 +212,14 @@ encoder_input = Input(shape=(max_enc_len,), name='encoder_input')
 x_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(encoder_input)
 x_pos = LearnablePositionalEmbedding(max_enc_len, d_model)(x_emb)
 
-context_vector = SeProdBlock(d_model, dropout_rate=dropout_rate)(x_pos, training=True)
+context_vector = SeProdBlock(d_model, dropout_rate=dropout_rate)(x_pos, x_pos, training=True)
 
 # 디코더 경로
 decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
 y_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(decoder_input)
 y_pos = LearnablePositionalEmbedding(max_dec_len, d_model)(y_emb)
-decoder_output = SeProdBlock(d_model, dropout_rate=dropout_rate)(y_pos, training=True)
-
-cross = layers.Multiply()([decoder_output, context_vector])
-cross = layers.LayerNormalization()(cross)
-output = SeProdBlock(d_model, dropout_rate=dropout_rate)(cross, training=True)
+decoder_output = SeProdBlock(d_model, dropout_rate=dropout_rate)(y_pos, y_pos, training=True)
+output = SeProdBlock(d_model, dropout_rate=dropout_rate)(decoder_output, context_vector)
 
 # 최종 출력
 logits = layers.Dense(vocab_size)(output)
