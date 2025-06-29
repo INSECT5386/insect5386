@@ -188,7 +188,7 @@ class SeProdBlock(layers.Layer):
         x = multi4([x, z_th])
 
         x = self.dense1(x)
-        f, ft = tf.split(A2, num_or_size_splits=2, axis=-1)
+        f, ft = tf.split(x, num_or_size_splits=2, axis=-1)
         f = tf.nn.silu(f)
         output = self.multi5(f, ft)
         
