@@ -164,6 +164,7 @@ class SeProdBlock(layers.Layer):
         self.multi2 = layers.Multiply()
         self.multi3 = layers.Multiply()
         self.multi4 = layers.Multiply()
+        self.multi5 = layers.Multiply()
 
     def call(self, x, z, training=None):
         batch_size, seq_len, d_model = tf.shape(x)[0], tf.shape(x)[1], tf.shape(x)[2]
@@ -172,7 +173,7 @@ class SeProdBlock(layers.Layer):
 
         # ===== Reverse Block (GLU Style) =====
         A2 = self.dense2(z)  # [batch, seq, d_model * 2]
-        a, at, b, bt, c, ct, d, dt= tf.split(A2, num_or_size_splits=8, axis=-1)
+        a, at, b, bt, c, ct, d, dt = tf.split(A2, num_or_size_splits=8, axis=-1)
         a = tf.sigmoid(a)
         b = tf.nn.silu(b)
         c = tf.nn.gelu(c)
@@ -186,9 +187,12 @@ class SeProdBlock(layers.Layer):
         z_th = tf.concat([ath, bth, cth, dth], axis=-1)
         x = multi4([x, z_th])
 
-        # ===== Merge Output =====
-        combined = self.dense3(combined)
-        return combined
+        x = self.dense1(x)
+        f, ft = tf.split(A2, num_or_size_splits=2, axis=-1)
+        f = tf.nn.silu(f)
+        output = self.multi5(f, ft)
+        
+        return output
 
 d_model = 256
 dropout_rate = 0.1
