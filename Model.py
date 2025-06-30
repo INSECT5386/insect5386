@@ -196,10 +196,10 @@ class SeProdCore(layers.Layer):
         c = tf.nn.gelu(c)
         d = tf.nn.tanh(d)
 
-        A = tf.sigmoid(A)
+        A = tf.mish(A)
         B = tf.nn.silu(B)
         C = tf.nn.gelu(C)
-        D = tf.nn.tanh(D)
+        D = tf.nn.relu(D)
 
         Ath = layers.multiply([A, A1])
         Bth = layers.multiply([B, B1])
