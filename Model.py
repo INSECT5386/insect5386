@@ -177,50 +177,48 @@ class GLALayer(tf.keras.layers.Layer):
         out = tf.reshape(out, (B, T, D))
         return self.out_proj(out)
 
-class SeProdBlock(layers.Layer):
-    def __init__(self, dim, dropout_rate=0.1, **kwargs):
+import tensorflow as tf
+from tensorflow.keras import layers
+
+class TwiGLU(layers.Layer):
+    def __init__(self, dim, expansion=4, use_bias=True, **kwargs):
         super().__init__(**kwargs)
         self.dim = dim
-        self.dense1 = layers.Dense(dim * 2)
-        self.dense2 = layers.Dense(dim * 2)
-        self.dense = layers.Dense(dim)
-  
-        self.norm1 = layers.LayerNormalization()
-        self.norm2 = layers.LayerNormalization()
-        self.dropout = layers.Dropout(dropout_rate)
+        self.expansion = expansion
+        self.use_bias = use_bias
 
-    def call(self, x, training=None):
-        batch_size, seq_len, d_model = tf.shape(x)[0], tf.shape(x)[1], tf.shape(x)[2]
-        x = self.dense(x)
+        # Projection layers
+        self.up_proj = layers.Dense(dim * expansion, use_bias=use_bias)
+        self.down_proj = layers.Dense(dim, use_bias=use_bias)
 
-        # ===== Reverse Block (GLU Style) =====
-        A2 = self.dense2(x)  # [B, T, D*2]
-        splits = tf.split(A2, num_or_size_splits=8, axis=-1)
-        a, at, b, bt, c, ct, d, dt = splits
-        
-        a = tf.sigmoid(a)
-        b = tf.nn.silu(b)
-        c = tf.nn.gelu(c)
-        d = tf.nn.tanh(d)
+        # Normalization
+        self.norm = layers.LayerNormalization()
 
-        ath = layers.multiply([a, at])
-        bth = layers.multiply([b, bt])
-        cth = layers.multiply([c, ct])
-        dth = layers.multiply([d, dt])
+    def call(self, x):
+        residual = x
 
-        z_th = tf.concat([ath, bth, cth, dth], axis=-1)  # [B, T, D*2]
-      
-        z_th = self.norm1(z_th)
-        x = z_th
-        x = self.dense1(x)
-        x = self.norm2(x)
-        f, ft = tf.split(x, num_or_size_splits=2, axis=-1)
-        f = tf.nn.silu(f)
-        output = layers.multiply([f, ft])
+        # Up projection
+        x = self.up_proj(x)
 
-        return output
+        # Split for gating
+        a, b = tf.split(x, 2, axis=-1)
 
+        # TwiLU gate
+        gate = tf.math.tanh(tf.nn.silu(a))
 
+        # Gating
+        x = gate * b
+
+        # Optional normalization
+        x = self.norm(x)
+
+        # Down projection
+        x = self.down_proj(x)
+
+        # Residual connection
+        x = x + residual
+
+        return x
 
 d_model = 256
 dropout_rate = 0.1
@@ -230,15 +228,15 @@ encoder_input = Input(shape=(max_enc_len,), name='encoder_input')
 x_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(encoder_input)
 x_pos = LearnablePositionalEmbedding(max_enc_len, d_model)(x_emb)
 x_pos = GLALayer(d_model)(x_pos, x_pos)
-context_vector = SeProdBlock(d_model, dropout_rate=dropout_rate)(x_pos, training=True)
+context_vector = TwiGLU(d_model, dropout_rate=dropout_rate)(x_pos, training=True)
 
 # 디코더 경로
 decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
 y_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(decoder_input)
 y_pos = LearnablePositionalEmbedding(max_dec_len, d_model)(y_emb)
-decoder_output = SeProdBlock(d_model, dropout_rate=dropout_rate)(y_pos, training=True)
+decoder_output = TwiGLU(d_model, dropout_rate=dropout_rate)(y_pos, training=True)
 decoder_output = GLALayer(d_model)(decoder_output, context_vector)
-output = SeProdBlock(d_model, dropout_rate=dropout_rate)(decoder_output)
+output = TwiGLU(d_model, dropout_rate=dropout_rate)(decoder_output)
 
 # 최종 출력
 logits = layers.Dense(vocab_size)(output)
