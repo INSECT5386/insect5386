@@ -150,6 +150,24 @@ class LearnablePositionalEmbedding(layers.Layer):
         seq_len = tf.shape(inputs)[1]
         return self.add([inputs, self.pos_emb[tf.newaxis, :seq_len, :]])
 
+
+class SelectiveFilter(layers.Layer):
+    def __init__(self, d_model, expansion_factor=2, name='selective_filter', **kwargs):
+        super().__init__(name=name, **kwargs)
+        self.d_model = d_model
+        self.expand = layers.Dense(d_model * expansion_factor)
+        self.reduce = layers.Dense(d_model)
+        self.multi = layers.Multiply()
+
+    def call(self, x):
+        # [B, T, D] -> [B, T, D * 2]
+        x = self.expand(x)
+        val, gate = tf.split(x, 2, axis=-1)
+        gate = tf.sigmoid(gate)
+        x = self.multi([val, gate])
+        x = self.reduce(x)
+        return x
+
 class SeProdBlock(layers.Layer):
     def __init__(self, dim, dropout_rate=0.1, **kwargs):
         super().__init__(**kwargs)
@@ -177,7 +195,6 @@ class SeProdBlock(layers.Layer):
         b = tf.nn.silu(b)
         c = tf.nn.gelu(c)
         d = tf.nn.tanh(d)
-
 
         A = tf.sigmoid(A)
         B = tf.nn.silu(B)
