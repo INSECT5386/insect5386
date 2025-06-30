@@ -153,15 +153,17 @@ class GLALayer(tf.keras.layers.Layer):
         self.dim = dim
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
+        assert dim % num_heads == 0, f"dim({dim}) must be divisible by num_heads({num_heads})"
 
         self.q = tf.keras.layers.Dense(dim)
         self.kv = tf.keras.layers.Dense(dim * 2)
         self.out_proj = tf.keras.layers.Dense(dim)
 
-    def call(self, x, z):
-        B, T, D = tf.shape(x)[0], tf.shape(x)[1], tf.shape(x)[2]
+    def call(self, inputs, z, training=None):
+        B, T, D = tf.shape(inputs)[0], tf.shape(inputs)[1], tf.shape(inputs)[2]
         k, v = tf.split(self.kv(z), 2, axis=-1)
-        q = self.q(x)
+        q = self.q(inputs)
+
         # Split heads
         q = tf.reshape(q, (B, T, self.num_heads, self.head_dim))
         k = tf.reshape(k, (B, T, self.num_heads, self.head_dim))
