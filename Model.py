@@ -181,7 +181,7 @@ import tensorflow as tf
 from tensorflow.keras import layers
 
 class SwiGLU(layers.Layer):
-    def __init__(self, dim, expansion=4, use_bias=True, **kwargs):
+    def __init__(self, dim, expansion=1, use_bias=True, **kwargs):
         super().__init__(**kwargs)
         self.dim = dim
         self.expansion = expansion
@@ -206,7 +206,7 @@ class SwiGLU(layers.Layer):
         a, b = tf.split(x, 2, axis=-1)
 
         # TwiLU gate
-        gate = tf.nn.silu(a))
+        gate = tf.nn.swish(a))
 
         x = self.multiply([gate, b])
         # Optional normalization
