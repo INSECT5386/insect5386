@@ -308,8 +308,8 @@ def create_lr_schedule(initial_lr=5e-5, decay_steps=10000, decay_rate=0.9):
 # 모델 생성
 model = SeProd(
     vocab_size=vocab_size,
-    d_model=384,
-    n_layers=12
+    d_model=256,
+    n_layers=8
 )
 
 # 옵티마이저 설정
