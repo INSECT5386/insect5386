@@ -150,23 +150,6 @@ class LearnablePositionalEmbedding(layers.Layer):
         seq_len = tf.shape(inputs)[1]
         return self.add([inputs, self.pos_emb[tf.newaxis, :seq_len, :]])
 
-class SelectiveFilter(layers.Layer):
-    def __init__(self, d_model, expansion_factor=2, name='selective_filter', **kwargs):
-        super().__init__(name=name, **kwargs)
-        self.d_model = d_model
-        self.expand = layers.Dense(d_model * expansion_factor)
-        self.reduce = layers.Dense(d_model)
-        self.multi = layers.Multiply()
-
-    def call(self, x):
-        # [B, T, D] -> [B, T, D * 2]
-        x = self.expand(x)
-        val, gate = tf.split(x, 2, axis=-1)
-        gate = tf.sigmoid(gate)
-        x = self.multi([val, gate])
-        x = self.reduce(x)
-        return x
-
 class SeProdBlock(layers.Layer):
     def __init__(self, dim, dropout_rate=0.1, **kwargs):
         super().__init__(**kwargs)
@@ -230,16 +213,17 @@ dropout_rate = 0.1
 encoder_input = Input(shape=(max_enc_len,), name='encoder_input')
 x_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(encoder_input)
 x_pos = LearnablePositionalEmbedding(max_enc_len, d_model)(x_emb)
-x_pos = SelectiveFilter(d_model)(x_pos)
 context_vector = SeProdBlock(d_model, dropout_rate=dropout_rate)(x_pos, x_pos, training=True)
+context_vector_1 = SeProdBlock(d_model, dropout_rate=dropout_rate)(context_vector, context_vector)
 
 # 디코더 경로
 decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
 y_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(decoder_input)
 y_pos = LearnablePositionalEmbedding(max_dec_len, d_model)(y_emb)
-decoder_output = SeProdBlock(d_model, dropout_rate=dropout_rate)(y_pos, y_pos, training=True)
-decoder_output = SelectiveFilter(d_model)(decoder_output)
-output = SeProdBlock(d_model, dropout_rate=dropout_rate)(decoder_output, context_vector)
+d_output = SeProdBlock(d_model, dropout_rate=dropout_rate)(y_pos, y_pos, training=True)
+
+d_output_1 = SeProdBlock(d_model, dropout_rate=dropout_rate)(decoder_output, context_vector)
+output = SeProdBlock(d_output_1, context_vector_1)
 
 # 최종 출력
 logits = layers.Dense(vocab_size)(output)
