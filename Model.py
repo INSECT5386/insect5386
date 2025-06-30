@@ -180,7 +180,7 @@ class GLALayer(tf.keras.layers.Layer):
 import tensorflow as tf
 from tensorflow.keras import layers
 
-class TwiGLU(layers.Layer):
+class SwiGLU(layers.Layer):
     def __init__(self, dim, expansion=4, use_bias=True, **kwargs):
         super().__init__(**kwargs)
         self.dim = dim
@@ -193,6 +193,8 @@ class TwiGLU(layers.Layer):
 
         # Normalization
         self.norm = layers.LayerNormalization()
+        self.multiply = layers.Multiply()
+        self.add = layers.Add()
 
     def call(self, x):
         residual = x
@@ -204,19 +206,17 @@ class TwiGLU(layers.Layer):
         a, b = tf.split(x, 2, axis=-1)
 
         # TwiLU gate
-        gate = tf.math.tanh(tf.nn.silu(a))
+        gate = tf.nn.silu(a))
 
-        # Gating
-        x = gate * b
-
+        x = self.multiply([gate, b])
         # Optional normalization
         x = self.norm(x)
 
         # Down projection
         x = self.down_proj(x)
 
-        # Residual connection
-        x = x + residual
+        x = self.add([x, residual])
+
 
         return x
 
