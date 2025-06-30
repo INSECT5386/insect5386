@@ -168,7 +168,7 @@ class SelectiveFilter(layers.Layer):
         x = self.reduce(x)
         return x
 
-class SeProdBlock(layers.Layer):
+class SeProdCore(layers.Layer):
     def __init__(self, dim, dropout_rate=0.1, **kwargs):
         super().__init__(**kwargs)
         self.dim = dim
@@ -223,13 +223,29 @@ class SeProdBlock(layers.Layer):
 
         return output
 
+class Block(layers.Layer):
+    def __init__(self, d_model, **kwargs):
+        super().__init__(**kwargs)
+        self.d_model = d_model
+        self.core = SeProdCore(d_model)
+        self.filter = SelectiveFilter(d_model)
+        self.norm = tf.keras.layers.LayerNormalization()
+        self.norm1 = tf.keras.layers.LayerNormalization()
+        
+    def call(self, x):
+        x = self.core(x, x)
+        x = self.norm1(x)
+        x = self.filter(x)
+        x = self.norm(x)
+        return x
+
 # ======================= CobraModel ======================
 class SeProd(tf.keras.Model):
     def __init__(self, vocab_size, d_model, n_layers, dropout_rate=0.1):
         super().__init__()
         self.token_embedding = layers.Embedding(vocab_size, d_model)
         self.pos = LearnablePositionalEmbedding(max_len, d_model)
-        self.blocks = [SeProdBlock(d_model, dropout_rate) for _ in range(n_layers)]
+        self.blocks = [Block(d_model, dropout_rate) for _ in range(n_layers)]
         self.ln_f = layers.LayerNormalization(epsilon=1e-5)
 
     def call(self, x, training=False):
