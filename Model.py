@@ -236,7 +236,7 @@ context_vector = SeProdBlock(d_model, dropout_rate=dropout_rate)(x_pos, training
 decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
 y_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(decoder_input)
 y_pos = LearnablePositionalEmbedding(max_dec_len, d_model)(y_emb)
-decoder_output = GLALayer(d_model, dropout_rate=dropout_rate)(y_pos, y_pos, training=True)
+decoder_output = SeProdBlock(d_model, dropout_rate=dropout_rate)(y_pos, training=True)
 decoder_output = GLALayer(d_model)(decoder_output, context_vector)
 output = SeProdBlock(d_model, dropout_rate=dropout_rate)(decoder_output)
 
