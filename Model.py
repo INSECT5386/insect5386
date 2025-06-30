@@ -130,16 +130,14 @@ dataset = dataset.shuffle(10000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 print("dataset ok")
 
 
-import tensorflow as tf
-from tensorflow.keras import layers, Model, Input
-
+# ===== 1. 가변 위치 인코딩 =====
 class LearnablePositionalEmbedding(layers.Layer):
     def __init__(self, max_length, d_model, **kwargs):
         super().__init__(**kwargs)
         self.max_length = max_length
         self.d_model = d_model
         self.add = layers.Add()
-        pos_emb = tf.random_normal_initializer()(shape=[max_length, d_model])
+        pos_emb = RandomNormal()(shape=[max_length, d_model])
         self.pos_emb = tf.Variable(
             initial_value=pos_emb,
             trainable=True,
@@ -151,37 +149,33 @@ class LearnablePositionalEmbedding(layers.Layer):
         return self.add([inputs, self.pos_emb[tf.newaxis, :seq_len, :]])
 
 class SeProdBlock(layers.Layer):
-    def __init__(self, dim, num_heads=8, dropout_rate=0.1, **kwargs):
+    def __init__(self, dim, dropout_rate=0.1, **kwargs):
         super().__init__(**kwargs)
         self.dim = dim
-        self.num_heads = num_heads
-        self.head_dim = dim // num_heads
-        assert self.head_dim * num_heads == dim, "dim must be divisible by num_heads"
-
         self.dense1 = layers.Dense(dim)
         self.dense2 = layers.Dense(dim)
         self.dense = layers.Dense(dim)
-
+  
         self.norm1 = layers.LayerNormalization()
         self.norm2 = layers.LayerNormalization()
         self.dropout = layers.Dropout(dropout_rate)
 
     def call(self, x, z, training=None):
-        residual = x
+        batch_size, seq_len, d_model = tf.shape(x)[0], tf.shape(x)[1], tf.shape(x)[2]
         x = self.dense(x)
 
-        A2 = self.dense2(z)
-        splits = tf.split(A2, num_or_size_splits=self.num_heads, axis=-1)
+        # ===== Reverse Block (GLU Style) =====
+        A2 = self.dense2(z)  # [B, T, D*2]
+        splits = tf.split(A2, num_or_size_splits=8, axis=-1)
         a, at, b, bt, c, ct, d, dt = splits
-
-        splits1 = tf.split(x, num_or_size_splits=self.num_heads, axis=-1)
+        splits1 = tf.split(x, num_or_size_splits=8, axis=-1)
         A, A1, B, B1, C, C1, D, D1 = splits1
 
-        # 활성화 함수 적용
         a = tf.sigmoid(a)
         b = tf.nn.silu(b)
         c = tf.nn.gelu(c)
         d = tf.nn.tanh(d)
+
 
         A = tf.sigmoid(A)
         B = tf.nn.silu(B)
@@ -198,44 +192,39 @@ class SeProdBlock(layers.Layer):
         cth = layers.multiply([c, ct])
         dth = layers.multiply([d, dt])
 
-        z_th = tf.concat([ath, bth, cth, dth, Ath, Bth, Cth, Dth], axis=-1)
+        z_th = tf.concat([ath, bth, cth, dth, Ath, Bth, Cth, Dth], axis=-1)  # [B, T, D*2]
+      
         z_th = self.norm1(z_th)
         x = z_th
-
         x = self.dense1(x)
         x = self.norm2(x)
         f, ft = tf.split(x, num_or_size_splits=2, axis=-1)
         f = tf.nn.silu(f)
         output = layers.multiply([f, ft])
 
-        output = layers.Add()([residual, output])  # Residual connection
         return output
 
-# ===== 모델 구성 =====
 d_model = 256
 dropout_rate = 0.1
-
+# ===== 모델 구성 =====
 # 인코더 경로
 encoder_input = Input(shape=(max_enc_len,), name='encoder_input')
 x_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(encoder_input)
 x_pos = LearnablePositionalEmbedding(max_enc_len, d_model)(x_emb)
-context_vector = SeProdBlock(d_model, name='encoder_block')(x_pos, x_pos)
+
+context_vector = SeProdBlock(d_model, dropout_rate=dropout_rate)(x_pos, x_pos, training=True)
 
 # 디코더 경로
 decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
 y_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(decoder_input)
 y_pos = LearnablePositionalEmbedding(max_dec_len, d_model)(y_emb)
-decoder_output = SeProdBlock(d_model, name='decoder_self_block')(y_pos, y_pos)
-output = SeProdBlock(d_model, name='decoder_cross_block')(decoder_output, context_vector)
+decoder_output = SeProdBlock(d_model, dropout_rate=dropout_rate)(y_pos, y_pos, training=True)
+output = SeProdBlock(d_model, dropout_rate=dropout_rate)(decoder_output, context_vector)
 
 # 최종 출력
-logits = layers.Dense(vocab_size, name='logits')(output)
+logits = layers.Dense(vocab_size)(output)
 
-model = Model(
-    inputs=[encoder_input, decoder_input],
-    outputs=logits,
-    name='SeProd'
-)
+model = Model(inputs=[encoder_input, decoder_input], outputs=logits, name='SeProd')
 
 # ===== 컴파일 및 학습 =====
 model.compile(
