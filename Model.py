@@ -220,6 +220,7 @@ class Cobrablock(tf.keras.layers.Layer):
 
         self.norm2 = layers.LayerNormalization(epsilon=1e-5)
         self.dropout2 = layers.Dropout(dropout_rate)
+        self.add = layers.Add()
 
     def call(self, x, training=False):
         residual = x
@@ -230,7 +231,7 @@ class Cobrablock(tf.keras.layers.Layer):
         residual = x
         x = self.norm2(x)
         x = self.dropout2(x, training=training)
-        x = residual + x
+        x = self.add([residual, x])
 
         return x
 
@@ -301,8 +302,8 @@ def create_lr_schedule(initial_lr=5e-5, decay_steps=10000, decay_rate=0.9):
 # 모델 생성
 model = CobraModel(
     vocab_size=vocab_size,
-    d_model=384,
-    n_layers=12
+    d_model=256,
+    n_layers=1
 )
 
 # 옵티마이저 설정
