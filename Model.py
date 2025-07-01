@@ -166,7 +166,7 @@ class RealMambaCore(tf.keras.layers.Layer):
 
     def fft_convolve(self, u_t, kernel_t, T):
         pad_len = T - 1
-        seq_len = self.add([T, pad_len])
+        seq_len = T + pad_len
         fft_len_float = tf.math.ceil(tf.math.log(tf.cast(seq_len, tf.float32)) / tf.math.log(2.0))
         fft_len = tf.cast(2 ** fft_len_float, tf.int32)
 
