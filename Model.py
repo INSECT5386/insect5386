@@ -127,11 +127,13 @@ class SimpleFFN(tf.keras.layers.Layer):
         self.gate_proj = layers.Dense(dim)
         self.up_proj = layers.Dense(dim)
         self.down_proj = layers.Dense(dim)
+        self.mul = layers.Multiply()
 
     def call(self, x):
         gate = tf.nn.silu(self.gate_proj(x))
         up = self.up_proj(x)
-        return self.down_proj(gate * up)
+        z = self.mul([gate, up])
+        return self.down_proj(z)
 
 # ==================== RealMambaCore =====================
 class RealMambaCore(tf.keras.layers.Layer):
