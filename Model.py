@@ -201,16 +201,6 @@ class GMLPBlock(layers.Layer):
         x = self.down_proj(x)
         return self.add([x, inputs])  # Residual connection
 
-class output(layers.Layer):
-    def __init__(self, dim, expansion_factor=1, **kwargs):
-        super().__init__(**kwargs)
-        self.W = layers.Dense(128)
-    def call(self, x, z):
-        output = tf.concat([x, z], axis=-1)
-        Y = self.W(output)
-        output = tf.nn.gelu(Y)
-        return output
-
 
 d_model = 256
 dropout_rate = 0.1
@@ -218,17 +208,21 @@ dropout_rate = 0.1
 # 인코더 경로
 encoder_input = Input(shape=(max_enc_len,), name='encoder_input')
 x_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(encoder_input)
-x_pos = LearnablePositionalEmbedding(max_enc_len, d_model)(x_emb)
-context_vector = GMLPBlock(d_model)(x_pos)
+# 인코더 경로
+x = LearnablePositionalEmbedding(max_enc_len, d_model)(x_emb)
+for _ in range(4):  # 인코더 블록 반복
+    x = GMLPBlock(d_model)(x)
+context_vector = x
 
-# 디코더 경로
 decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
 y_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(decoder_input)
-y_pos = LearnablePositionalEmbedding(max_dec_len, d_model)(y_emb)
-decoder_output = GMLPBlock(d_model)(y_pos)
-decoder_output_1 = GLALayer(d_model)(decoder_output, context_vector)
-output = output(d_model)(decoder_output, decoder_output_1)
+# 디코더 경로
+y = LearnablePositionalEmbedding(max_dec_len, d_model)(y_emb)
+for _ in range(4):  # 디코더 블록 반복
+    y = GMLPBlock(d_model)(y)
+    y = GLALayer(d_model)(y, context_vector)
 
+output = y
 logits = layers.Dense(vocab_size)(output)
 
 model = Model(inputs=[encoder_input, decoder_input], outputs=logits, name='SeProd')
