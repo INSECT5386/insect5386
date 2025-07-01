@@ -49,7 +49,7 @@ for conversations in df["conversations"]:
             response = item2.get("value", "").strip().replace("\n", " ")
             full = f"<start> {prompt} <sep> {response} <end>"
             train_sentences.append(full)
-train_sentences = train_sentences[:100000] # 예제용 소량
+train_sentences = train_sentences[:200000] # 예제용 소량
 print(f"총 문장 개수: {len(train_sentences)}")
 
 # ⬇️ 토크나이저 불러오기
@@ -154,7 +154,7 @@ class GLALayer(tf.keras.layers.Layer):
         self.dim = dim
         self.mul = layers.Multiply()
         self.add = layers.Add()
-        self.Wo = self.add_weight(shape=(dim,), initializer='random_normal', trainable=True, name="Wo")
+        self.Wo = layers.Dense(dim)
         self.norm = layers.LayerNormalization()
 
     def call(self, inputs, context):
@@ -201,6 +201,16 @@ class GMLPBlock(layers.Layer):
         x = self.down_proj(x)
         return self.add([x, inputs])  # Residual connection
 
+class output(layers.Layer):
+    def __init__(self, dim, expansion_factor=1, **kwargs):
+        super().__init__(**kwargs)
+        self.W = layers.Dense(128)
+    def call(self, x, z):
+        output = tf.concat([x, z], axis=-1)
+        Y = self.W(output)
+        output = tf.nn.gelu(Y)
+        return output
+
 
 d_model = 256
 dropout_rate = 0.1
@@ -216,10 +226,9 @@ decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
 y_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(decoder_input)
 y_pos = LearnablePositionalEmbedding(max_dec_len, d_model)(y_emb)
 decoder_output = GMLPBlock(d_model)(y_pos)
-decoder_output = GLALayer(d_model)(decoder_output, context_vector)
-output = GMLPBlock(d_model)(decoder_output)
+decoder_output_1 = GLALayer(d_model)(decoder_output, context_vector)
+output = output(d_model)(decoder_output, decoder_output_1)
 
-# 최종 출력
 logits = layers.Dense(vocab_size)(output)
 
 model = Model(inputs=[encoder_input, decoder_input], outputs=logits, name='SeProd')
@@ -302,4 +311,3 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
 input_text = "회의록을 요약해 주세요."
 response = generate(model, sp, input_text, temperature=0.7, verbose=True)
 print("AI Response:", response)
-
