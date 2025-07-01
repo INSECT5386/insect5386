@@ -154,7 +154,7 @@ class GLALayer(tf.keras.layers.Layer):
         self.dim = dim
         self.mul = layers.Multiply()
         self.add = layers.Add()
-        self.Wo = layers.Dense(dim)
+        self.Wo = self.add_weight(shape=(dim,), initializer='random_normal', trainable=True, name="Wo")
         self.norm = layers.LayerNormalization()
 
     def call(self, inputs, context):
