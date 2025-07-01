@@ -160,7 +160,7 @@ class CobraModel(tf.keras.Model):
     def __init__(self, vocab_size, d_model, n_layers, dropout_rate=0.1):
         super().__init__()
         self.token_embedding = layers.Embedding(vocab_size, d_model)
-        self.blocks = [GMLPBlock(d_model, dropout_rate) for _ in range(n_layers)]
+        self.blocks = [GMLPBlock(d_model) for _ in range(n_layers)]
         self.ln_f = layers.LayerNormalization(epsilon=1e-5)
 
     def call(self, x, training=False):
