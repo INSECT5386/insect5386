@@ -149,35 +149,23 @@ class LearnablePositionalEmbedding(layers.Layer):
 
 
 class GLALayer(tf.keras.layers.Layer):
-    def __init__(self, dim, num_heads=8, **kwargs):
+    def __init__(self, dim, **kwargs):
         super().__init__(**kwargs)
         self.dim = dim
-        self.num_heads = num_heads
-        self.head_dim = dim // num_heads
-        assert dim % num_heads == 0, f"dim({dim}) must be divisible by num_heads({num_heads})"
+        self.mul = layers.Multiply()
+        self.add = layers.Add()
+        self.Wo = layers.Dense(dim)
+        self.norm = layers.LayerNormalization()
 
-        self.q = tf.keras.layers.Dense(dim)
-        self.kv = tf.keras.layers.Dense(dim * 2)
-        self.out_proj = tf.keras.layers.Dense(dim)
-
-    def call(self, inputs, z, training=None):
-        B, T, D = tf.shape(inputs)[0], tf.shape(inputs)[1], tf.shape(inputs)[2]
-        k, v = tf.split(self.kv(z), 2, axis=-1)
-        q = self.q(inputs)
-
-        # Split heads
-        q = tf.reshape(q, (B, T, self.num_heads, self.head_dim))
-        k = tf.reshape(k, (B, T, self.num_heads, self.head_dim))
-        v = tf.reshape(v, (B, T, self.num_heads, self.head_dim))
-
-        # Global latent attention
-        k = tf.nn.softmax(k, axis=1)
-        context = tf.einsum('bthd,bthv->bhdv', k, v)
-        out = tf.einsum('bthd,bhdv->bthv', q, context)
-
-        out = tf.reshape(out, (B, T, D))
-        return self.out_proj(out)
-
+    def call(self, inputs, context):
+        x = inputs
+        z = context
+        T_s = self.mul([x, z])
+        attn = tf.nn.softmax(T_s, axis=-1)
+        output = self.add([attn, x])
+        output = self.Wo(output)
+        return output
+       
 
 class SpatialGatingUnit(layers.Layer):
     def __init__(self, dim, **kwargs):
@@ -315,3 +303,4 @@ def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=Fa
 input_text = "회의록을 요약해 주세요."
 response = generate(model, sp, input_text, temperature=0.7, verbose=True)
 print("AI Response:", response)
+
