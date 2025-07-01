@@ -121,126 +121,46 @@ dataset = dataset.shuffle(10000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 print("✅ TF Dataset 생성 완료!")
 
 
-class SimpleFFN(tf.keras.layers.Layer):
-    def __init__(self, dim):
-        super().__init__()
-        self.gate_proj = layers.Dense(dim)
-        self.up_proj = layers.Dense(dim)
-        self.down_proj = layers.Dense(dim)
-        self.mul = layers.Multiply()
-
-    def call(self, x):
-        gate = tf.nn.silu(self.gate_proj(x))
-        up = self.up_proj(x)
-        z = self.mul([gate, up])
-        return self.down_proj(z)
-
-# ==================== RealMambaCore =====================
-class RealMambaCore(tf.keras.layers.Layer):
-    def __init__(self, hidden_dim):
-        super().__init__()
-        self.hidden_dim = hidden_dim
-        
-        self.ffn = SimpleFFN(hidden_dim)  # 또는 'tanh'
-
-        self.gate_proj = layers.Dense(hidden_dim)
-        self.input_proj = layers.Dense(hidden_dim)
-
-        self.A = self.add_weight(shape=(hidden_dim,),
-                                 initializer=tf.keras.initializers.RandomNormal(mean=-0.5, stddev=0.1),
-                                 trainable=True, name="A")
-        self.B = self.add_weight(shape=(hidden_dim,),
-                                 initializer='random_normal',
-                                 trainable=True, name="B")
-        self.C = self.add_weight(shape=(hidden_dim,),
-                                 initializer='random_normal',
-                                 trainable=True, name="C")
-        self.D = self.add_weight(shape=(hidden_dim,),
-                                 initializer='zeros',
-                                 trainable=True, name="D")
-
+class SpatialGatingUnit(layers.Layer):
+    def __init__(self, dim, **kwargs):
+        super().__init__(**kwargs)
+        self.dim = dim
         self.norm = layers.LayerNormalization()
-        self.output_proj = layers.Dense(hidden_dim)
-        self.add = layers.Add()
+        self.gate = layers.Dense(dim)
         self.mul = layers.Multiply()
 
-    def fft_convolve(self, u_t, kernel_t, T):
-        pad_len = T - 1
-        seq_len = T + pad_len
-        fft_len_float = tf.math.ceil(tf.math.log(tf.cast(seq_len, tf.float32)) / tf.math.log(2.0))
-        fft_len = tf.cast(2 ** fft_len_float, tf.int32)
+    def call(self, inputs):
+        # inputs shape: (batch_size, seq_len, dim)
+        x = self.norm(inputs)
+        gate_values = self.gate(x)  # (batch_size, seq_len, dim)
+        return self.mul([inputs, gate_values])  # element-wise multiplication
 
-        u_padded = tf.pad(u_t, [[0, 0], [0, 0], [pad_len, fft_len - seq_len]])
-        K_padded = tf.pad(kernel_t, [[0, 0], [0, fft_len - T]])
-
-        U_f = tf.signal.fft(tf.cast(tf.complex(u_padded, 0.0), tf.complex64))
-        K_f = tf.signal.fft(tf.cast(tf.complex(K_padded, 0.0), tf.complex64))
-        Y_f = U_f * tf.expand_dims(K_f, 0)
-        y_full = tf.signal.ifft(Y_f)
-        y_real = tf.math.real(y_full)[..., pad_len:pad_len + T]
-
-        return y_real
-
-    def call(self, x):
-        B = tf.shape(x)[0]
-        T = tf.shape(x)[1]
-        D = self.hidden_dim
-
-        gate = tf.nn.silu(self.gate_proj(x))
-        x_proj = self.input_proj(x)
-        u = self.mul([gate, x_proj])
-
-        time_idx = tf.cast(tf.range(T), dtype=self.A.dtype)[:, None]
-        A_pow = tf.pow(tf.expand_dims(self.A, 0), time_idx)
-        kernel = self.mul([self.B, A_pow])
-        
-        u_t = tf.transpose(u, [0, 2, 1])
-        kernel_t = tf.transpose(kernel, [1, 0])
-
-        y_real = self.fft_convolve(u_t, kernel_t, T)
-        y = tf.transpose(y_real, [0, 2, 1])
-
-        y = self.mul([self.C, y])
-        y1 = self.mul([self.D, u])
-        y = self.add([y, y1])
-
-        y = self.norm(y)
-        y = self.ffn(y)
-        y = self.output_proj(y)
-
-        return y
-
-# ======================= Cobrablock ======================
-class Cobrablock(tf.keras.layers.Layer):
-    def __init__(self, d_model, dropout_rate=0.1):
-        super().__init__()
-        self.norm1 = layers.LayerNormalization(epsilon=1e-5)
-        self.mamba = RealMambaCore(d_model)
-        self.dropout1 = layers.Dropout(dropout_rate)
-
-        self.norm2 = layers.LayerNormalization(epsilon=1e-5)
-        self.dropout2 = layers.Dropout(dropout_rate)
+class GMLPBlock(layers.Layer):
+    def __init__(self, dim, expansion_factor=4, **kwargs):
+        super().__init__(**kwargs)
+        self.dim = dim
+        self.expansion_factor = expansion_factor
+        self.norm = layers.LayerNormalization()
+        self.up_proj = layers.Dense(dim * expansion_factor)
+        self.act = layers.Activation('gelu')
+        self.sgu = SpatialGatingUnit(dim)
+        self.down_proj = layers.Dense(dim)
         self.add = layers.Add()
 
-    def call(self, x, training=False):
-        residual = x
-        x = self.norm1(x)
-        x = self.mamba(x)
-        x = residual + self.dropout1(x, training=training)
-
-        residual = x
-        x = self.norm2(x)
-        x = self.dropout2(x, training=training)
-        x = self.add([residual, x])
-
-        return x
+    def call(self, inputs):
+        x = self.norm(inputs)
+        x = self.up_proj(x)
+        x = self.act(x)
+        x = self.sgu(x)
+        x = self.down_proj(x)
+        return self.add([x, inputs])  # Residual connection
 
 # ======================= CobraModel ======================
 class CobraModel(tf.keras.Model):
     def __init__(self, vocab_size, d_model, n_layers, dropout_rate=0.1):
         super().__init__()
         self.token_embedding = layers.Embedding(vocab_size, d_model)
-        self.blocks = [Cobrablock(d_model, dropout_rate) for _ in range(n_layers)]
+        self.blocks = [GMLPBlock(d_model, dropout_rate) for _ in range(n_layers)]
         self.ln_f = layers.LayerNormalization(epsilon=1e-5)
 
     def call(self, x, training=False):
