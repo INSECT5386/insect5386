@@ -209,7 +209,6 @@ dropout_rate = 0.1
 encoder_input = Input(shape=(max_enc_len,), name='encoder_input')
 x_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(encoder_input)
 x_pos = LearnablePositionalEmbedding(max_enc_len, d_model)(x_emb)
-x_pos = GLALayer(d_model)(x_pos, x_pos)
 context_vector = GMLPBlock(d_model)(x_pos)
 
 # 디코더 경로
