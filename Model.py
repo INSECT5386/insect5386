@@ -175,7 +175,7 @@ class RealMambaCore(tf.keras.layers.Layer):
 
         U_f = tf.signal.fft(tf.cast(tf.complex(u_padded, 0.0), tf.complex64))
         K_f = tf.signal.fft(tf.cast(tf.complex(K_padded, 0.0), tf.complex64))
-        Y_f = self.mul([U_f, tf.expand_dims(K_f, 0)])
+        Y_f = U_f * tf.expand_dims(K_f, 0)
         y_full = tf.signal.ifft(Y_f)
         y_real = tf.math.real(y_full)[..., pad_len:pad_len + T]
 
