@@ -135,8 +135,7 @@ class LearnablePositionalEmbedding(layers.Layer):
         super().__init__(**kwargs)
         self.max_length = max_length
         self.d_model = d_model
-        self.add = layers.Add()
-        pos_emb = RandomNormal()(shape=[max_length, d_model])
+        pos_emb = tf.random.normal(shape=[max_length, d_model])
         self.pos_emb = tf.Variable(
             initial_value=pos_emb,
             trainable=True,
@@ -145,44 +144,38 @@ class LearnablePositionalEmbedding(layers.Layer):
 
     def call(self, inputs):
         seq_len = tf.shape(inputs)[1]
-        return self.add([inputs, self.pos_emb[tf.newaxis, :seq_len, :]])
+        return inputs + self.pos_emb[tf.newaxis, :seq_len, :]
 
 
-class GLALayer(tf.keras.layers.Layer):
+class GLALayer(layers.Layer):
     def __init__(self, dim, **kwargs):
         super().__init__(**kwargs)
         self.dim = dim
-        self.mul = layers.Multiply()
-        self.add = layers.Add()
         self.Wo = layers.Dense(dim)
         self.norm = layers.LayerNormalization()
 
     def call(self, inputs, context):
-        x = inputs
-        z = context
-        T_s = self.mul([x, z])
+        x = self.norm(inputs)
+        z = self.norm(context)
+        T_s = tf.einsum('bnd,bnd->bnd', x, z)  # 내적 기반 어텐션 유사 연산
         attn = tf.nn.softmax(T_s, axis=-1)
-        output = self.add([attn, x])
+        output = x * attn
         output = self.Wo(output)
-        return output
-       
+        return x + output  # Residual
+
 
 class SpatialGatingUnit(layers.Layer):
     def __init__(self, dim, **kwargs):
         super().__init__(**kwargs)
-        self.dim = dim
-        self.norm = layers.LayerNormalization()
         self.gate = layers.Dense(dim)
-        self.mul = layers.Multiply()
 
     def call(self, inputs):
-        # inputs shape: (batch_size, seq_len, dim)
-        x = self.norm(inputs)
-        gate_values = self.gate(x)  # (batch_size, seq_len, dim)
-        return self.mul([inputs, gate_values])  # element-wise multiplication
+        gate_values = self.gate(inputs)
+        return inputs * tf.sigmoid(gate_values)  # Sigmoid gating
+
 
 class GMLPBlock(layers.Layer):
-    def __init__(self, dim, expansion_factor=1, **kwargs):
+    def __init__(self, dim, expansion_factor=2, **kwargs):
         super().__init__(**kwargs)
         self.dim = dim
         self.expansion_factor = expansion_factor
@@ -191,7 +184,6 @@ class GMLPBlock(layers.Layer):
         self.act = layers.Activation('gelu')
         self.sgu = SpatialGatingUnit(dim)
         self.down_proj = layers.Dense(dim)
-        self.add = layers.Add()
 
     def call(self, inputs):
         x = self.norm(inputs)
@@ -199,42 +191,49 @@ class GMLPBlock(layers.Layer):
         x = self.act(x)
         x = self.sgu(x)
         x = self.down_proj(x)
-        return self.add([x, inputs])  # Residual connection
+        return x + inputs  # Residual
 
-class output(layers.Layer):
-    def __init__(self, dim, expansion_factor=1, **kwargs):
+
+class OutputLayer(layers.Layer):
+    def __init__(self, dim, **kwargs):
         super().__init__(**kwargs)
-        self.W = layers.Dense(128)
-    def call(self, x, z):
-        output = tf.concat([x, z], axis=-1)
-        Y = self.W(output)
-        output = tf.nn.gelu(Y)
-        return output
+        self.proj = layers.Dense(dim)
 
-d_model = 256
-dropout_rate = 0.1
-nl = 4
+    def call(self, x, z):
+        return self.proj(x + z)  # 간단한 residual projection
+
+
 # ===== 모델 구성 =====
+d_model = 256
+vocab_size = 48000
+max_enc_len = 128
+max_dec_len = 128
+nl = 4  # 블록 반복 수
+
 # 인코더 경로
 encoder_input = Input(shape=(max_enc_len,), name='encoder_input')
 x_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(encoder_input)
-# 인코더 경로
 x = LearnablePositionalEmbedding(max_enc_len, d_model)(x_emb)
-for _ in range(nl):  # 인코더 블록 반복
-    x = GMLPBlock(d_model)(x)
+
+gmlp_blocks = [GMLPBlock(d_model) for _ in range(nl)]
+for block in gmlp_blocks:
+    x = block(x)
 context_vector = x
 
+# 디코더 경로
 decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
 y_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(decoder_input)
-# 디코더 경로
 y = LearnablePositionalEmbedding(max_dec_len, d_model)(y_emb)
-for _ in range(nl):  # 디코더 블록 반복
-    z = GMLPBlock(d_model)(y)
-    y = GLALayer(d_model)(z, context_vector)
-    y = output(d_model)(z, y)
 
-output = y
-logits = layers.Dense(vocab_size)(output)
+gla_layers = [GLALayer(d_model) for _ in range(nl)]
+output_layers = [OutputLayer(d_model) for _ in range(nl)]
+
+for gla, out in zip(gla_layers, output_layers):
+    z = GMLPBlock(d_model)(y)
+    gla_out = gla(z, context_vector)
+    y = out(z, gla_out)
+
+logits = layers.Dense(vocab_size, dtype='float32')(y)  # mixed precision 보완
 
 model = Model(inputs=[encoder_input, decoder_input], outputs=logits, name='SeProd')
 
