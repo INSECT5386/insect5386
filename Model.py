@@ -225,7 +225,7 @@ for _ in range(4):  # 디코더 블록 반복
     y = GMLPBlock(d_model)(y)
     y = GLALayer(d_model)(y, context_vector)
 
-output = y
+output = layers.Dense(d_model, activation='gelu')(y)
 logits = layers.Dense(vocab_size)(output)
 
 model = Model(inputs=[encoder_input, decoder_input], outputs=logits, name='SeProd')
