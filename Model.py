@@ -130,22 +130,56 @@ dataset = tf.data.Dataset.from_generator(
 dataset = dataset.shuffle(10000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 print("dataset ok")
 
+
+import tensorflow as tf
+from tensorflow.keras import layers, Model, Input
+
+# ===== 레이어 정의 시작 =====
+
 class LearnablePositionalEmbedding(layers.Layer):
     def __init__(self, max_length, d_model, **kwargs):
         super().__init__(**kwargs)
         self.max_length = max_length
         self.d_model = d_model
         self.add = layers.Add()
-        pos_emb = RandomNormal()(shape=[max_length, d_model])
-        self.pos_emb = tf.Variable(
-            initial_value=pos_emb,
+
+    def build(self, input_shape):
+        self.pos_emb = self.add_weight(
+            shape=(self.max_length, self.d_model),
+            initializer='random_normal',
             trainable=True,
             name='positional_embedding'
         )
 
     def call(self, inputs):
         seq_len = tf.shape(inputs)[1]
-        return self.add([inputs, self.pos_emb[tf.newaxis, :seq_len, :]])
+        return self.add([
+            inputs,
+            self.pos_emb[tf.newaxis, :seq_len, :]
+        ])
+
+
+class SharedWeightDense(layers.Layer):
+    def __init__(self, shared_embeddings, use_bias=True, **kwargs):
+        super().__init__(**kwargs)
+        self.shared_embeddings = shared_embeddings
+        self.use_bias = use_bias
+
+    def build(self, input_shape):
+        if self.use_bias:
+            self.bias = self.add_weight(
+                shape=(self.shared_embeddings.input_dim,),
+                initializer="zeros",
+                name="bias"
+            )
+        else:
+            self.bias = None
+
+    def call(self, inputs):
+        logits = tf.matmul(inputs, self.shared_embeddings.weights[0], transpose_b=True)
+        if self.bias is not None:
+            logits = logits + self.bias
+        return logits
 
 
 class GLALayer(tf.keras.layers.Layer):
@@ -155,29 +189,20 @@ class GLALayer(tf.keras.layers.Layer):
         self.gate_proj = layers.Dense(dim)
         self.sigmoid = tf.keras.activations.sigmoid
         self.Wo = layers.Dense(dim)
+        self.act = layers.Activation('gelu')
 
     def call(self, inputs, context):
-        """
-        inputs: 디코더 입력 (B, Tq, dim)
-        context: 인코더 문맥 (B, Tk, dim)
-        """
-        # gate signal 생성
         gate_signal = self.gate_proj(context)  # (B, Tk, dim)
+        gate_signal = self.act(gate_signal)
 
         # QK 유사도 대신 단순 내적
         attn_weights = tf.einsum('bkd,bqd->bkq', gate_signal, inputs)
-        # => (B, Tk, Tq), softmax 후에는 (B, Tk, Tq): 각 문맥 토큰이 입력에 미치는 영향
-
-        # Softmax 적용
-        attn_weights = tf.nn.softmax(attn_weights, axis=1)  # Tk 방향으로 softmax
+        attn_weights = tf.nn.softmax(attn_weights, axis=1)
 
         # 가중합
         output = tf.einsum('bkq,bkd->bqd', attn_weights, context)
-        # => (B, Tq, dim)
-
-        # Output projection
         return self.Wo(output)
-       
+
 
 class SpatialGatingUnit(layers.Layer):
     def __init__(self, dim, **kwargs):
@@ -188,13 +213,13 @@ class SpatialGatingUnit(layers.Layer):
         self.mul = layers.Multiply()
 
     def call(self, inputs):
-        # inputs shape: (batch_size, seq_len, dim)
         x = self.norm(inputs)
-        gate_values = self.gate(x)  # (batch_size, seq_len, dim)
-        return self.mul([inputs, gate_values])  # element-wise multiplication
+        gate_values = self.gate(x)
+        return self.mul([inputs, gate_values])
+
 
 class GMLPBlock(layers.Layer):
-    def __init__(self, dim, expansion_factor=1, **kwargs):
+    def __init__(self, dim, expansion_factor=4, **kwargs):
         super().__init__(**kwargs)
         self.dim = dim
         self.expansion_factor = expansion_factor
@@ -211,42 +236,48 @@ class GMLPBlock(layers.Layer):
         x = self.act(x)
         x = self.sgu(x)
         x = self.down_proj(x)
-        return self.add([x, inputs])  # Residual connection
+        return self.add([x, inputs])
 
-class MatmulBlock(layers.Layer):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.matmul = tf.matmul
 
-    def call(self, x, emb):
-        output = self.matmul(x, emb.embedding, transpose_b=True)
-        return output
-                             
+# ===== 모델 구성 시작 =====
 d_model = 256
-dropout_rate = 0.1
-# ===== 모델 구성 =====
+
 # 인코더 경로
 encoder_input = Input(shape=(max_enc_len,), name='encoder_input')
 x_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(encoder_input)
-# 인코더 경로
-x = LearnablePositionalEmbedding(max_enc_len, d_model)(x_emb)
-for _ in range(4):  # 인코더 블록 반복
-    x = GMLPBlock(d_model)(x)
-context_vector = x
+x_pos = LearnablePositionalEmbedding(max_enc_len, d_model)(x_emb)
 
+# 인코더 블록 반복
+for _ in range(4):
+    x_pos = GMLPBlock(d_model)(x_pos)
+
+context_vector = x_pos
+
+# 디코더 경로
 decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
 y_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(decoder_input)
-# 디코더 경로
-y = LearnablePositionalEmbedding(max_dec_len, d_model)(y_emb)
-for _ in range(4):  # 디코더 블록 반복
+y_pos = LearnablePositionalEmbedding(max_dec_len, d_model)(y_emb)
+
+# 디코더 블록 반복 + GLA 적용
+y = y_pos
+for _ in range(4):
     y = GMLPBlock(d_model)(y)
     y = GLALayer(d_model)(y, context_vector)
 
+# 출력 처리
 output = layers.Dense(128)(y)
 output = layers.Activation(tf.nn.gelu)(output)
-logits = MatmulBlock()(output, y_emb)
 
-model = Model(inputs=[encoder_input, decoder_input], outputs=logits, name='SeProd')
+# 로짓 계산 (임베딩 가중치 공유 + bias 포함)
+logits = SharedWeightDense(y_emb, use_bias=True)(output)
+
+# 모델 정의
+model = Model(
+    inputs=[encoder_input, decoder_input],
+    outputs=logits,
+    name='SeProd'
+)
+
 
 # ===== 컴파일 및 학습 =====
 model.compile(
