@@ -156,20 +156,20 @@ class GLALayer(layers.Layer):
         self.Wkv = layers.Dense(dim)
         self.norm = layers.LayerNormalization()
         self.add = layers.Add()
-        self.mul = layers.Multiply()
+        self.o = layers.Dense(dim)
 
     def call(self, inputs, context):
-        x = self.W(x)
+        x = self.W(inputs)
         z = self.Wkv(context)
         q = x
-        k, v = tf.split(z, 2, axis=-1))
+        k, v = tf.split(z, 2, axis=-1)
         k = tf.nn.gelu(k)
         v = tf.nn.tanh(v)
-        c = tf.concat([k, q])
+        c = tf.concat([k, q], axis=-1)
         attn = tf.nn.softmax(c, axis=-1)
-        output = self.mul([v, attn])
-        output = self.Wo(output)
-        return self.add([q, output])  # Residual
+        output = tf.concat([v, attn], axis=-1)
+        o = self.o(output)
+        return self.add([q, o])  # Residual
 
 
 class SpatialGatingUnit(layers.Layer):
