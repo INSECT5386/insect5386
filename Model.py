@@ -136,17 +136,21 @@ class LearnablePositionalEmbedding(layers.Layer):
         self.max_length = max_length
         self.d_model = d_model
         self.add = layers.Add()
-        pos_emb = RandomNormal()(shape=[max_length, d_model])
-        self.pos_emb = tf.Variable(
-            initial_value=pos_emb,
+
+    def build(self, input_shape):
+        self.pos_emb = self.add_weight(
+            shape=(self.max_length, self.d_model),
+            initializer='random_normal',
             trainable=True,
             name='positional_embedding'
         )
 
     def call(self, inputs):
         seq_len = tf.shape(inputs)[1]
-        return self.add([inputs, self.pos_emb[tf.newaxis, :seq_len, :]])
-
+        return self.add([
+            inputs,
+            self.pos_emb[tf.newaxis, :seq_len, :]
+        ])
 
 class GLALayer(tf.keras.layers.Layer):
     def __init__(self, dim, **kwargs):
