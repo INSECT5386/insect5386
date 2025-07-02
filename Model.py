@@ -173,73 +173,26 @@ class LearnablePositionalEmbedding(layers.Layer):
         seq_len = tf.shape(inputs)[1]
         return self.add([inputs, self.pos_emb[tf.newaxis, :seq_len, :]])
 
-
-class GLALayer(tf.keras.layers.Layer):
-    def __init__(self, dim, **kwargs):
-        super().__init__(**kwargs)
-        self.dim = dim
-        self.mul = layers.Multiply()
-        self.add = layers.Add()
-        self.Wo = layers.Dense(dim)
-        self.norm = layers.LayerNormalization()
-
-    def call(self, inputs, context):
-        x = inputs
-        z = context
-        T_s = self.mul([x, z])
-        attn = tf.nn.softmax(T_s, axis=-1)
-        output = self.add([attn, x])
-        output = self.Wo(output)
-        return output
-       
-
-class SpatialGatingUnit(layers.Layer):
-    def __init__(self, dim, **kwargs):
-        super().__init__(**kwargs)
-        self.dim = dim
-        self.norm = layers.LayerNormalization()
-        self.gate = layers.Dense(dim)
-        self.mul = layers.Multiply()
-
-    def call(self, inputs):
-        # inputs shape: (batch_size, seq_len, dim)
-        x = self.norm(inputs)
-        gate_values = self.gate(x)  # (batch_size, seq_len, dim)
-        return self.mul([inputs, gate_values])  # element-wise multiplication
-
-class GMLPBlock(layers.Layer):
-    def __init__(self, dim, expansion_factor=1, **kwargs):
-        super().__init__(**kwargs)
-        self.dim = dim
-        self.expansion_factor = expansion_factor
-        self.norm = layers.LayerNormalization()
-        self.up_proj = layers.Dense(dim * expansion_factor)
-        self.act = layers.Activation('gelu')
-        self.sgu = SpatialGatingUnit(dim)
-        self.down_proj = layers.Dense(dim)
-        self.add = layers.Add()
-
-    def call(self, inputs):
-        x = self.norm(inputs)
-        x = self.up_proj(x)
-        x = self.act(x)
-        x = self.sgu(x)
-        x = self.down_proj(x)
-        return self.add([x, inputs])  # Residual connection
-
 class Block(layers.Layer):
-    def __init__(self, dim, expansion_factor=1, **kwargs):
+    def __init__(self, dim, expansion=2, **kwargs):
         super().__init__(**kwargs)
-        self.mlp = GMLPBlock(dim)
-        self.attn = GLALayer(dim)
+        self.dim = dim
+        self.fc1 = layers.Dense(dim * expansion)
+        self.gate = layers.Dense(dim * expansion)
+        self.fc2 = layers.Dense(dim)
+        self.act = tf.keras.activations.gelu
         self.add = layers.Add()
+        self.mul = layers.Multiply()
+
     def call(self, x):
         z = x
-        x = self.mlp(x)
-        x = self.attn(x, x)
-        x = self.mlp(x)
-        x = self.add([x, z])  
-        return x
+        x = self.fc1(x)
+        gate = self.gate(z)
+        y = tf.sigmoid(gate)
+        x = self.mul([x, y])
+        x = self.act(x)
+        x = self.fc2(x)
+        return self.add([x, z])
 
 # ======================= CobraModel ======================
 class CobraModel(Model):
