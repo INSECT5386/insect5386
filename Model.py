@@ -201,6 +201,15 @@ class GMLPBlock(layers.Layer):
         x = self.down_proj(x)
         return self.add([x, inputs])  # Residual connection
 
+class OutputLayer(layers.Layer):
+    def __init__(self, dim, expansion_factor=1, **kwargs):
+        super().__init__(**kwargs)
+        self.W = layers.Dense(128)
+    def call(self, x):
+        
+        Y = self.W(x)
+        output = tf.nn.gelu(Y)
+
 
 d_model = 256
 dropout_rate = 0.1
@@ -222,7 +231,7 @@ for _ in range(4):  # 디코더 블록 반복
     y = GMLPBlock(d_model)(y)
     y = GLALayer(d_model)(y, context_vector)
 
-output = y
+output = OutputLayer(d_model)(y)
 logits = layers.Dense(vocab_size)(output)
 
 model = Model(inputs=[encoder_input, decoder_input], outputs=logits, name='SeProd')
