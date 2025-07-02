@@ -213,8 +213,15 @@ class GMLPBlock(layers.Layer):
         x = self.down_proj(x)
         return self.add([x, inputs])  # Residual connection
 
+class MatmulBlock(layers.Layer):
+    def __init__(self, dim, expansion_factor=1, **kwargs):
+        super().__init__(**kwargs)
+        self.matmul = tf.matmul
 
-
+    def call(self, x, emb):
+        output = self.matmul(x, emb.embedding, transpose_b=True)
+        return output
+                             
 d_model = 256
 dropout_rate = 0.1
 # ===== 모델 구성 =====
