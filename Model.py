@@ -273,24 +273,30 @@ model = CobraModel(
 loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True, reduction='none')
 
 def masked_loss(y_true, y_pred):
+    y_pred = y_pred[:, 20:, :]  # 프리픽스 부분 제거
+    loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True, reduction='none')
     loss = loss_fn(y_true, y_pred)
+
     mask = tf.cast(tf.not_equal(y_true, pad_id), tf.float32)
     masked_loss = tf.reduce_sum(loss * mask) / tf.reduce_sum(mask)
     return masked_loss
 
 def masked_accuracy(y_true, y_pred):
+    y_pred = y_pred[:, 20:, :]
     preds = tf.argmax(y_pred, axis=-1, output_type=y_true.dtype)
+
     matches = tf.cast(tf.equal(y_true, preds), tf.float32)
     mask = tf.cast(tf.not_equal(y_true, pad_id), tf.float32)
     return tf.reduce_sum(matches * mask) / tf.reduce_sum(mask)
 
 def masked_perplexity(y_true, y_pred):
-    loss = loss_fn(y_true, y_pred)
+    y_pred = y_pred[:, 20:, :]
+    loss = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True, reduction='none')(y_true, y_pred)
+
     mask = tf.cast(tf.not_equal(y_true, pad_id), tf.float32)
     avg_loss = tf.reduce_sum(loss * mask) / tf.reduce_sum(mask)
     return tf.exp(tf.minimum(avg_loss, 10.0))  # 수치 안정성 확보
-
-
+    
 def create_lr_schedule(initial_lr=5e-5, decay_steps=10000, decay_rate=0.9):
     return tf.keras.optimizers.schedules.ExponentialDecay(
         initial_learning_rate=initial_lr,
