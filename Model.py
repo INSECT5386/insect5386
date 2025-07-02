@@ -152,22 +152,31 @@ class GLALayer(tf.keras.layers.Layer):
     def __init__(self, dim, **kwargs):
         super().__init__(**kwargs)
         self.dim = dim
-        self.mul = layers.Multiply()
-        self.add = layers.Add()
-        self.Wkv = layers.Dense(dim)
+        self.gate_proj = layers.Dense(dim)
+        self.sigmoid = tf.keras.activations.sigmoid
         self.Wo = layers.Dense(dim)
-        self.norm = layers.LayerNormalization()
 
     def call(self, inputs, context):
-        x = inputs
-        z = context
-        z = self.Wkv(z)
-        k, v = tf.split(z, 2, axis=-1)
-        T_s = self.mul([x, k])
-        attn = tf.nn.softmax(T_s, axis=-1)
-        output = self.add([attn, v])
-        output = self.Wo(output)
-        return output
+        """
+        inputs: 디코더 입력 (B, Tq, dim)
+        context: 인코더 문맥 (B, Tk, dim)
+        """
+        # gate signal 생성
+        gate_signal = self.gate_proj(context)  # (B, Tk, dim)
+
+        # QK 유사도 대신 단순 내적
+        attn_weights = tf.einsum('bkd,bqd->bkq', gate_signal, inputs)
+        # => (B, Tk, Tq), softmax 후에는 (B, Tk, Tq): 각 문맥 토큰이 입력에 미치는 영향
+
+        # Softmax 적용
+        attn_weights = tf.nn.softmax(attn_weights, axis=1)  # Tk 방향으로 softmax
+
+        # 가중합
+        output = tf.einsum('bkq,bkd->bqd', attn_weights, context)
+        # => (B, Tq, dim)
+
+        # Output projection
+        return self.Wo(output)
        
 
 class SpatialGatingUnit(layers.Layer):
