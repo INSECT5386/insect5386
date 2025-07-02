@@ -49,7 +49,7 @@ for conversations in df["conversations"]:
             response = item2.get("value", "").strip().replace("\n", " ")
             full = f"<start> {prompt} <sep> {response} <end>"
             train_sentences.append(full)
-train_sentences = train_sentences[:200000] # 예제용 소량
+train_sentences = train_sentences[:2000] # 예제용 소량
 print(f"총 문장 개수: {len(train_sentences)}")
 
 # ⬇️ 토크나이저 불러오기
@@ -225,7 +225,10 @@ for _ in range(4):  # 디코더 블록 반복
     y = GMLPBlock(d_model)(y)
     y = GLALayer(d_model)(y, context_vector)
 
-output = layers.Dense(d_model, activation='gelu')(y)
+a = layers.Dense(128, activation='gelu')(y)
+b = layers.Dense(128)(y)
+output = layers.Multiply()([a,b])
+
 logits = layers.Dense(vocab_size)(output)
 
 model = Model(inputs=[encoder_input, decoder_input], outputs=logits, name='SeProd')
@@ -237,10 +240,14 @@ class Perplexity(tf.keras.metrics.Metric):
         self.total_count = tf.Variable(0, dtype=tf.int64)
 
     def update_state(self, y_true, y_pred, sample_weight=None):
-        loss_obj = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True, reduction='sum')
+        loss_obj = tf.keras.losses.SparseCategoricalCrossentropy(
+            from_logits=True, reduction='sum'
+        )
         loss = loss_obj(y_true, y_pred)
-        batch_size = tf.shape(y_true)[0]
-        seq_len = tf.shape(y_true)[1]
+
+        # batch_size와 seq_len을 int64로 명시 변환
+        batch_size = tf.cast(tf.shape(y_true)[0], tf.int64)
+        seq_len = tf.cast(tf.shape(y_true)[1], tf.int64)
 
         self.total_loss.assign_add(loss)
         self.total_count.assign_add(batch_size * seq_len)
