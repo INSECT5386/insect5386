@@ -152,18 +152,24 @@ class GLALayer(layers.Layer):
     def __init__(self, dim, **kwargs):
         super().__init__(**kwargs)
         self.dim = dim
-        self.Wo = layers.Dense(dim)
+        self.W = layers.Dense(dim)
+        self.Wkv = layers.Dense(dim)
         self.norm = layers.LayerNormalization()
         self.add = layers.Add()
         self.mul = layers.Multiply()
+
     def call(self, inputs, context):
-        x = self.norm(inputs)
-        z = self.norm(context)
-        T_s = tf.einsum('bnd,bnd->bnd', x, z)  # 내적 기반 어텐션 유사 연산
-        attn = tf.nn.softmax(T_s, axis=-1)
-        output = self.mul([x, attn])
+        x = self.W(x)
+        z = self.Wkv(context)
+        q = x
+        k, v = tf.split(z, 2, axis=-1))
+        k = tf.nn.gelu(k)
+        v = tf.nn.tanh(v)
+        c = tf.concat([k, q])
+        attn = tf.nn.softmax(c, axis=-1)
+        output = self.mul([v, attn])
         output = self.Wo(output)
-        return self.add([x, output])  # Residual
+        return self.add([q, output])  # Residual
 
 
 class SpatialGatingUnit(layers.Layer):
