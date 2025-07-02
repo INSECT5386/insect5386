@@ -214,7 +214,7 @@ class GMLPBlock(layers.Layer):
         return self.add([x, inputs])  # Residual connection
 
 class MatmulBlock(layers.Layer):
-    def __init__(self, dim, expansion_factor=1, **kwargs):
+    def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.matmul = tf.matmul
 
@@ -244,7 +244,7 @@ for _ in range(4):  # 디코더 블록 반복
 
 output = layers.Dense(128)(y)
 output = layers.Activation(tf.nn.gelu)(output)
-logits = layers.Dense(vocab_size)(output)
+logits = MatmulBlock()(y, y_emb)
 
 model = Model(inputs=[encoder_input, decoder_input], outputs=logits, name='SeProd')
 
