@@ -49,7 +49,7 @@ for conversations in df["conversations"]:
             response = item2.get("value", "").strip().replace("\n", " ")
             full = f"<start> {prompt} <sep> {response} <end>"
             train_sentences.append(full)
-train_sentences = train_sentences[:2000] # 예제용 소량
+train_sentences = train_sentences[:200000] # 예제용 소량
 print(f"총 문장 개수: {len(train_sentences)}")
 
 # ⬇️ 토크나이저 불러오기
@@ -152,22 +152,19 @@ class GLALayer(tf.keras.layers.Layer):
     def __init__(self, dim, **kwargs):
         super().__init__(**kwargs)
         self.dim = dim
-        self.gate_proj = layers.Dense(dim)
-        self.sigmoid = tf.keras.activations.sigmoid
+        self.mul = layers.Multiply()
+        self.add = layers.Add()
         self.Wo = layers.Dense(dim)
-        self.act = layers.Activation('gelu')
+        self.norm = layers.LayerNormalization()
 
     def call(self, inputs, context):
-        gate_signal = self.gate_proj(context)  # (B, Tk, dim)
-        gate_signal = self.act(gate_signal)
-
-        # QK 유사도 대신 단순 내적
-        attn_weights = tf.einsum('bkd,bqd->bkq', gate_signal, inputs)
-        attn_weights = tf.nn.softmax(attn_weights, axis=1)
-
-        # 가중합
-        output = tf.einsum('bkq,bkd->bqd', attn_weights, context)
-        return self.Wo(output)
+        x = inputs
+        z = context
+        T_s = self.mul([x, z])
+        attn = tf.nn.softmax(T_s, axis=-1)
+        output = self.add([attn, x])
+        output = self.Wo(output)
+        return output
        
 
 class SpatialGatingUnit(layers.Layer):
@@ -225,10 +222,7 @@ for _ in range(4):  # 디코더 블록 반복
     y = GMLPBlock(d_model)(y)
     y = GLALayer(d_model)(y, context_vector)
 
-a = layers.Dense(128, activation='gelu')(y)
-b = layers.Dense(128)(y)
-output = layers.Multiply()([a,b])
-
+output = y
 logits = layers.Dense(vocab_size)(output)
 
 model = Model(inputs=[encoder_input, decoder_input], outputs=logits, name='SeProd')
