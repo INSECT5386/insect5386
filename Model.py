@@ -136,21 +136,17 @@ class LearnablePositionalEmbedding(layers.Layer):
         self.max_length = max_length
         self.d_model = d_model
         self.add = layers.Add()
-
-    def build(self, input_shape):
-        self.pos_emb = self.add_weight(
-            shape=(self.max_length, self.d_model),
-            initializer='random_normal',
+        pos_emb = RandomNormal()(shape=[max_length, d_model])
+        self.pos_emb = tf.Variable(
+            initial_value=pos_emb,
             trainable=True,
             name='positional_embedding'
         )
 
     def call(self, inputs):
         seq_len = tf.shape(inputs)[1]
-        return self.add([
-            inputs,
-            self.pos_emb[tf.newaxis, :seq_len, :]
-        ])
+        return self.add([inputs, self.pos_emb[tf.newaxis, :seq_len, :]])
+
 
 class GLALayer(tf.keras.layers.Layer):
     def __init__(self, dim, **kwargs):
@@ -211,14 +207,13 @@ class GMLPBlock(layers.Layer):
 
 d_model = 256
 dropout_rate = 0.1
-n_layer = 4
 # ===== 모델 구성 =====
 # 인코더 경로
 encoder_input = Input(shape=(max_enc_len,), name='encoder_input')
 x_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(encoder_input)
 # 인코더 경로
 x = LearnablePositionalEmbedding(max_enc_len, d_model)(x_emb)
-for _ in range(n_layer):  # 인코더 블록 반복
+for _ in range(4):  # 인코더 블록 반복
     x = GMLPBlock(d_model)(x)
 context_vector = x
 
@@ -226,12 +221,11 @@ decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
 y_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(decoder_input)
 # 디코더 경로
 y = LearnablePositionalEmbedding(max_dec_len, d_model)(y_emb)
-for _ in range(n_layer):  # 디코더 블록 반복
+for _ in range(4):  # 디코더 블록 반복
     y = GMLPBlock(d_model)(y)
     y = GLALayer(d_model)(y, context_vector)
 
-output = layers.Dense(128)
-output = layers.Activation(tf.nn.gelu)(output)
+output = y
 logits = layers.Dense(vocab_size)(output)
 
 model = Model(inputs=[encoder_input, decoder_input], outputs=logits, name='SeProd')
@@ -265,6 +259,7 @@ model.compile(
     loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
     metrics=['accuracy', Perplexity()]
 )
+
 # 모델 요약
 model.summary()
 
