@@ -204,13 +204,13 @@ class CobraModel(Model):
         self.pos = LearnablePositionalEmbedding(256, d_model)
         self.vec = PrefixTuningLayer(20, 256)
 
-    def call(self, x, training=False, mask=None):
+    def call(self, x, training=False):
         x = self.token_embedding(x)
         x = self.pos(x)                  # 먼저 위치 인코딩
         x = self.vec(x)                  # 그 다음 prefix 붙이기
 
         for block in self.blocks:
-            x = block(x, training=training, mask=mask)
+            x = block(x)
 
         x = self.ln_f(x)
         logits = tf.matmul(x, self.token_embedding.embeddings, transpose_b=True)
