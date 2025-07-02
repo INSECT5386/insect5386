@@ -244,7 +244,7 @@ for _ in range(4):  # 디코더 블록 반복
 
 output = layers.Dense(128)(y)
 output = layers.Activation(tf.nn.gelu)(output)
-logits = MatmulBlock()(y, y_emb)
+logits = MatmulBlock()(output, y_emb)
 
 model = Model(inputs=[encoder_input, decoder_input], outputs=logits, name='SeProd')
 
