@@ -1,26 +1,10 @@
-
 import json  
 import numpy as np  
 import pandas as pd
 import tensorflow as tf  
 from tensorflow.keras import layers 
-from tensorflow.keras.initializers import RandomNormal
 import sentencepiece as spm  
 import requests
-from tensorflow.keras.initializers import RandomNormal
-
-import tensorflow as tf
-from tensorflow.keras import layers, Model, Input
-
-import tensorflow as tf
-from tensorflow.keras import layers, Model, Input
-from tensorflow.keras.initializers import RandomNormal
-
-
-import tensorflow as tf
-from tensorflow.keras import layers, Model, Input
-from tensorflow.keras.initializers import RandomNormal
-from tensorflow.keras.layers import Dropout
 
 # ⬇️ 파일 다운로드 함수
 def download_file(url, save_path):
@@ -35,7 +19,7 @@ def download_file(url, save_path):
 download_file('https://huggingface.co/datasets/Yuchan5386/KeraLux4/resolve/main/dataset.parquet?download=true', 'dataset.parquet')
 download_file('https://huggingface.co/datasets/Yuchan5386/KeraLux4/resolve/main/kolig_unigram.model?download=true', 'ko_unigram.model')
 
-# ⬇️ Parquet 데이터 불러오기  
+# ⬇️ Parquet 데이터 불러오기
 df = pd.read_parquet("dataset.parquet", engine="pyarrow")
 
 # ⬇️ <start> 질문 <sep> 답변 <end> 포맷으로 변환
@@ -49,7 +33,7 @@ for conversations in df["conversations"]:
             response = item2.get("value", "").strip().replace("\n", " ")
             full = f"<start> {prompt} <sep> {response} <end>"
             train_sentences.append(full)
-train_sentences = train_sentences[:200000] # 예제용 소량
+train_sentences = train_sentences[:50]
 print(f"총 문장 개수: {len(train_sentences)}")
 
 # ⬇️ 토크나이저 불러오기
@@ -61,18 +45,24 @@ pad_id = sp.piece_to_id("<pad>") if sp.piece_to_id("<pad>") != -1 else 0
 start_id = sp.piece_to_id("<start>")  
 sep_id = sp.piece_to_id("<sep>")  
 end_id = sp.piece_to_id("<end>")  
+unk_id = sp.piece_to_id("<unk>")  
 
 vocab_size = sp.get_piece_size()
 print(f"✅ Vocabulary size: {vocab_size}")
 
-# ⬇️ 전처리 하이퍼파라미터
-max_enc_len = 128 # 인코더 최대 길이 (질문 부분)
-max_dec_len = 128 # 디코더 최대 길이 (답변 부분)
-batch_size = 64
+# ⬇️ 텍스트 <-> ID 변환 함수
+def text_to_ids(text):
+    return sp.encode(text, out_type=int)
 
-# ⬇️ 전처리 결과 저장할 리스트
-encoder_inputs = []
-decoder_inputs = []
+def ids_to_text(ids):
+    return sp.decode(ids)
+
+# ⬇️ 전처리 하이퍼파라미터
+max_len = 100
+batch_size = 80
+
+# ⬇️ 인풋과 타겟 마스킹 포함된 전처리
+encoded_inputs = []
 targets = []
 
 for sentence in train_sentences:
@@ -80,55 +70,75 @@ for sentence in train_sentences:
         continue
 
     sep_index = sentence.index("<sep>")
-    input_text = sentence[:sep_index].strip() # 질문 부분
-    target_text = sentence[sep_index + len("<sep>"):].strip() # 답변 부분
+    input_text = sentence[:sep_index + len("<sep>")].strip()
+    target_text = sentence[sep_index + len("<sep>"):].strip()
 
-    # 인코더 입력: 질문 + <sep>
-    enc_ids = sp.encode(input_text + " <sep>")[:max_enc_len]
+    input_ids = text_to_ids(input_text)
+    target_ids = text_to_ids(target_text + " <end>")
 
-# 디코더 입력: <start> + 답변[:-1]
-    dec_input_ids = [start_id] + sp.encode(target_text)[:max_dec_len - 2]
+    full_input = input_ids + target_ids
+    full_input = full_input[:max_len]
 
-# 정답 라벨: 답변 + <end>
-    target_ids = sp.encode(target_text)[:max_dec_len - 1] + [end_id]
-    # 패딩 추가
-    enc_padded = enc_ids + [pad_id] * (max_enc_len - len(enc_ids))
-    dec_padded = dec_input_ids + [pad_id] * (max_dec_len - len(dec_input_ids))
-    target_padded = target_ids + [pad_id] * (max_dec_len - len(target_ids))
+    target_mask = [0] * len(input_ids) + [1] * len(target_ids)
+    target_mask = target_mask[:max_len]
 
-    encoder_inputs.append(enc_padded)
-    decoder_inputs.append(dec_padded)
-    targets.append(target_padded)
+    if len(full_input) < max_len:
+        pad_len = max_len - len(full_input)
+        full_input += [pad_id] * pad_len
+        target_mask += [0] * pad_len
 
-# ⬇️ 넘파이 배열로 변환
-encoder_inputs = np.array(encoder_inputs, dtype=np.int32)
-decoder_inputs = np.array(decoder_inputs, dtype=np.int32)
-targets = np.array(targets, dtype=np.int32)
+    encoded_inputs.append(full_input)
+
+    target_seq = full_input[1:] + [end_id]
+    target_seq = target_seq[:max_len]
+
+    masked_target = [
+        t if m == 1 else pad_id
+        for t, m in zip(target_seq, target_mask)
+    ]
+
+    targets.append(masked_target)
+
+# ⬇️ 넘파이 변환
+encoded_inputs = np.array(encoded_inputs)
+targets = np.array(targets)
 
 # ⬇️ TensorFlow Dataset 생성
 def data_generator():
-    for enc, dec, tgt in zip(encoder_inputs, decoder_inputs, targets):
-        # 딕셔너리 대신 튜플 형태로 반환
-        yield (enc, dec), tgt
-
-output_types = (
-    (tf.int32, tf.int32), # 두 개의 입력 텐서에 대한 타입
-    tf.int32 # 타겟에 대한 타입
-)
-
-output_shapes = (
-    (tf.TensorShape([max_enc_len]), tf.TensorShape([max_dec_len])), # 두 개의 입력 텐서에 대한 모양
-    tf.TensorShape([max_dec_len]) # 타겟에 대한 모양
-)
+    for input_seq, target_seq in zip(encoded_inputs, targets):
+        yield input_seq, target_seq
 
 dataset = tf.data.Dataset.from_generator(
     data_generator,
-    output_types=output_types,
-    output_shapes=output_shapes
+    output_signature=(
+        tf.TensorSpec(shape=(max_len,), dtype=tf.int32),
+        tf.TensorSpec(shape=(max_len,), dtype=tf.int32)
+    )
 )
 
-dataset = dataset.shuffle(10000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
-print("dataset ok")
+dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
+
+print("✅ TF Dataset 생성 완료!")
+
+
+class PrefixTuningLayer(tf.keras.layers.Layer):
+    def __init__(self, prefix_length=20, embedding_dim=256, **kwargs):
+        super().__init__(**kwargs)
+        self.prefix_length = prefix_length
+        self.embedding_dim = embedding_dim
+
+        # 학습 가능한 프리픽스 벡터
+        self.prefix = tf.keras.initializers.RandomUniform()(
+            shape=[prefix_length, embedding_dim]
+        )
+
+    def call(self, inputs):
+        batch_size = tf.shape(inputs)[0]
+        # 배치 크기에 맞게 prefix 확장
+        prefix = tf.tile(tf.expand_dims(self.prefix, axis=0), [batch_size, 1, 1])
+        # 입력 앞에 prefix 붙이기
+        return tf.concat([prefix, inputs], axis=1)
+
 
 class LearnablePositionalEmbedding(layers.Layer):
     def __init__(self, max_length, d_model, **kwargs):
@@ -211,133 +221,145 @@ class output(layers.Layer):
         output = tf.nn.gelu(Y)
         return output
 
-d_model = 256
-dropout_rate = 0.1
-# ===== 모델 구성 =====
-# 인코더 경로
-encoder_input = Input(shape=(max_enc_len,), name='encoder_input')
-x_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(encoder_input)
-# 인코더 경로
-x = LearnablePositionalEmbedding(max_enc_len, d_model)(x_emb)
-for _ in range(4):  # 인코더 블록 반복
-    x = GMLPBlock(d_model)(x)
-context_vector = x
+# ======================= CobraModel ======================
+class CobraModel(Model):
+    def __init__(self, vocab_size, d_model, n_layers, dropout_rate=0.1):
+        super().__init__()
+        self.token_embedding = layers.Embedding(vocab_size, d_model)
+        self.blocks = [Cobrablock(d_model, dropout_rate) for _ in range(n_layers)]
+        self.ln_f = layers.LayerNormalization(epsilon=1e-5)
 
-decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
-y_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(decoder_input)
-# 디코더 경로
-y = LearnablePositionalEmbedding(max_dec_len, d_model)(y_emb)
-for _ in range(4):  # 디코더 블록 반복
-    z = GMLPBlock(d_model)(y)
-    y = GLALayer(d_model)(z, context_vector)
+    def call(self, x, training=False, mask=None):
+        x = self.token_embedding(x)
 
-output = output(d_model)(z, y)
-logits = layers.Dense(vocab_size)(output)
+        for block in self.blocks:
+            x = block(x, training=training, mask=mask)
 
-model = Model(inputs=[encoder_input, decoder_input], outputs=logits, name='SeProd')
+        x = self.ln_f(x)
+        logits = tf.matmul(x, self.token_embedding.embeddings, transpose_b=True)
+        return logits
 
-class Perplexity(tf.keras.metrics.Metric):
-    def __init__(self, name='perplexity', **kwargs):
-        super().__init__(name=name, **kwargs)
-        self.total_loss = tf.Variable(0.0, dtype=tf.float32)
-        self.total_count = tf.Variable(0, dtype=tf.int64)
+# 손실 함수 및 메트릭 정의
+loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True, reduction='none')
 
-    def update_state(self, y_true, y_pred, sample_weight=None):
-        loss_obj = tf.keras.losses.SparseCategoricalCrossentropy(
-            from_logits=True, reduction='sum'
-        )
-        loss = loss_obj(y_true, y_pred)
+def masked_loss(y_true, y_pred):
+    loss = loss_fn(y_true, y_pred)
+    mask = tf.cast(tf.not_equal(y_true, pad_id), tf.float32)
+    masked_loss = tf.reduce_sum(loss * mask) / tf.reduce_sum(mask)
+    return masked_loss
 
-        # batch_size와 seq_len을 int64로 명시 변환
-        batch_size = tf.cast(tf.shape(y_true)[0], tf.int64)
-        seq_len = tf.cast(tf.shape(y_true)[1], tf.int64)
+def masked_accuracy(y_true, y_pred):
+    preds = tf.argmax(y_pred, axis=-1, output_type=y_true.dtype)
+    matches = tf.cast(tf.equal(y_true, preds), tf.float32)
+    mask = tf.cast(tf.not_equal(y_true, pad_id), tf.float32)
+    return tf.reduce_sum(matches * mask) / tf.reduce_sum(mask)
 
-        self.total_loss.assign_add(loss)
-        self.total_count.assign_add(batch_size * seq_len)
+def masked_perplexity(y_true, y_pred):
+    loss = loss_fn(y_true, y_pred)
+    mask = tf.cast(tf.not_equal(y_true, pad_id), tf.float32)
+    avg_loss = tf.reduce_sum(loss * mask) / tf.reduce_sum(mask)
+    return tf.exp(tf.minimum(avg_loss, 10.0))  # 수치 안정성 확보
 
-    def result(self):
-        avg_log_likelihood = self.total_loss / tf.cast(self.total_count, tf.float32)
-        return tf.exp(avg_log_likelihood)
+def masked_top5_accuracy(y_true, y_pred):
+    top5_preds = tf.nn.top_k(y_pred, k=5).indices
+    top5_preds = tf.cast(top5_preds, dtype=y_true.dtype)  # <-- 이 줄 추가
+    y_true_expanded = tf.expand_dims(y_true, axis=-1)
+    matches = tf.reduce_any(tf.equal(y_true_expanded, top5_preds), axis=-1)
+    matches = tf.cast(matches, tf.float32)
+    mask = tf.cast(tf.not_equal(y_true, pad_id), tf.float32)
+    return tf.reduce_sum(matches * mask) / tf.reduce_sum(mask)
 
-    def reset_states(self):
-        self.total_loss.assign(0.0)
-        self.total_count.assign(0)
 
-# ===== 컴파일 및 학습 =====
-model.compile(
-    optimizer='adam',
-    loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
-    metrics=['accuracy', Perplexity()]
+def token_level_loss(y_true, y_pred):
+    loss = loss_fn(y_true, y_pred)
+    mask = tf.cast(tf.not_equal(y_true, pad_id), tf.float32)
+    return tf.reduce_mean(loss * mask)
+
+def create_lr_schedule(initial_lr=5e-5, decay_steps=10000, decay_rate=0.9):
+    return tf.keras.optimizers.schedules.ExponentialDecay(
+        initial_learning_rate=initial_lr,
+        decay_steps=decay_steps,
+        decay_rate=decay_rate,
+        staircase=False
+    )
+
+
+# 모델 생성
+model = CobraModel(
+    vocab_size=vocab_size,
+    d_model=192,
+    n_layers=10
 )
 
-# 모델 요약
+# 옵티마이저 설정
+optimizer = tf.keras.optimizers.Adam(
+    learning_rate=create_lr_schedule(),
+    beta_1=0.9,
+    beta_2=0.95,
+    epsilon=1e-8,
+    clipnorm=1.0
+)
+
+# 모델 컴파일
+model.compile(
+    optimizer=optimizer,
+    loss=masked_loss,
+    metrics=[
+        masked_accuracy,
+        masked_perplexity,
+        masked_top5_accuracy,
+        token_level_loss
+    ]
+)
+
+# 더미 인풋으로 모델 초기화
+dummy_input = np.zeros((1, max_len), dtype=np.int32)
+model(dummy_input)
 model.summary()
 
-model.fit(dataset, epochs=1, steps_per_epoch=len(train_sentences) // batch_size)
+# 학습 시작
+history = model.fit(
+    dataset,
+    epochs=1,
+    steps_per_epoch = encoded_inputs.shape[0] // batch_size,
+    verbose=1
+)
+
+# 가중치 저장
+model.save_weights("Cobra.weights.h5")
+print("모델 가중치 저장 완료!")
+from google.colab import files
+files.download('Cobra.weights.h5')  # 여기에 다운로드할 파일명을 넣어줘
 
 
-def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=False):
-    """
-    사용자 입력 문장을 받아 AI 응답 생성
-    
-    :param model: 훈련된 DustTransformer 모델
-    :param sp: SentencePiece Tokenizer
-    :param input_text: 사용자 입력 (str)
-    :param max_dec_len: 최대 생성 길이
-    :param temperature: 샘플링 온도 (낮을수록 greedy, 높을수록 창의적)
-    :param verbose: 디버깅 메시지 출력 여부
-    :return: 생성된 텍스트
-    """
-    start_id = sp.piece_to_id("<start>")
-    end_id = sp.piece_to_id("<end>")
-    
-    # 인코더 입력 전처리
-    enc_ids = sp.encode(input_text)
-    enc_ids = enc_ids[:max_enc_len]
-    enc_ids += [sp.pad_id()] * (max_enc_len - len(enc_ids))
-    enc_tensor = tf.constant([enc_ids], dtype=tf.int32)
-
-    if verbose:
-        print("Encoder Input:", input_text)
-        print("Encoded:", enc_ids)
-
-    # 초기 디코더 입력 설정
-    dec_input = tf.constant([[start_id]], dtype=tf.int32)
-    generated_ids = []
-
-    for step in range(max_dec_len):
-        # 디코더 입력을 max_dec_len으로 패딩
-        padded_dec_input = tf.pad(dec_input, [[0, 0], [0, max_dec_len - tf.shape(dec_input)[1]]],
-                                  constant_values=sp.pad_id())
-
-        # 전체 모델 예측
-        decoder_output = model.predict([enc_tensor, padded_dec_input])
-        
-        # 현재 스텝의 로짓 추출
-        logits = decoder_output[:, step, :]  # 현재 step 위치의 로짓
-
-        if temperature == 0.:
-            pred_id = tf.argmax(logits, axis=-1, output_type=tf.int32)
+def generate_text_topp(model, prompt, max_len=100, max_gen=98, p=0.9, temperature=0.8, min_len=20):
+    model_input = text_to_ids(f"<start> {prompt} <sep>")
+    model_input = model_input[:max_len]
+    generated = list(model_input)
+    for step in range(max_gen):
+        if len(generated) > max_len:
+            input_seq = generated[-max_len:]
         else:
-            logits = logits / temperature
-            pred_id = tf.random.categorical(logits, 1, dtype=tf.int32)
-
-        pred_id = tf.squeeze(pred_id, axis=1)  # (1, )
-
-        # 종료 토큰 체크
-        if int(pred_id[0]) == end_id:
+            input_seq = generated
+        input_padded = np.pad(input_seq, (0, max_len - len(input_seq)), constant_values=pad_id)
+        input_tensor = tf.convert_to_tensor([input_padded])
+        logits = model(input_tensor, training=False)
+        next_token_logits = logits[0, len(input_seq) - 1].numpy()
+        next_token_logits[end_id] -= 5.0
+        next_token_logits[pad_id] -= 10.0
+        probs = tf.nn.softmax(next_token_logits / temperature).numpy()
+        sorted_indices = np.argsort(probs)[::-1]
+        sorted_probs = probs[sorted_indices]
+        cumulative_probs = np.cumsum(sorted_probs)
+        cutoff = np.searchsorted(cumulative_probs, p)
+        top_indices = sorted_indices[:cutoff + 1]
+        top_probs = sorted_probs[:cutoff + 1]
+        top_probs /= np.sum(top_probs)
+        next_token_id = np.random.choice(top_indices, p=top_probs)
+        if next_token_id == end_id and len(generated) >= min_len:
             break
+        generated.append(int(next_token_id))
+    return ids_to_text(generated)
 
-        generated_ids.append(int(pred_id[0]))
-        dec_input = tf.concat([dec_input, pred_id[:, tf.newaxis]], axis=1)
-
-        if verbose:
-            token_str = sp.decode([int(pred_id[0])])
-            print(f"Step {step}: ID={int(pred_id[0])}, Token='{token_str}'")
-
-    decoded_text = sp.decode(generated_ids)
-    return decoded_text
-
-input_text = "회의록을 요약해 주세요."
-response = generate(model, sp, input_text, temperature=0.7, verbose=True)
-print("AI Response:", response)
+print("\n\n===== 생성 결과 =====")  
+print(generate_text_topp(model, "안녕", p=0.9))
