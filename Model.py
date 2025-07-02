@@ -135,6 +135,7 @@ class LearnablePositionalEmbedding(layers.Layer):
         super().__init__(**kwargs)
         self.max_length = max_length
         self.d_model = d_model
+        self.add = layers.Add()
         pos_emb = tf.random.normal(shape=[max_length, d_model])
         self.pos_emb = tf.Variable(
             initial_value=pos_emb,
@@ -144,7 +145,7 @@ class LearnablePositionalEmbedding(layers.Layer):
 
     def call(self, inputs):
         seq_len = tf.shape(inputs)[1]
-        return inputs + self.pos_emb[tf.newaxis, :seq_len, :]
+        return self.add([inputs, self.pos_emb[tf.newaxis, :seq_len, :]])
 
 
 class GLALayer(layers.Layer):
@@ -153,29 +154,31 @@ class GLALayer(layers.Layer):
         self.dim = dim
         self.Wo = layers.Dense(dim)
         self.norm = layers.LayerNormalization()
-
+        self.add = layers.Add()
+        self.mul = layers.Multiply()
     def call(self, inputs, context):
         x = self.norm(inputs)
         z = self.norm(context)
         T_s = tf.einsum('bnd,bnd->bnd', x, z)  # 내적 기반 어텐션 유사 연산
         attn = tf.nn.softmax(T_s, axis=-1)
-        output = x * attn
+        output = self.mul([x, attn])
         output = self.Wo(output)
-        return x + output  # Residual
+        return self.add([x, output])  # Residual
 
 
 class SpatialGatingUnit(layers.Layer):
     def __init__(self, dim, **kwargs):
         super().__init__(**kwargs)
         self.gate = layers.Dense(dim)
+        self.mul = layers.Multiply()
 
     def call(self, inputs):
         gate_values = self.gate(inputs)
-        return inputs * tf.sigmoid(gate_values)  # Sigmoid gating
+        return self.mul([inputs, tf.sigmoid(gate_values)]) # Sigmoid gating
 
 
 class GMLPBlock(layers.Layer):
-    def __init__(self, dim, expansion_factor=2, **kwargs):
+    def __init__(self, dim, expansion_factor=1, **kwargs):
         super().__init__(**kwargs)
         self.dim = dim
         self.expansion_factor = expansion_factor
@@ -184,6 +187,7 @@ class GMLPBlock(layers.Layer):
         self.act = layers.Activation('gelu')
         self.sgu = SpatialGatingUnit(dim)
         self.down_proj = layers.Dense(dim)
+        self.add = layers.Add()
 
     def call(self, inputs):
         x = self.norm(inputs)
@@ -191,16 +195,19 @@ class GMLPBlock(layers.Layer):
         x = self.act(x)
         x = self.sgu(x)
         x = self.down_proj(x)
-        return x + inputs  # Residual
+        x = self.add([x, inputs])
+        return x
 
 
 class OutputLayer(layers.Layer):
     def __init__(self, dim, **kwargs):
         super().__init__(**kwargs)
         self.proj = layers.Dense(dim)
+        self.add = layers.Add()
 
     def call(self, x, z):
-        return self.proj(x + z)  # 간단한 residual projection
+        X = self.add([x, z])
+        return self.proj(X)  # 간단한 residual projection
 
 
 # ===== 모델 구성 =====
@@ -208,30 +215,34 @@ d_model = 256
 vocab_size = 48000
 max_enc_len = 128
 max_dec_len = 128
-nl = 4  # 블록 반복 수
 
 # 인코더 경로
 encoder_input = Input(shape=(max_enc_len,), name='encoder_input')
 x_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(encoder_input)
 x = LearnablePositionalEmbedding(max_enc_len, d_model)(x_emb)
-
-gmlp_blocks = [GMLPBlock(d_model) for _ in range(nl)]
-for block in gmlp_blocks:
-    x = block(x)
+x = GMLPBlock(d_model)(x)
+x = GMLPBlock(d_model)(x)
 context_vector = x
+
+
 
 # 디코더 경로
 decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
 y_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(decoder_input)
 y = LearnablePositionalEmbedding(max_dec_len, d_model)(y_emb)
 
-gla_layers = [GLALayer(d_model) for _ in range(nl)]
-output_layers = [OutputLayer(d_model) for _ in range(nl)]
 
-for gla, out in zip(gla_layers, output_layers):
-    z = GMLPBlock(d_model)(y)
-    gla_out = gla(z, context_vector)
-    y = out(z, gla_out)
+z = GMLPBlock(d_model)(y)
+
+z = GMLPBlock(d_model)(z)
+gla_out = GLALayer(d_model)(z, context_vector)
+y = OutputLayer(d_model)(z, gla_out)
+
+z = GMLPBlock(d_model)(y)
+z = GMLPBlock(d_model)(z)
+
+
+
 
 logits = layers.Dense(vocab_size, dtype='float32')(y)  # mixed precision 보완
 
