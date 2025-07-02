@@ -236,13 +236,35 @@ logits = layers.Dense(vocab_size)(output)
 
 model = Model(inputs=[encoder_input, decoder_input], outputs=logits, name='SeProd')
 
+class Perplexity(tf.keras.metrics.Metric):
+    def __init__(self, name='perplexity', **kwargs):
+        super().__init__(name=name, **kwargs)
+        self.total_loss = tf.Variable(0.0, dtype=tf.float32)
+        self.total_count = tf.Variable(0, dtype=tf.int64)
+
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        loss_obj = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True, reduction='sum')
+        loss = loss_obj(y_true, y_pred)
+        batch_size = tf.shape(y_true)[0]
+        seq_len = tf.shape(y_true)[1]
+
+        self.total_loss.assign_add(loss)
+        self.total_count.assign_add(batch_size * seq_len)
+
+    def result(self):
+        avg_log_likelihood = self.total_loss / tf.cast(self.total_count, tf.float32)
+        return tf.exp(avg_log_likelihood)
+
+    def reset_states(self):
+        self.total_loss.assign(0.0)
+        self.total_count.assign(0)
+
 # ===== 컴파일 및 학습 =====
 model.compile(
     optimizer='adam',
     loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
-    metrics=['accuracy']
+    metrics=['accuracy', Perplexity()]
 )
-
 # 모델 요약
 model.summary()
 
