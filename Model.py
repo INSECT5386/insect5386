@@ -154,15 +154,18 @@ class GLALayer(tf.keras.layers.Layer):
         self.dim = dim
         self.mul = layers.Multiply()
         self.add = layers.Add()
+        self.Wkv = layers.Dense(dim)
         self.Wo = layers.Dense(dim)
         self.norm = layers.LayerNormalization()
 
     def call(self, inputs, context):
         x = inputs
         z = context
-        T_s = self.mul([x, z])
+        z = self.Wkv(z)
+        k, v = tf.split(z, 2, axis=-1)
+        T_s = self.mul([x, k])
         attn = tf.nn.softmax(T_s, axis=-1)
-        output = self.add([attn, x])
+        output = self.add([attn, v])
         output = self.Wo(output)
         return output
        
