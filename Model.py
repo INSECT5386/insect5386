@@ -58,8 +58,8 @@ def ids_to_text(ids):
     return sp.decode(ids)
 
 # ⬇️ 전처리 하이퍼파라미터
-max_len = 100
-batch_size = 80
+max_len = 256
+batch_size = 64
 
 # ⬇️ 인풋과 타겟 마스킹 포함된 전처리
 encoded_inputs = []
@@ -221,16 +221,34 @@ class output(layers.Layer):
         output = tf.nn.gelu(Y)
         return output
 
+class Block(layers.Layer):
+    def __init__(self, dim, expansion_factor=1, **kwargs):
+        super().__init__(**kwargs)
+        self.mlp = GMLPBlock(dim)
+        self.attn = GLALayer(dim)
+        self.add = layers.Add()
+    def call(self, x):
+        z = x
+        x = self.mlp(x)
+        x = attn(x)
+        x = self.mlp(x)
+        x = self.add([x, z])  
+        return x
+
 # ======================= CobraModel ======================
 class CobraModel(Model):
     def __init__(self, vocab_size, d_model, n_layers, dropout_rate=0.1):
         super().__init__()
         self.token_embedding = layers.Embedding(vocab_size, d_model)
-        self.blocks = [Cobrablock(d_model, dropout_rate) for _ in range(n_layers)]
+        self.blocks = [Block(d_model, dropout_rate) for _ in range(n_layers)]
         self.ln_f = layers.LayerNormalization(epsilon=1e-5)
+        self.pos = LearnablePositionalEmbedding(256, d_model)
+        self.vec = PrefixTuningLayer(
 
     def call(self, x, training=False, mask=None):
         x = self.token_embedding(x)
+        x = 
+        x = self.pos(x)
 
         for block in self.blocks:
             x = block(x, training=training, mask=mask)
