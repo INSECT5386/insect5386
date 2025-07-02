@@ -220,7 +220,7 @@ class Block(layers.Layer):
     def call(self, x):
         z = x
         x = self.mlp(x)
-        x = attn(x)
+        x = self.attn(x, x)
         x = self.mlp(x)
         x = self.add([x, z])  
         return x
@@ -237,8 +237,8 @@ class CobraModel(Model):
 
     def call(self, x, training=False, mask=None):
         x = self.token_embedding(x)
-        x = self.vec(x)
-        x = self.pos(x)
+        x = self.pos(x)                  # 먼저 위치 인코딩
+        x = self.vec(x)                  # 그 다음 prefix 붙이기
 
         for block in self.blocks:
             x = block(x, training=training, mask=mask)
@@ -250,7 +250,7 @@ class CobraModel(Model):
 model = CobraModel(
     vocab_size=vocab_size,
     d_model=256,
-    n_layers=10
+    n_layers=4
 )
 
 
