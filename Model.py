@@ -211,16 +211,6 @@ class GMLPBlock(layers.Layer):
         x = self.down_proj(x)
         return self.add([x, inputs])  # Residual connection
 
-class output(layers.Layer):
-    def __init__(self, dim, expansion_factor=1, **kwargs):
-        super().__init__(**kwargs)
-        self.W = layers.Dense(128)
-    def call(self, x, z):
-        output = tf.concat([x, z], axis=-1)
-        Y = self.W(output)
-        output = tf.nn.gelu(Y)
-        return output
-
 class Block(layers.Layer):
     def __init__(self, dim, expansion_factor=1, **kwargs):
         super().__init__(**kwargs)
@@ -243,11 +233,11 @@ class CobraModel(Model):
         self.blocks = [Block(d_model, dropout_rate) for _ in range(n_layers)]
         self.ln_f = layers.LayerNormalization(epsilon=1e-5)
         self.pos = LearnablePositionalEmbedding(256, d_model)
-        self.vec = PrefixTuningLayer(
+        self.vec = PrefixTuningLayer(20, 256)
 
     def call(self, x, training=False, mask=None):
         x = self.token_embedding(x)
-        x = 
+        x = self.vec(x)
         x = self.pos(x)
 
         for block in self.blocks:
@@ -257,7 +247,13 @@ class CobraModel(Model):
         logits = tf.matmul(x, self.token_embedding.embeddings, transpose_b=True)
         return logits
 
-# 손실 함수 및 메트릭 정의
+model = CobraModel(
+    vocab_size=vocab_size,
+    d_model=256,
+    n_layers=10
+)
+
+
 loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True, reduction='none')
 
 def masked_loss(y_true, y_pred):
@@ -301,14 +297,6 @@ def create_lr_schedule(initial_lr=5e-5, decay_steps=10000, decay_rate=0.9):
         staircase=False
     )
 
-
-# 모델 생성
-model = CobraModel(
-    vocab_size=vocab_size,
-    d_model=192,
-    n_layers=10
-)
-
 # 옵티마이저 설정
 optimizer = tf.keras.optimizers.Adam(
     learning_rate=create_lr_schedule(),
@@ -317,6 +305,7 @@ optimizer = tf.keras.optimizers.Adam(
     epsilon=1e-8,
     clipnorm=1.0
 )
+
 
 # 모델 컴파일
 model.compile(
