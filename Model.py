@@ -227,7 +227,8 @@ encoder_input = Input(shape=(max_enc_len,), name='encoder_input')
 x_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(encoder_input)
 x = LearnablePositionalEmbedding(max_enc_len, d_model)(x_emb)
 x = GMLPBlock(d_model)(x)
-x = GMLPBlock(d_model)(x)
+gla_out = GLALayer(d_model)(x, x)
+x = OutputLayer(d_model)(x, gla_out)
 context_vector = x
 
 
@@ -246,8 +247,6 @@ y = OutputLayer(d_model)(z, gla_out)
 
 z = GMLPBlock(d_model)(y)
 z = GMLPBlock(d_model)(z)
-
-
 
 
 logits = layers.Dense(vocab_size, dtype='float32')(z)  # mixed precision 보완
