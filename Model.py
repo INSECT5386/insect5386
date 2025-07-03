@@ -49,7 +49,7 @@ for conversations in df["conversations"]:
             response = item2.get("value", "").strip().replace("\n", " ")
             full = f"<start> {prompt} <sep> {response} <end>"
             train_sentences.append(full)
-train_sentences = train_sentences[:20000] # 예제용 소량
+train_sentences = train_sentences[:20] # 예제용 소량
 print(f"총 문장 개수: {len(train_sentences)}")
 
 # ⬇️ 토크나이저 불러오기
@@ -225,7 +225,7 @@ y = layers.Concatenate(axis=-1)([y, context_repeated])  # shape: (batch_size, ma
 z = layers.Dense(d_model)(y)  # Optional: dimensionality adjustment
 
 # 이후 gMLP 블록 계속
-z = GMLPBlock(d_model)(y)
+z = GMLPBlock(d_model)(z)
 z = GMLPBlock(d_model)(z)
 
 
