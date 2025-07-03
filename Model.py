@@ -148,28 +148,43 @@ class LearnablePositionalEmbedding(layers.Layer):
         return self.add([inputs, self.pos_emb[tf.newaxis, :seq_len, :]])
 
 
-class GLALayer(layers.Layer):
-    def __init__(self, dim, **kwargs):
-        super().__init__(**kwargs)
-        self.dim = dim
-        self.W = layers.Dense(dim)
-        self.Wkv = layers.Dense(dim)
-        self.norm = layers.LayerNormalization()
-        self.add = layers.Add()
-        self.o = layers.Dense(dim)
+import tensorflow as tf
+from tensorflow.keras.layers import Dense
 
-    def call(self, inputs, context):
-        x = self.W(inputs)
-        z = self.Wkv(context)
-        q = x
-        k, v = tf.split(z, 2, axis=-1)
-        k = tf.nn.gelu(k)
-        v = tf.nn.tanh(v)
-        c = tf.concat([k, q], axis=-1)
-        attn = tf.nn.softmax(c, axis=-1)
-        output = tf.concat([v, attn], axis=-1)
-        o = self.o(output)
-        return self.add([q, o])  # Residual
+class FlashCrossAttention(tf.keras.layers.Layer):
+    def __init__(self, dim, feature_map=None, **kwargs):
+        super(FlashCrossAttention, self).__init__(**kwargs)
+        self.dim = dim
+        self.feature_map = feature_map or (lambda x: tf.nn.elu(x) + 1)
+
+        # Q, K, V 투영 레이어
+        self.to_q = Dense(dim)
+        self.to_k = Dense(dim)
+        self.to_v = Dense(dim)
+
+    def call(self, inputs_q, inputs_kv, training=False):
+        """
+        inputs_q: Query 시퀀스 (shape: [B, N, D])
+        inputs_kv: Key/Value 시퀀스 (shape: [B, M, D])
+        """
+        Q = self.to_q(inputs_q)
+        K = self.to_k(inputs_kv)
+        V = self.to_v(inputs_kv)
+
+        # Feature map 적용
+        Q_mapped = self.feature_map(Q)
+        K_mapped = self.feature_map(K)
+
+        # K^T V 계산 (shape: [B, D, D])
+        KV = tf.einsum('bmd,bmv->bdv', K_mapped, V)
+
+        # 최종 결과 계산 (shape: [B, N, D])
+        output = tf.einsum('bnd,bdv->bnv', Q_mapped, KV)
+
+        # 정규화 (K 시퀀스 길이로 나눔)
+        output = output / tf.math.sqrt(tf.cast(tf.shape(K)[1], dtype=output.dtype))
+
+        return output
 
 
 class SpatialGatingUnit(layers.Layer):
@@ -227,8 +242,7 @@ encoder_input = Input(shape=(max_enc_len,), name='encoder_input')
 x_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(encoder_input)
 x = LearnablePositionalEmbedding(max_enc_len, d_model)(x_emb)
 x = GMLPBlock(d_model)(x)
-gla_out = GLALayer(d_model)(x, x)
-x = OutputLayer(d_model)(x, gla_out)
+x = GMLPBlock(d_model)(x)
 context_vector = x
 
 
@@ -240,10 +254,9 @@ y = LearnablePositionalEmbedding(max_dec_len, d_model)(y_emb)
 
 
 z = GMLPBlock(d_model)(y)
-
 z = GMLPBlock(d_model)(z)
-gla_out = GLALayer(d_model)(z, context_vector)
-y = OutputLayer(d_model)(z, gla_out)
+out = FlashCrossAttention(d_model)(z, context_vector)
+y = OutputLayer(d_model)(z, out)
 
 z = GMLPBlock(d_model)(y)
 z = GMLPBlock(d_model)(z)
