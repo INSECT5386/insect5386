@@ -49,7 +49,7 @@ for conversations in df["conversations"]:
             response = item2.get("value", "").strip().replace("\n", " ")
             full = f"<start> {prompt} <sep> {response} <end>"
             train_sentences.append(full)
-train_sentences = train_sentences[:200000] # 예제용 소량
+train_sentences = train_sentences[:20000] # 예제용 소량
 print(f"총 문장 개수: {len(train_sentences)}")
 
 # ⬇️ 토크나이저 불러오기
@@ -151,41 +151,6 @@ class LearnablePositionalEmbedding(layers.Layer):
 import tensorflow as tf
 from tensorflow.keras.layers import Dense
 
-class FlashCrossAttention(tf.keras.layers.Layer):
-    def __init__(self, dim, feature_map=None, **kwargs):
-        super(FlashCrossAttention, self).__init__(**kwargs)
-        self.dim = dim
-        self.feature_map = feature_map or (lambda x: tf.nn.elu(x) + 1)
-
-        # Q, K, V 투영 레이어
-        self.to_q = Dense(dim)
-        self.to_k = Dense(dim)
-        self.to_v = Dense(dim)
-
-    def call(self, inputs_q, inputs_kv, training=False):
-        """
-        inputs_q: Query 시퀀스 (shape: [B, N, D])
-        inputs_kv: Key/Value 시퀀스 (shape: [B, M, D])
-        """
-        Q = self.to_q(inputs_q)
-        K = self.to_k(inputs_kv)
-        V = self.to_v(inputs_kv)
-
-        # Feature map 적용
-        Q_mapped = self.feature_map(Q)
-        K_mapped = self.feature_map(K)
-
-        # K^T V 계산 (shape: [B, D, D])
-        KV = tf.einsum('bmd,bmv->bdv', K_mapped, V)
-
-        # 최종 결과 계산 (shape: [B, N, D])
-        output = tf.einsum('bnd,bdv->bnv', Q_mapped, KV)
-
-        # 정규화 (K 시퀀스 길이로 나눔)
-        output = output / tf.math.sqrt(tf.cast(tf.shape(K)[1], dtype=output.dtype))
-
-        return output
-
 
 class SpatialGatingUnit(layers.Layer):
     def __init__(self, dim, **kwargs):
@@ -243,23 +208,26 @@ x_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(encoder_input
 x = LearnablePositionalEmbedding(max_enc_len, d_model)(x_emb)
 x = GMLPBlock(d_model)(x)
 x = GMLPBlock(d_model)(x)
-context_vector = x
 
-
+# Global Average Pooling 추가
+context_vector = layers.GlobalAveragePooling1D()(x)  # shape: (batch_size, d_model)
 
 # 디코더 경로
 decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
 y_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(decoder_input)
 y = LearnablePositionalEmbedding(max_dec_len, d_model)(y_emb)
 
+# context_vector 반복 → 디코더 입력에 concat 또는 add
+context_repeated = layers.RepeatVector(max_dec_len)(context_vector)  # shape: (batch_size, max_dec_len, d_model)
 
+# 방법 1: Concatenate
+y = layers.Concatenate(axis=-1)([y, context_repeated])  # shape: (batch_size, max_dec_len, d_model * 2)
+z = layers.Dense(d_model)(y)  # Optional: dimensionality adjustment
+
+# 이후 gMLP 블록 계속
 z = GMLPBlock(d_model)(y)
 z = GMLPBlock(d_model)(z)
-out = FlashCrossAttention(d_model)(z, context_vector)
-y = OutputLayer(d_model)(z, out)
 
-z = GMLPBlock(d_model)(y)
-z = GMLPBlock(d_model)(z)
 
 
 logits = layers.Dense(vocab_size, dtype='float32')(z)  # mixed precision 보완
