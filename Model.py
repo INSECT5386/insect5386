@@ -49,7 +49,7 @@ for conversations in df["conversations"]:
             response = item2.get("value", "").strip().replace("\n", " ")
             full = f"<start> {prompt} <sep> {response} <end>"
             train_sentences.append(full)
-train_sentences = train_sentences[:20] # 예제용 소량
+train_sentences = train_sentences[:20000] # 예제용 소량
 print(f"총 문장 개수: {len(train_sentences)}")
 
 # ⬇️ 토크나이저 불러오기
@@ -186,8 +186,7 @@ class GMLPBlock(layers.Layer):
 
 
 # ===== 모델 구성 =====
-d_model = 256
-
+d_model = 128
 # 인코더 경로
 encoder_input = Input(shape=(max_enc_len,), name='encoder_input')
 x_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(encoder_input)
@@ -208,12 +207,8 @@ context_repeated = layers.RepeatVector(max_dec_len)(context_vector)  # shape: (b
 
 # 방법 1: Concatenate
 y = layers.Concatenate(axis=-1)([y, context_repeated])  # shape: (batch_size, max_dec_len, d_model * 2)
-z = layers.Dense(d_model)(y)  # Optional: dimensionality adjustment
 
-# 이후 gMLP 블록 계속
-z = GMLPBlock(d_model)(z)
-z = GMLPBlock(d_model)(z)
-z = layers.Dense(128)(z)
+z = GMLPBlock(d_model + d_model)(y)
 logits = layers.Dense(vocab_size, dtype='float32')(z)  # mixed precision 보완
 
 model = Model(inputs=[encoder_input, decoder_input], outputs=logits, name='SeProd')
