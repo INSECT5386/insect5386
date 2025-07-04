@@ -213,6 +213,7 @@ z = layers.Dense(d_model)(y)  # Optional: dimensionality adjustment
 # 이후 gMLP 블록 계속
 z = GMLPBlock(d_model)(z)
 z = GMLPBlock(d_model)(z)
+z = layers.Dense(128)(z)
 logits = layers.Dense(vocab_size, dtype='float32')(z)  # mixed precision 보완
 
 model = Model(inputs=[encoder_input, decoder_input], outputs=logits, name='SeProd')
