@@ -185,17 +185,6 @@ class GMLPBlock(layers.Layer):
         return x
 
 
-class OutputLayer(layers.Layer):
-    def __init__(self, dim, **kwargs):
-        super().__init__(**kwargs)
-        self.proj = layers.Dense(dim)
-        self.add = layers.Add()
-
-    def call(self, x, z):
-        X = self.add([x, z])
-        return self.proj(X)  # 간단한 residual projection
-
-
 # ===== 모델 구성 =====
 d_model = 256
 vocab_size = 48000
