@@ -187,9 +187,6 @@ class GMLPBlock(layers.Layer):
 
 # ===== 모델 구성 =====
 d_model = 256
-vocab_size = 48000
-max_enc_len = 128
-max_dec_len = 128
 
 # 인코더 경로
 encoder_input = Input(shape=(max_enc_len,), name='encoder_input')
@@ -216,9 +213,6 @@ z = layers.Dense(d_model)(y)  # Optional: dimensionality adjustment
 # 이후 gMLP 블록 계속
 z = GMLPBlock(d_model)(z)
 z = GMLPBlock(d_model)(z)
-
-
-
 logits = layers.Dense(vocab_size, dtype='float32')(z)  # mixed precision 보완
 
 model = Model(inputs=[encoder_input, decoder_input], outputs=logits, name='SeProd')
