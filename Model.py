@@ -266,9 +266,9 @@ class GLALayer(tf.keras.layers.Layer):
         context = tf.matmul(k, v, transpose_a=True)  # [B, H, hd, hd]
 
         if mask is not None:
-            mask = mask[tf.newaxis, tf.newaxis, :, :]  # [1, 1, T, T]
-            context = context * mask  # Apply mask via broadcasting
-
+            mask = mask[tf.newaxis, tf.newaxis, :, :]  # -> (1, 1, T, T)
+            context = context * mask  # Broadcasting으로 자동 확장됨
+    
         out = tf.matmul(q, context)  # [B, H, T, hd]
         out = tf.transpose(out, [0, 2, 1, 3])  # [B, T, H, hd]
         out = tf.reshape(out, (B, T, D))  # [B, T, D]
