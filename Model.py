@@ -264,6 +264,58 @@ class GLALayer(tf.keras.layers.Layer):
         out = tf.reshape(out, (B, T, D))
         return self.out_proj(out)
 
+class MaskedGLA(tf.keras.layers.Layer):
+    def __init__(self, dim, num_heads=8, **kwargs):
+        super().__init__(**kwargs)
+        self.dim = dim
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        assert dim % num_heads == 0, f"dim({dim}) must be divisible by num_heads({num_heads})"
+
+        self.qkv = tf.keras.layers.Dense(dim * 3)
+        self.out_proj = tf.keras.layers.Dense(dim)
+
+    def build(self, input_shape):
+        # Causal mask를 미리 생성 (크기는 최대 시퀀스 길이로 가변적일 수 있음)
+        super().build(input_shape)
+
+    def call(self, inputs, training=None):
+        B, T, D = tf.shape(inputs)[0], tf.shape(inputs)[1], tf.shape(inputs)[2]
+        qkv = self.qkv(inputs)
+        q, k, v = tf.split(qkv, 3, axis=-1)
+
+        # Split heads
+        q = tf.reshape(q, (B, T, self.num_heads, self.head_dim))
+        k = tf.reshape(k, (B, T, self.num_heads, self.head_dim))
+        v = tf.reshape(v, (B, T, self.num_heads, self.head_dim))
+
+        # Apply softmax on key
+        k = tf.nn.softmax(k, axis=1)  # [B, T, H, Hd]
+
+        # Global latent attention: key-value compressed across T
+        context = tf.einsum('bthd,bthv->bhdv', k, v)  # [B, H, Hd, Hd]
+
+        # Causal masking for query-key alignment
+        causal_mask = tf.ones((T, T), dtype=tf.float32)
+        causal_mask = tf.linalg.band_part(causal_mask, -1, 0)  # Lower triangle
+        causal_mask = tf.reshape(causal_mask, (1, T, T, 1, 1))  # For broadcasting
+
+        # Compute similarity between query and latent context
+        attn_logits = tf.einsum('bthd,bhdv->bhtv', q, context)  # [B, H, T, T]
+        
+        # Apply causal mask
+        attn_logits = attn_logits * causal_mask[0, :T, :T, 0, 0] - (1.0 - causal_mask[0, :T, :T, 0, 0]) * 1e9
+
+        # Softmax over the value projection
+        attn_weights = tf.nn.softmax(attn_logits, axis=-1)  # [B, H, T, T]
+
+        # Weighted sum of values
+        out = tf.einsum('bhtv,bthd->bthd', attn_weights, v)  # [B, T, H, Hd]
+
+        # Reshape & project output
+        out = tf.reshape(out, (B, T, D))
+        return self.out_proj(out)
+
 class LearnableGlobalPooling(layers.Layer):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -331,7 +383,7 @@ def build_seprod_model(d_model):
     decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
     y_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(decoder_input)
     y_pos = LearnablePositionalEmbedding(max_dec_len, d_model)(y_emb)
-    y = Core(d_model)(y_pos)
+    y = MaskedGLA(d_model)(y_pos)
     y = LinearFWLayer(d_model)(y, context_vector)
     y = Core(d_model)(y)
 
