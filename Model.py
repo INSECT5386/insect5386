@@ -308,6 +308,8 @@ def build_seprod_model(d_model):
     y = LinearFWLayer(d_model)(y, context_vector)
     y = Core(d_model)(y)
 
+    y_down_porj = layers.Dense(64)(y)
+
     # 출력 로짓
     logits = layers.Dense(vocab_size, dtype='float32')(y)
 
