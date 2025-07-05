@@ -3,24 +3,11 @@ import json
 import numpy as np  
 import pandas as pd
 import tensorflow as tf  
-from tensorflow.keras import layers 
-from tensorflow.keras.initializers import RandomNormal
 import sentencepiece as spm  
 import requests
-from tensorflow.keras.initializers import RandomNormal
-
-import tensorflow as tf
-from tensorflow.keras import layers, Model, Input
-
-import tensorflow as tf
 from tensorflow.keras import layers, Model, Input
 from tensorflow.keras.initializers import RandomNormal
 
-
-import tensorflow as tf
-from tensorflow.keras import layers, Model, Input
-from tensorflow.keras.initializers import RandomNormal
-from tensorflow.keras.layers import Dropout
 
 # ⬇️ 파일 다운로드 함수
 def download_file(url, save_path):
@@ -32,8 +19,8 @@ def download_file(url, save_path):
     print(f"✅ 파일 저장됨: {save_path}")
 
 # ⬇️ 데이터와 토크나이저 다운로드
-download_file('https://huggingface.co/datasets/Yuchan5386/KeraLux4/resolve/main/dataset.parquet?download=true', 'dataset.parquet')
-download_file('https://huggingface.co/datasets/Yuchan5386/KeraLux4/resolve/main/kolig_unigram.model?download=true', 'ko_unigram.model')
+download_file('https://huggingface.co/datasets/Yuchan5386/dataaaa/resolve/main/dataset.parquet?download=true', 'dataset.parquet')
+download_file('https://huggingface.co/datasets/Yuchan5386/dataaaa/resolve/main/kolig_unigram.model?download=true', 'ko_unigram.model')
 
 # ⬇️ Parquet 데이터 불러오기  
 df = pd.read_parquet("dataset.parquet", engine="pyarrow")
@@ -49,7 +36,7 @@ for conversations in df["conversations"]:
             response = item2.get("value", "").strip().replace("\n", " ")
             full = f"<start> {prompt} <sep> {response} <end>"
             train_sentences.append(full)
-train_sentences = train_sentences[:20000] # 예제용 소량
+train_sentences = train_sentences
 print(f"총 문장 개수: {len(train_sentences)}")
 
 # ⬇️ 토크나이저 불러오기
@@ -130,100 +117,15 @@ dataset = tf.data.Dataset.from_generator(
 dataset = dataset.shuffle(10000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 print("dataset ok")
 
-class LearnablePositionalEmbedding(layers.Layer):
-    def __init__(self, max_length, d_model, **kwargs):
-        super().__init__(**kwargs)
-        self.max_length = max_length
-        self.d_model = d_model
-        self.add = layers.Add()
-        pos_emb = tf.random.normal(shape=[max_length, d_model])
-        self.pos_emb = tf.Variable(
-            initial_value=pos_emb,
-            trainable=True,
-            name='positional_embedding'
-        )
-
-    def call(self, inputs):
-        seq_len = tf.shape(inputs)[1]
-        return self.add([inputs, self.pos_emb[tf.newaxis, :seq_len, :]])
-
-
-import tensorflow as tf
-from tensorflow.keras.layers import Dense
-
-
-class SpatialGatingUnit(layers.Layer):
-    def __init__(self, dim, **kwargs):
-        super().__init__(**kwargs)
-        self.gate = layers.Dense(dim)
-        self.mul = layers.Multiply()
-
-    def call(self, inputs):
-        gate_values = self.gate(inputs)
-        return self.mul([inputs, tf.sigmoid(gate_values)]) # Sigmoid gating
-
-
-class GMLPBlock(layers.Layer):
-    def __init__(self, dim, expansion_factor=1, **kwargs):
-        super().__init__(**kwargs)
-        self.dim = dim
-        self.expansion_factor = expansion_factor
-        self.norm = layers.LayerNormalization()
-        self.up_proj = layers.Dense(dim * expansion_factor)
-        self.act = layers.Activation('gelu')
-        self.sgu = SpatialGatingUnit(dim)
-        self.down_proj = layers.Dense(dim)
-        self.add = layers.Add()
-
-    def call(self, inputs):
-        x = self.norm(inputs)
-        x = self.up_proj(x)
-        x = self.act(x)
-        x = self.sgu(x)
-        x = self.down_proj(x)
-        x = self.add([x, inputs])
-        return x
-
-
-# ===== 모델 구성 =====
-d_model = 128
-# 인코더 경로
-encoder_input = Input(shape=(max_enc_len,), name='encoder_input')
-x_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(encoder_input)
-x = LearnablePositionalEmbedding(max_enc_len, d_model)(x_emb)
-x = GMLPBlock(d_model)(x)
-x = GMLPBlock(d_model)(x)
-
-# Global Average Pooling 추가
-context_vector = layers.GlobalAveragePooling1D()(x)  # shape: (batch_size, d_model)
-
-# 디코더 경로
-decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
-y_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(decoder_input)
-y = LearnablePositionalEmbedding(max_dec_len, d_model)(y_emb)
-
-# context_vector 반복 → 디코더 입력에 concat 또는 add
-context_repeated = layers.RepeatVector(max_dec_len)(context_vector)  # shape: (batch_size, max_dec_len, d_model)
-
-# 방법 1: Concatenate
-y = layers.Concatenate(axis=-1)([y, context_repeated])  # shape: (batch_size, max_dec_len, d_model * 2)
-
-z = GMLPBlock(d_model + d_model)(y)
-logits = layers.Dense(vocab_size, dtype='float32')(z)  # mixed precision 보완
-
-model = Model(inputs=[encoder_input, decoder_input], outputs=logits, name='SeProd')
-
 class Perplexity(tf.keras.metrics.Metric):
     def __init__(self, name='perplexity', **kwargs):
         super().__init__(name=name, **kwargs)
         self.total_loss = tf.Variable(0.0, dtype=tf.float32)
         self.total_count = tf.Variable(0, dtype=tf.int64)
+        self.loss_obj = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True, reduction='sum')
 
     def update_state(self, y_true, y_pred, sample_weight=None):
-        loss_obj = tf.keras.losses.SparseCategoricalCrossentropy(
-            from_logits=True, reduction='sum'
-        )
-        loss = loss_obj(y_true, y_pred)
+        loss = self.loss_obj(y_true, y_pred)
 
         # batch_size와 seq_len을 int64로 명시 변환
         batch_size = tf.cast(tf.shape(y_true)[0], tf.int64)
@@ -240,17 +142,219 @@ class Perplexity(tf.keras.metrics.Metric):
         self.total_loss.assign(0.0)
         self.total_count.assign(0)
 
-# ===== 컴파일 및 학습 =====
+
+class LearnablePositionalEmbedding(layers.Layer):
+    def __init__(self, max_length, d_model, **kwargs):
+        super().__init__(**kwargs)
+        self.max_length = max_length
+        self.d_model = d_model
+
+    def build(self, input_shape):
+        self.pos_emb = self.add_weight(
+            shape=(self.max_length, self.d_model),
+            initializer=tf.keras.initializers.RandomNormal(),
+            trainable=True,
+            name='positional_embedding'
+        )
+        self.add = layers.Add()
+
+    def call(self, inputs):
+        seq_len = tf.shape(inputs)[1]
+        x = self.pos_emb[tf.newaxis, :seq_len, :]
+        return self.add([inputs, x])
+
+
+class Core(layers.Layer):
+    def __init__(self, dim, dropout_rate=0.1, **kwargs):
+        super().__init__(**kwargs)
+        self.dim = dim
+        self.dropout_rate = dropout_rate
+
+    def build(self, input_shape):
+        self.norm = layers.LayerNormalization()
+        self.W = layers.Dense(self.dim * 2)
+        self.W1 = layers.Dense(self.dim * 2)
+        self.W2 = layers.Dense(self.dim)
+        self.W3 = layers.Dense(self.dim)
+        self.dropout = layers.Dropout(self.dropout_rate)
+        self.add_layer = layers.Add()
+        self.multiply = layers.Multiply()
+        super().build(input_shape)
+
+    def call(self, inputs, training=False):
+        x = self.W2(inputs)             # (batch, seq_len, dim)
+        x = self.W(x)                  # (batch, seq_len, dim*2)
+        x_S = tf.sigmoid(x)             # gating 값
+        x = self.multiply([x, x_S])     # element-wise gating
+        x = self.W3(x)                 # (batch, seq_len, dim)
+        
+        a, b = tf.split(x, 2, axis=-1) # SwiGLU 1
+        a = tf.nn.gelu(a)
+        x = self.multiply([a, b])
+        
+        x = self.W1(x)                 # (batch, seq_len, dim*2)
+        a, b = tf.split(x, 2, axis=-1) # SwiGLU 2
+        a = tf.nn.gelu(a)
+        x = self.multiply([a, b])
+        
+        x = self.dropout(x, training=training)
+        x = self.add_layer([x, inputs]) # residual
+        return self.norm(x)
+
+
+class LinearFWLayer(layers.Layer):
+    def __init__(self, dim, **kwargs):
+        super().__init__(**kwargs)
+        self.dim = dim
+
+    def build(self, input_shape):
+        self.Wq = layers.Dense(self.dim)
+        self.Wk = layers.Dense(self.dim)
+        self.Wv = layers.Dense(self.dim)
+        self.o = layers.Dense(self.dim)
+        self.multiply = layers.Multiply()
+        super().build(input_shape)
+
+    def call(self, inputs, context):
+        q = self.Wq(inputs)    # (B, Lq, D)
+        k = self.Wk(context)   # (B, Lk, D)
+        v = self.Wv(context)   # (B, Lk, D)
+
+        # φ 함수: elu + 1 같은 간단한 커널 함수
+        phi = lambda x: tf.nn.elu(x) + 1
+
+        q_phi = phi(q)  # (B, Lq, D)
+        k_phi = phi(k)  # (B, Lk, D)
+
+        # 선형 어텐션 핵심: (Qφ * (Kφᵀ * V)) / (Qφ * (Kφᵀ * 1))
+        kv = tf.matmul(k_phi, v, transpose_a=True)   # (B, D, D)
+        z = 1 / (tf.matmul(q_phi, tf.reduce_sum(k_phi, axis=1, keepdims=True), transpose_b=True) + 1e-6)  # (B, Lq, 1)
+
+        output = tf.matmul(q_phi, kv)  # (B, Lq, D)
+        output = self.multiply([output, z])  # 스케일링
+
+        output = self.o(output) + inputs  # 잔차 연결
+
+        return output
+    
+
+class LearnableGlobalPooling(layers.Layer):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+    def build(self, input_shape):
+        # input_shape: (batch_size, seq_len, dim)
+        self.attention_weights = self.add_weight(
+            shape=(input_shape[-1], 1),  # 각 토큰 feature 차원마다 1개 가중치
+            initializer='glorot_uniform',
+            trainable=True,
+            name='attention_weights'
+        )
+        self.multiply = layers.Multiply()
+        super().build(input_shape)
+
+    def call(self, inputs):
+        # inputs: (batch_size, seq_len, dim)
+        # attention_scores: (batch_size, seq_len, 1)
+        attention_scores = tf.matmul(inputs, self.attention_weights)  
+        attention_scores = tf.nn.tanh(attention_scores)  # 비선형 활성화 (선택사항)
+        attention_scores = tf.nn.softmax(attention_scores, axis=1)  # seq_len 축 기준 확률 분포
+        
+        x = self.multiply([inputs, attention_scores])  # (batch_size, seq_len, dim) * (batch_size, seq_len, 1)
+        # 가중합: (batch_size, seq_len, dim) * (batch_size, seq_len, 1) -> (batch_size, dim)
+        weighted_sum = tf.reduce_sum(x, axis=1)
+        return weighted_sum
+
+class LearnableRepeatVector(layers.Layer):
+    def __init__(self, n, dim, **kwargs):
+        super().__init__(**kwargs)
+        self.n = n
+        self.dim = dim
+
+    def build(self, input_shape):
+        # self.weight shape를 (1, n, dim) 으로 만들어서 브로드캐스트 가능하게 변경
+        self.weight = self.add_weight(
+            shape=(1, self.n, self.dim),
+            initializer='ones',
+            trainable=True,
+            name='repeat_weight'
+        )
+        self.multiply = layers.Multiply()
+        super().build(input_shape)
+
+    def call(self, inputs):
+        # inputs: (batch, dim)
+        x = tf.expand_dims(inputs, axis=1)  # (batch, 1, dim)
+        x = tf.tile(x, [1, self.n, 1])      # (batch, n, dim)
+        return self.multiply([x, self.weight])  # 브로드캐스트 문제 없이 곱해짐
+
+
+def build_seprod_model(d_model):
+    # 인코더 입력 및 임베딩 + 위치 임베딩
+    encoder_input = Input(shape=(max_enc_len,), name='encoder_input')
+    x_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(encoder_input)
+    x = LearnablePositionalEmbedding(max_enc_len, d_model)(x_emb)
+    x = Core(d_model)(x)
+    x = LinearFWLayer(d_model)(x, x)
+    x = Core(d_model)(x)
+
+    # 컨텍스트 벡터 (인코더 출력 요약)
+    context_vector = LearnableGlobalPooling()(x)  # 객체 생성 후 호출
+    context_vector = LearnableRepeatVector(max_dec_len, d_model)(context_vector)  # 반복 및 학습 가중치
+
+    # 디코더 입력 및 임베딩 + 위치 임베딩
+    decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
+    y_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(decoder_input)
+    y_pos = LearnablePositionalEmbedding(max_dec_len, d_model)(y_emb)
+    y = Core(d_model)(y_pos)
+    y = LinearFWLayer(d_model)(y, context_vector)
+    y = Core(d_model)(y)
+
+    # 출력 로짓
+    logits = layers.Dense(vocab_size, dtype='float32')(y)
+
+    return Model(inputs=[encoder_input, decoder_input], outputs=logits, name='SeProd')
+
+
+
+d_model = 256
+model = build_seprod_model(d_model)
+
+import tensorflow as tf
+
+steps_per_epoch = len(train_sentences) // batch_size
+epochs = 1
+
+initial_learning_rate = 1e-3
+decay_steps = steps_per_epoch * epochs
+alpha = 1e-6         # 최소 lr, 0에 가까운 값
+
+lr_schedule = tf.keras.optimizers.schedules.CosineDecay(
+    initial_learning_rate=initial_learning_rate,
+    decay_steps=decay_steps,
+    alpha=alpha
+)
+
+optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule)
+
 model.compile(
-    optimizer='adam',
+    optimizer=optimizer,
     loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
     metrics=['accuracy', Perplexity()]
 )
 
-# 모델 요약
 model.summary()
 
-model.fit(dataset, epochs=1, steps_per_epoch=len(train_sentences) // batch_size)
+model.fit(
+    dataset,
+    epochs=epochs,
+    steps_per_epoch=steps_per_epoch,
+
+)
+
+model.save("SeProD.h5")
+
+
 
 
 def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=False):
