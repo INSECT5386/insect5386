@@ -164,71 +164,82 @@ class LearnablePositionalEmbedding(layers.Layer):
         return self.add([inputs, x])
 
 
-import tensorflow as tf
-from tensorflow.keras import layers
+class ComplexDense(layers.Layer):
+    def __init__(self, units, **kwargs):
+        super().__init__(**kwargs)
+        self.units = units
+
+    def build(self, input_shape):
+        real_dim = input_shape[-1]
+        # 실수부/허수부 가중치 따로
+        self.Wr = self.add_weight(shape=(real_dim, self.units), initializer='glorot_uniform', name='W_real')
+        self.Wi = self.add_weight(shape=(real_dim, self.units), initializer='glorot_uniform', name='W_imag')
+        self.br = self.add_weight(shape=(self.units,), initializer='zeros', name='b_real')
+        self.bi = self.add_weight(shape=(self.units,), initializer='zeros', name='b_imag')
+        super().build(input_shape)
+
+    def call(self, re, im):
+        # 복소수 곱: (a + ib)(c + id) = (ac - bd) + i(ad + bc)
+        re_out = tf.matmul(re, self.Wr) - tf.matmul(im, self.Wi) + self.br
+        im_out = tf.matmul(re, self.Wi) + tf.matmul(im, self.Wr) + self.bi
+        return re_out, im_out
 
 class Core(layers.Layer):
     def __init__(self, dim, dropout_rate=0.1, **kwargs):
         super().__init__(**kwargs)
-        assert dim % 2 == 0, "dim은 짝수여야 해! (실수/허수 나눠야 하니까)"
+        assert dim % 2 == 0, "dim은 짝수여야 해요!"
         self.dim = dim
+        self.half = dim // 2
         self.dropout_rate = dropout_rate
-        self.half_dim = dim // 2
 
     def build(self, input_shape):
-        # Re/Im 분리 후 각각 독립 처리
         self.norm_re = layers.LayerNormalization()
         self.norm_im = layers.LayerNormalization()
 
-        self.re_dense1 = layers.Dense(self.half_dim * 2)
-        self.im_dense1 = layers.Dense(self.half_dim * 2)
-
-        self.re_dense2 = layers.Dense(self.half_dim)
-        self.im_dense2 = layers.Dense(self.half_dim)
+        self.complex_dense1 = ComplexDense(self.half * 2)  # 확장
+        self.complex_dense2 = ComplexDense(self.half)      # 축소
 
         self.dropout = layers.Dropout(self.dropout_rate)
 
         self.multiply = layers.Multiply()
-        self.add = layers.Add()
-
         super().build(input_shape)
 
     def call(self, inputs, training=False):
-        # 실수부 / 허수부 분리
-        re, im = tf.split(inputs, 2, axis=-1)  # [B, L, D/2] x 2
+        re, im = tf.split(inputs, 2, axis=-1)
 
-        # 정규화
-        re_norm = self.norm_re(re)
-        im_norm = self.norm_im(im)
+        re = self.norm_re(re)
+        im = self.norm_im(im)
 
-        # 각각 변환: GEGLU 스타일
-        re_proj = self.re_dense1(re_norm)
-        a_re, b_re = tf.split(re_proj, 2, axis=-1)
-        re_out = tf.nn.gelu(a_re)
-        re_out = self.multiply([re_out, b_re])
-        re_out = self.re_dense2(re_out)
+        # 복소수 dense 연산 1
+        re1, im1 = self.complex_dense1(re, im)
 
-        im_proj = self.im_dense1(im_norm)
-        a_im, b_im = tf.split(im_proj, 2, axis=-1)
-        im_out = tf.nn.gelu(a_im)
-        im_out = self.multiply([im_out, b_im])
-        im_out = self.im_dense2(im_out)
+        # GEGLU 스타일 (복소수로)
+        are, bre = tf.split(re1, 2, axis=-1)
+        aim, bim = tf.split(im1, 2, axis=-1)
 
-        # "복소수 곱" 스타일 교차작용
-        out_re = re_out - im_out
-        out_im = re_out + im_out
+        are = tf.nn.gelu(are)
+        aim = tf.nn.gelu(aim)
+        re2 = self.multiply([are, bre])
+        rei = self.multiply([aim, bim])
+        re2 = re2 - rei
 
-        # 드롭아웃 + Residual
-        out_re = self.dropout(out_re, training=training)
-        out_im = self.dropout(out_im, training=training)
 
-        out_re = self.add([out_re, re])
-        out_im = self.add([out_im, im])
+        im2 = self.multiply([are, bim])
+        imi = self.multiply([aim, bre])
+        im2 = im2 + imi
 
-        # 다시 합치기
-        output = tf.concat([out_re, out_im], axis=-1)
-        return output
 
+        # 복소수 dense 연산 2
+        re3, im3 = self.complex_dense2(re2, im2)
+
+        re3 = self.dropout(re3, training=training)
+        im3 = self.dropout(im3, training=training)
+
+        # residual
+        re_out = re + re3
+        im_out = im + im3
+
+        return tf.concat([re_out, im_out], axis=-1)
 
 
 class LinearFWLayer(layers.Layer):
