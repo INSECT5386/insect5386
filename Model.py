@@ -20,7 +20,7 @@ def download_file(url, save_path):
 
 # ⬇️ 데이터와 토크나이저 다운로드
 download_file('https://huggingface.co/datasets/Yuchan5386/dataaaa/resolve/main/dataset.parquet?download=true', 'dataset.parquet')
-download_file('https://huggingface.co/datasets/Yuchan5386/dataaaa/resolve/main/kolig_unigram.model?download=true', 'ko_unigram.model')
+download_file('https://huggingface.co/datasets/Yuchan5386/dataaaa/resolve/main/kolig_unigram(1).model?download=true', 'ko_unigram.model')
 
 # ⬇️ Parquet 데이터 불러오기  
 df = pd.read_parquet("dataset.parquet", engine="pyarrow")
@@ -36,7 +36,7 @@ for conversations in df["conversations"]:
             response = item2.get("value", "").strip().replace("\n", " ")
             full = f"<start> {prompt} <sep> {response} <end>"
             train_sentences.append(full)
-train_sentences = train_sentences
+train_sentences = train_sentences[:200000]
 print(f"총 문장 개수: {len(train_sentences)}")
 
 # ⬇️ 토크나이저 불러오기
@@ -307,8 +307,6 @@ def build_seprod_model(d_model):
     y = Core(d_model)(y_pos)
     y = LinearFWLayer(d_model)(y, context_vector)
     y = Core(d_model)(y)
-
-    y_down_porj = layers.Dense(64)(y)
 
     # 출력 로짓
     logits = layers.Dense(vocab_size, dtype='float32')(y)
