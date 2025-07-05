@@ -293,7 +293,6 @@ def build_seprod_model(d_model):
     x_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(encoder_input)
     x = LearnablePositionalEmbedding(max_enc_len, d_model)(x_emb)
     x = Core(d_model)(x)
-    x = LinearFWLayer(d_model)(x, x)
     x = Core(d_model)(x)
 
     # 컨텍스트 벡터 (인코더 출력 요약)
