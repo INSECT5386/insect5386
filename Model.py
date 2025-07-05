@@ -234,7 +234,35 @@ class LinearFWLayer(layers.Layer):
         output = self.o(output) + inputs  # 잔차 연결
 
         return output
-    
+
+class GLALayer(tf.keras.layers.Layer):
+    def __init__(self, dim, num_heads=8, **kwargs):
+        super().__init__(**kwargs)
+        self.dim = dim
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        assert dim % num_heads == 0, f"dim({dim}) must be divisible by num_heads({num_heads})"
+
+        self.qkv = tf.keras.layers.Dense(dim * 3)
+        self.out_proj = tf.keras.layers.Dense(dim)
+
+    def call(self, inputs, training=None):
+        B, T, D = tf.shape(inputs)[0], tf.shape(inputs)[1], tf.shape(inputs)[2]
+        q, k, v = tf.split(self.qkv(inputs), 3, axis=-1)
+
+
+        # Split heads
+        q = tf.reshape(q, (B, T, self.num_heads, self.head_dim))
+        k = tf.reshape(k, (B, T, self.num_heads, self.head_dim))
+        v = tf.reshape(v, (B, T, self.num_heads, self.head_dim))
+
+        # Global latent attention
+        k = tf.nn.softmax(k, axis=1)
+        context = tf.einsum('bthd,bthv->bhdv', k, v)
+        out = tf.einsum('bthd,bhdv->bthv', q, context)
+
+        out = tf.reshape(out, (B, T, D))
+        return self.out_proj(out)
 
 class LearnableGlobalPooling(layers.Layer):
     def __init__(self, **kwargs):
@@ -292,7 +320,7 @@ def build_seprod_model(d_model):
     encoder_input = Input(shape=(max_enc_len,), name='encoder_input')
     x_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(encoder_input)
     x = LearnablePositionalEmbedding(max_enc_len, d_model)(x_emb)
-    x = Core(d_model)(x)
+    x = GLALayer(d_model)(x)
     x = Core(d_model)(x)
 
     # 컨텍스트 벡터 (인코더 출력 요약)
