@@ -163,85 +163,43 @@ class LearnablePositionalEmbedding(layers.Layer):
         x = self.pos_emb[tf.newaxis, :seq_len, :]
         return self.add([inputs, x])
 
-
-class ComplexDense(layers.Layer):
-    def __init__(self, units, **kwargs):
-        super().__init__(**kwargs)
-        self.units = units
-
-    def build(self, input_shape):
-        real_dim = input_shape[-1]
-        # 실수부/허수부 가중치 따로
-        self.Wr = self.add_weight(shape=(real_dim, self.units), initializer='glorot_uniform', name='W_real')
-        self.Wi = self.add_weight(shape=(real_dim, self.units), initializer='glorot_uniform', name='W_imag')
-        self.br = self.add_weight(shape=(self.units,), initializer='zeros', name='b_real')
-        self.bi = self.add_weight(shape=(self.units,), initializer='zeros', name='b_imag')
-        super().build(input_shape)
-
-    def call(self, re, im):
-        # 복소수 곱: (a + ib)(c + id) = (ac - bd) + i(ad + bc)
-        re_out = tf.matmul(re, self.Wr) - tf.matmul(im, self.Wi) + self.br
-        im_out = tf.matmul(re, self.Wi) + tf.matmul(im, self.Wr) + self.bi
-        return re_out, im_out
-
 class Core(layers.Layer):
     def __init__(self, dim, dropout_rate=0.1, **kwargs):
         super().__init__(**kwargs)
-        assert dim % 2 == 0, "dim은 짝수여야 해요!"
         self.dim = dim
-        self.half = dim // 2
         self.dropout_rate = dropout_rate
 
     def build(self, input_shape):
-        self.norm_re = layers.LayerNormalization()
-        self.norm_im = layers.LayerNormalization()
-
-        self.complex_dense1 = ComplexDense(self.half * 2)  # 확장
-        self.complex_dense2 = ComplexDense(self.half)      # 축소
-
+        self.norm = layers.LayerNormalization()
+        self.W = layers.Dense(self.dim * 2)
+        self.W1 = layers.Dense(self.dim * 2)
+        self.W2 = layers.Dense(self.dim)
+        self.W3 = layers.Dense(self.dim)
         self.dropout = layers.Dropout(self.dropout_rate)
-
+        self.add_layer = layers.Add()
         self.multiply = layers.Multiply()
         super().build(input_shape)
 
     def call(self, inputs, training=False):
-        re, im = tf.split(inputs, 2, axis=-1)
-
-        re = self.norm_re(re)
-        im = self.norm_im(im)
-
-        # 복소수 dense 연산 1
-        re1, im1 = self.complex_dense1(re, im)
-
-        # GEGLU 스타일 (복소수로)
-        are, bre = tf.split(re1, 2, axis=-1)
-        aim, bim = tf.split(im1, 2, axis=-1)
-
-        are = tf.nn.gelu(are)
-        aim = tf.nn.gelu(aim)
-        re2 = self.multiply([are, bre])
-        rei = self.multiply([aim, bim])
-        re2 = re2 - rei
-
-
-        im2 = self.multiply([are, bim])
-        imi = self.multiply([aim, bre])
-        im2 = im2 + imi
-
-
-        # 복소수 dense 연산 2
-        re3, im3 = self.complex_dense2(re2, im2)
-
-        re3 = self.dropout(re3, training=training)
-        im3 = self.dropout(im3, training=training)
-
-        # residual
-        re_out = re + re3
-        im_out = im + im3
-
-        return tf.concat([re_out, im_out], axis=-1)
-
-
+        x = self.W2(inputs)             # (batch, seq_len, dim)
+        x = self.W(x)                  # (batch, seq_len, dim*2)
+        x_S = tf.sigmoid(x)             # gating 값
+        x = self.multiply([x, x_S])     # element-wise gating
+        x = self.W3(x)                 # (batch, seq_len, dim)
+        
+        a, b = tf.split(x, 2, axis=-1) # SwiGLU 1
+        a = tf.nn.gelu(a)
+        x = self.multiply([a, b])
+        
+        x = self.W1(x)                 # (batch, seq_len, dim*2)
+        a, b = tf.split(x, 2, axis=-1) # SwiGLU 2
+        a = tf.nn.gelu(a)
+        x = self.multiply([a, b])
+        
+        x = self.dropout(x, training=training)
+        x = self.add_layer([x, inputs]) # residual
+        return self.norm(x)
+        
 class LinearFWLayer(layers.Layer):
     def __init__(self, dim, **kwargs):
         super().__init__(**kwargs)
