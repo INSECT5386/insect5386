@@ -246,40 +246,7 @@ class GLALayer(tf.keras.layers.Layer):
         self.qkv = tf.keras.layers.Dense(dim * 3)
         self.out_proj = tf.keras.layers.Dense(dim)
 
-    def call(self, inputs, training=None):
-        B, T, D = tf.shape(inputs)[0], tf.shape(inputs)[1], tf.shape(inputs)[2]
-        q, k, v = tf.split(self.qkv(inputs), 3, axis=-1)
-
-
-        # Split heads
-        q = tf.reshape(q, (B, T, self.num_heads, self.head_dim))
-        k = tf.reshape(k, (B, T, self.num_heads, self.head_dim))
-        v = tf.reshape(v, (B, T, self.num_heads, self.head_dim))
-
-        # Global latent attention
-        k = tf.nn.softmax(k, axis=1)
-        context = tf.einsum('bthd,bthv->bhdv', k, v)
-        out = tf.einsum('bthd,bhdv->bthv', q, context)
-
-        out = tf.reshape(out, (B, T, D))
-        return self.out_proj(out)
-
-class MaskedGLA(tf.keras.layers.Layer):
-    def __init__(self, dim, num_heads=8, **kwargs):
-        super().__init__(**kwargs)
-        self.dim = dim
-        self.num_heads = num_heads
-        self.head_dim = dim // num_heads
-        assert dim % num_heads == 0, f"dim({dim}) must be divisible by num_heads({num_heads})"
-
-        self.qkv = tf.keras.layers.Dense(dim * 3)
-        self.out_proj = tf.keras.layers.Dense(dim)
-
-    def build(self, input_shape):
-        # Causal mask를 미리 생성 (크기는 최대 시퀀스 길이로 가변적일 수 있음)
-        super().build(input_shape)
-
-    def call(self, inputs, training=None):
+    def call(self, inputs, training=None, mask=None):
         B, T, D = tf.shape(inputs)[0], tf.shape(inputs)[1], tf.shape(inputs)[2]
         qkv = self.qkv(inputs)
         q, k, v = tf.split(qkv, 3, axis=-1)
@@ -289,31 +256,29 @@ class MaskedGLA(tf.keras.layers.Layer):
         k = tf.reshape(k, (B, T, self.num_heads, self.head_dim))
         v = tf.reshape(v, (B, T, self.num_heads, self.head_dim))
 
-        # Apply softmax on key
-        k = tf.nn.softmax(k, axis=1)  # [B, T, H, Hd]
+        # Global latent attention
+        k = tf.nn.softmax(k, axis=1)
 
-        # Global latent attention: key-value compressed across T
-        context = tf.einsum('bthd,bthv->bhdv', k, v)  # [B, H, Hd, Hd]
+        # [B, T, H, hd] -> [B, H, T, hd]
+        q = tf.transpose(q, [0, 2, 1, 3])
+        k = tf.transpose(k, [0, 2, 1, 3])
+        v = tf.transpose(v, [0, 2, 1, 3])
 
-        # Causal masking for query-key alignment
-        causal_mask = tf.ones((T, T), dtype=tf.float32)
-        causal_mask = tf.linalg.band_part(causal_mask, -1, 0)  # Lower triangle
-        causal_mask = tf.reshape(causal_mask, (1, T, T, 1, 1))  # For broadcasting
+        # Context matrix (key-value correlation across time)
+        context = tf.matmul(k, v, transpose_a=True)  # [B, H, hd, hd]
 
-        # Compute similarity between query and latent context
-        attn_logits = tf.einsum('bthd,bhdv->bhtv', q, context)  # [B, H, T, T]
-        
-        # Apply causal mask
-        attn_logits = attn_logits * causal_mask[0, :T, :T, 0, 0] - (1.0 - causal_mask[0, :T, :T, 0, 0]) * 1e9
+        # Apply look-ahead mask to attention weights if provided
+        if mask is not None:
+            mask = mask[:, tf.newaxis, :, :]  # [B, 1, 1, T]
+            context = context * mask  # or use additive masking with -inf
 
-        # Softmax over the value projection
-        attn_weights = tf.nn.softmax(attn_logits, axis=-1)  # [B, H, T, T]
+        # Compute output
+        out = tf.matmul(q, context)  # [B, H, T, hd]
 
-        # Weighted sum of values
-        out = tf.einsum('bhtv,bthd->bthd', attn_weights, v)  # [B, T, H, Hd]
+        # Reshape back
+        out = tf.transpose(out, [0, 2, 1, 3])  # [B, T, H, hd]
+        out = tf.reshape(out, (B, T, D))  # [B, T, D]
 
-        # Reshape & project output
-        out = tf.reshape(out, (B, T, D))
         return self.out_proj(out)
 
 class LearnableGlobalPooling(layers.Layer):
@@ -367,12 +332,17 @@ class LearnableRepeatVector(layers.Layer):
         return self.multiply([x, self.weight])  # 브로드캐스트 문제 없이 곱해짐
 
 
+def create_lookahead_mask(size):
+    mask = 1 - tf.linalg.band_part(tf.ones((size, size)), -1, 0)
+    return mask  # (size, size), 1 for masked positions
+
+
 def build_seprod_model(d_model):
     # 인코더 입력 및 임베딩 + 위치 임베딩
     encoder_input = Input(shape=(max_enc_len,), name='encoder_input')
     x_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(encoder_input)
     x = LearnablePositionalEmbedding(max_enc_len, d_model)(x_emb)
-    x = GLALayer(d_model)(x)
+    x = GLALayer(d_model)(x, mask=False)
     x = Core(d_model)(x)
 
     # 컨텍스트 벡터 (인코더 출력 요약)
@@ -383,7 +353,10 @@ def build_seprod_model(d_model):
     decoder_input = Input(shape=(max_dec_len,), name='decoder_input')
     y_emb = layers.Embedding(input_dim=vocab_size, output_dim=d_model)(decoder_input)
     y_pos = LearnablePositionalEmbedding(max_dec_len, d_model)(y_emb)
-    y = MaskedGLA(d_model)(y_pos)
+    
+    lookahead_mask = create_lookahead_mask(max_dec_len)
+    
+    y = MaskedGLA(d_model)(y_pos, mask=lookahead_mask)
     y = LinearFWLayer(d_model)(y, context_vector)
     y = Core(d_model)(y)
 
