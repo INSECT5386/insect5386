@@ -2,11 +2,23 @@ import csv
 import re
 import numpy as np
 import tensorflow as tf
+import requests
 import tensorflow.experimental.numpy as tnp
 tnp.experimental_enable_numpy_behavior()
 
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.preprocessing import LabelEncoder
+
+def download_file(url, save_path):
+    response = requests.get(url, stream=True)
+    response.raise_for_status()
+    with open(save_path, 'wb') as f:
+        for chunk in response.iter_content(chunk_size=8192):
+            f.write(chunk)
+    print(f"✅ 파일 저장됨: {save_path}")
+
+# ⬇️ 데이터와 토크나이저 다운로드
+download_file('https://raw.githubusercontent.com/INSECT5386/SeQRoN/main/data.csv?spm=a2ty_o01.29997173.0.0.7edec921fx1gz3&file=data.csv', 'MLdata.csv')
 
 # 토크나이저
 def tokenize(text):
@@ -20,8 +32,8 @@ pairs = []
 with open(csv_path, encoding="utf-8") as f:
     reader = csv.DictReader(f)
     for row in reader:
-        inp = row["input_text"].strip()
-        out = row["output_text"].strip()
+        inp = row["questions"].strip()
+        out = row["answers"].strip()
         pairs.append((inp, out))
 
 # 벡터라이저 및 라벨 인코더 준비
