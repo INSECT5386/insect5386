@@ -107,8 +107,10 @@ def generate(model_weights_list, input_text, max_len=20, top_p=0.9, temperature=
     print(f"[DEBUG] 입력 문장: {input_text}")
     for step in range(max_len):
         context = " ".join(tokenize(input_text) + generated)
+        
+        # CountVectorizer → toarray() 추가!
         X_context = vectorizer.transform([context]).astype(np.float32)
-        X_tensor = tf.constant(X_context)
+        X_tensor = tf.constant(X_context.toarray())  # ← 여기가 핵심!
 
         preds = []
         for w in model_weights_list:
