@@ -64,18 +64,11 @@ def prepare_data_for_gpu(pairs, vectorizer, label_encoder):
 
 # 릿지 회귀 함수 (TensorFlow 기반)
 def ridge_regression_tf(X, y, alpha=1.0):
-    X = tnp.asarray(X)
-    y = tnp.asarray(y)
-
-    if X.shape[1] != y.shape[0]:
-        X = tnp.hstack([X, tnp.ones((X.shape[0], 1))])
-
-    XtX = X.T @ X
-    I = tnp.eye(XtX.shape[0], dtype=X.dtype)
-    XtX_reg = XtX + alpha * I
-
-    Xty = X.T @ y
-    w = tnp.linalg.solve(XtX_reg, Xty)  # ❗ inv() 대신 solve()
+    XtX = tf.matmul(X, X, transpose_a=True)
+    XtX_reg = XtX + alpha * tf.eye(X.shape[1], dtype=X.dtype)
+    XtX_reg_inv = tf.linalg.inv(XtX_reg)
+    Xty = tf.matmul(X, y, transpose_a=True)
+    w = tf.matmul(XtX_reg_inv, Xty)
     return w
 
 # 앙상블 모델 학습
