@@ -1,119 +1,126 @@
+import csv
 import re
 import numpy as np
+import tensorflow as tf
+import tensorflow.experimental.numpy as tnp
+tnp.experimental_enable_numpy_behavior()
+
 from sklearn.feature_extraction.text import CountVectorizer
-from sklearn.linear_model import Ridge
 from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.multioutput import MultiOutputRegressor
-import random
 
 # 토크나이저
 def tokenize(text):
     return re.findall(r'\b\w+\b', text.lower())
 
-# 데이터 준비: (context, one-hot 벡터) 생성
-def prepare_data(pairs, label_encoder, contexts_only=False):
-    X, y_vecs = [], []
-    for inp, out in pairs:
-        inp_tokens = tokenize(inp)
-        out_tokens = tokenize(out) + ["<EOS>"]
-        prefix = []
-        for token in out_tokens:
-            context = " ".join(inp_tokens + prefix)
-            X.append(context)
-            if not contexts_only:
-                vec = np.zeros(len(label_encoder.classes_), dtype=float)
-                idx = label_encoder.transform([token])[0]
-                vec[idx] = 1.0
-                y_vecs.append(vec)
-            prefix.append(token)
-    if contexts_only:
-        return X
-    return X, np.vstack(y_vecs)
+# 데이터셋 경로 설정
+csv_path = "MLdata.csv"
 
-# Top-P 샘플링 함수
-def top_p_sampling(probabilities, p=0.9):
-    sorted_indices = np.argsort(probabilities)[::-1]
-    sorted_probs = probabilities[sorted_indices]
-    cumulative_probs = np.cumsum(sorted_probs)
-    cutoff = np.searchsorted(cumulative_probs, p) + 1
+# CSV에서 (input, output) 쌍 읽기
+pairs = []
+with open(csv_path, encoding="utf-8") as f:
+    reader = csv.DictReader(f)
+    for row in reader:
+        inp = row["input_text"].strip()
+        out = row["output_text"].strip()
+        pairs.append((inp, out))
+
+# 벡터라이저 및 라벨 인코더 준비
+vectorizer = CountVectorizer(tokenizer=tokenize, ngram_range=(1, 3))
+all_texts = [p[0] + " " + p[1] for p in pairs]
+vectorizer.fit(all_texts)
+
+le = LabelEncoder()
+le.fit([token for out in [p[1] for p in pairs] for token in tokenize(out)] + ["<EOS>"])
+
+# 데이터 준비 함수 (GPU 호환)
+def prepare_data_for_gpu(pairs, vectorizer, label_encoder):
+    X_list, y_list = [], []
+    for inp, out in pairs:
+        tokens = tokenize(out) + ["<EOS>"]
+        prefix = []
+        for token in tokens:
+            context = " ".join(tokenize(inp) + prefix)
+            X_list.append(context)
+            vec = np.zeros(len(label_encoder.classes_), dtype=np.float32)
+            idx = label_encoder.transform([token])[0]
+            vec[idx] = 1.0
+            y_list.append(vec)
+            prefix.append(token)
+    X_vec = vectorizer.transform(X_list).astype(np.float32)
+    y_vec = np.array(y_list)
+    return tf.constant(X_vec.toarray()), tf.constant(y_vec)
+
+# 릿지 회귀 함수 (TensorFlow 기반)
+def ridge_regression_tf(X, y, alpha=1.0):
+    XtX = tf.matmul(X, X, transpose_a=True)
+    XtX_reg = XtX + alpha * tf.eye(X.shape[1], dtype=X.dtype)
+    XtX_reg_inv = tf.linalg.inv(XtX_reg)
+    Xty = tf.matmul(X, y, transpose_a=True)
+    w = tf.matmul(XtX_reg_inv, Xty)
+    return w
+
+# 앙상블 모델 학습
+n_models = 3
+ridge_weights_list = []
+
+X_train_tensor, y_train_tensor = prepare_data_for_gpu(pairs[:250], vectorizer, le)
+
+for i in range(n_models):
+    print(f"[INFO] 모델 {i+1} 학습 중...")
+    noise = tf.random.normal(shape=tf.shape(X_train_tensor), stddev=0.01, dtype=tf.float32)
+    X_noisy = tf.clip_by_value(X_train_tensor + noise, 0.0, tf.reduce_max(X_train_tensor))
+    weights = ridge_regression_tf(X_noisy, y_train_tensor, alpha=1.0)
+    ridge_weights_list.append(weights)
+
+# Top-P 샘플링 (GPU 지원)
+def top_p_sampling_gpu(logits, p=0.9, temperature=1.0):
+    logits = logits / temperature
+    probs = tf.nn.softmax(logits)
+    sorted_indices = tf.argsort(probs, direction='DESCENDING')[0]
+    sorted_probs = tf.gather(probs[0], sorted_indices)
+    cumulative_probs = tf.math.cumsum(sorted_probs)
+
+    cutoff = tf.reduce_sum(tf.cast(cumulative_probs <= p, tf.int32)) + 1
     candidates = sorted_indices[:cutoff]
     candidate_probs = sorted_probs[:cutoff]
-    candidate_probs /= candidate_probs.sum()
-    chosen = np.random.choice(candidates, p=candidate_probs)
-    return chosen
+    candidate_probs = candidate_probs / tf.reduce_sum(candidate_probs)
 
-class AuMoRegressionEnsemble:
-    def __init__(self, n_models=3):
-        self.vectorizer = CountVectorizer(ngram_range=(1,3))
-        self.le = LabelEncoder()
-        self.models = [MultiOutputRegressor(Ridge(alpha=1.0)) for _ in range(n_models)]
-        self.vocab_embeddings = None
+    chosen_index = tf.random.categorical(tf.math.log([candidate_probs]), 1)[0, 0]
+    chosen_token_idx = candidates[chosen_index]
+    return chosen_token_idx.numpy().item()
 
-    def fit(self, pairs):
-        tokens = []
-        for _, out in pairs:
-            tokens.extend(tokenize(out))
-        tokens.append("<EOS>")
-        self.le.fit(tokens)
+# 생성 함수
+def generate(model_weights_list, input_text, max_len=20, top_p=0.9, temperature=1.0):
+    generated = []
+    print(f"[DEBUG] 입력 문장: {input_text}")
+    for step in range(max_len):
+        context = " ".join(tokenize(input_text) + generated)
+        X_context = vectorizer.transform([context]).astype(np.float32)
+        X_tensor = tf.constant(X_context)
 
-        X_text, y_vecs = prepare_data(pairs, self.le)
-        X_vec = self.vectorizer.fit_transform(X_text)
+        preds = []
+        for w in model_weights_list:
+            pred = tf.matmul(X_tensor, w)
+            preds.append(pred)
 
-        # vocab_embeddings는 원-핫 단위행렬로!
-        self.vocab_embeddings = np.eye(len(self.le.classes_))
+        avg_pred = tf.reduce_mean(preds, axis=0)
+        sims = tf.nn.softmax(avg_pred)
 
-        for i, model in enumerate(self.models):
-            print(f"[INFO] 모델 {i+1} 학습 중...")
-            model.fit(X_vec, y_vecs)
-        print("[INFO] 앙상블 학습 완료!")
+        next_idx = top_p_sampling_gpu(sims, p=top_p, temperature=temperature)
+        next_token = le.inverse_transform([next_idx])[0]
 
-    def generate(self, input_text, max_len=20, top_p=0.9):
-        generated = []
-        print(f"[DEBUG] 입력 문장: {input_text}")
-        for step in range(max_len):
-            context = " ".join(tokenize(input_text) + generated)
-            X_vec = self.vectorizer.transform([context])
+        print(f"[DEBUG] step {step} - next_token: {next_token}")
 
-            preds = [model.predict(X_vec)[0] for model in self.models]
-            avg_pred = np.mean(preds, axis=0)
+        if next_token == "<EOS>":
+            print("[DEBUG] <EOS> 토큰 발견, 종료!")
+            break
+        generated.append(next_token)
 
-            sims = cosine_similarity(avg_pred.reshape(1, -1), self.vocab_embeddings).flatten()
-            next_idx = top_p_sampling(sims, p=top_p)
-            next_token = self.le.inverse_transform([next_idx])[0]
+    output = " ".join(generated)
+    print(f"[DEBUG] 생성된 문장: {output}")
+    return output
 
-            print(f"[DEBUG] step {step} - next_token: {next_token} (sim: {sims[next_idx]:.4f})")
-
-            if next_token == "<EOS>":
-                print("[DEBUG] <EOS> 토큰 발견, 종료!")
-                break
-            generated.append(next_token)
-
-        output = " ".join(generated)
-        print(f"[DEBUG] 생성된 문장: {output}")
-        return output
-
-
-if __name__ == "__main__":
-    # 데이터셋 경로와 읽기
-    import csv
-
-    csv_path = "MLdata.csv"  # 여기에 네 데이터셋 경로 넣어라
-
-    # CSV에서 (input, output) 쌍 읽기
-    pairs = []
-    with open(csv_path, encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            inp = row["input_text"].strip()
-            out = row["output_text"].strip()
-            pairs.append((inp, out))
-
-    # 모델 학습 + 생성 테스트
-    aumodel = AuMoRegressionEnsemble()
-    aumodel.fit(pairs[:250])
-
-    # 테스트 문장들
-    print(aumodel.generate("안녕"))
-    print(aumodel.generate("오늘 날씨 어때?"))
-    print(aumodel.generate("이름 뭐야?"))
+# 테스트 문장들
+print(generate(ridge_weights_list, "안녕"))
+print(generate(ridge_weights_list, "오늘 날씨 어때?"))
+print(generate(ridge_weights_list, "이름 뭐야?"))
