@@ -3,6 +3,19 @@ import numpy as np
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.preprocessing import LabelEncoder
 import random
+import requests
+
+def download_file(url, save_path):
+    response = requests.get(url, stream=True)
+    response.raise_for_status()
+    with open(save_path, 'wb') as f:
+        for chunk in response.iter_content(chunk_size=8192):
+            f.write(chunk)
+    print(f"✅ 파일 저장됨: {save_path}")
+
+# ⬇️ 데이터와 토크나이저 다운로드
+download_file('https://raw.githubusercontent.com/INSECT5386/SeQRoN/main/data.csv?spm=a2ty_o01.29997173.0.0.7edec921fx1gz3&file=data.csv', 'MLdata.csv')
+
 
 def tokenize(text):
     return re.findall(r'\b\w+\b', text.lower())
@@ -341,18 +354,23 @@ class EmbeddingMLPModel:
         print(f"[DEBUG] 생성 결과: {result}")
         return result
 
-# 사용 예시
+
+
 if __name__ == "__main__":
-    # 샘플 데이터
-    pairs = [
-        ("안녕하세요", "안녕하세요! 반갑습니다"),
-        ("오늘 날씨 어때?", "오늘 날씨는 맑고 좋습니다"),
-        ("이름이 뭐야?", "저는 AI 어시스턴트입니다"),
-        ("고마워", "천만에요! 도움이 되어 기쁩니다"),
-        ("안녕", "안녕히 가세요!"),
-        ("배고파", "뭐 드시고 싶으세요?"),
-        ("사랑해", "저도 당신을 존중하고 사랑합니다.")
-    ]
+    # 데이터셋 경로와 읽기
+    import csv
+
+    csv_path = "MLdata.csv"  # 여기에 네 데이터셋 경로 넣어라
+
+    # CSV에서 (input, output) 쌍 읽기
+    pairs = []
+    with open(csv_path, encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            inp = row["input_text"].strip()
+            out = row["output_text"].strip()
+            pairs.append((inp, out))
+
     
     # 모델 생성 및 학습
     model = EmbeddingMLPModel(vocab_size=1000, embed_dim=50, 
