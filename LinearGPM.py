@@ -120,7 +120,7 @@ class MLP:
         
         return input_gradient # MLP의 입력에 대한 그래디언트 반환
 
-class EmbeddingMLPModel:
+class Model:
     """임베딩 + MLP 기반 시퀀스 모델"""
     def __init__(self, vocab_size, embed_dim=100, hidden_dims=[128, 64], 
                  context_window=10, n_models=3):
@@ -373,7 +373,7 @@ if __name__ == "__main__":
 
     
     # 모델 생성 및 학습
-    model = EmbeddingMLPModel(vocab_size=1000, embed_dim=64, 
+    model = Model(vocab_size=1000, embed_dim=64, 
                              hidden_dims=[128, 64], context_window=5, n_models=3)
     
     model.fit(pairs, epochs=7, lr=0.001) # 학습률 조정
