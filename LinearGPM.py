@@ -367,8 +367,8 @@ if __name__ == "__main__":
     with open(csv_path, encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            inp = row["input_text"].strip()
-            out = row["output_text"].strip()
+            inp = row["questions"].strip()
+            out = row["answers"].strip()
             pairs.append((inp, out))
 
     
