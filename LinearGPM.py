@@ -96,7 +96,7 @@ class MLP:
         delta = loss_gradient
         
         # 입력에 대한 최종 그래디언트를 저장
-        input_gradient = None 
+        input_gradient = None
 
         for i in reversed(range(len(self.layers))):
             current_activation = self.activations[i] # 이전 레이어의 활성화 출력 (현재 레이어의 입력)
@@ -373,10 +373,10 @@ if __name__ == "__main__":
 
     
     # 모델 생성 및 학습
-    model = EmbeddingMLPModel(vocab_size=1000, embed_dim=50, 
-                             hidden_dims=[64, 32], context_window=5, n_models=3)
+    model = EmbeddingMLPModel(vocab_size=1000, embed_dim=64, 
+                             hidden_dims=[128, 64], context_window=5, n_models=3)
     
-    model.fit(pairs, epochs=10, lr=0.005) # 학습률 조정
+    model.fit(pairs, epochs=7, lr=0.001) # 학습률 조정
     
     # 생성 테스트
     print("\n=== 생성 테스트 ===")
@@ -385,4 +385,3 @@ if __name__ == "__main__":
     print(f"User: 고마워 -> Model: {model.generate('고마워')}")
     print(f"User: 배고파 -> Model: {model.generate('배고파')}")
     print(f"User: 사랑해 -> Model: {model.generate('사랑해')}")
-
