@@ -276,7 +276,7 @@ if __name__ == "__main__":
     spm_tokenizer.Load(spm_model_path)
 
     # 2) 코퍼스 불러오기 및 SentencePiece 토큰화
-    with open("converted.txt", encoding="utf-8") as f:
+    with open("corpus.txt", encoding="utf-8") as f:
         corpus = [line.strip() for line in f if line.strip()]
 
     tokenized_corpus = [spm_tokenizer.EncodeAsPieces(line) for line in corpus]
@@ -292,25 +292,16 @@ if __name__ == "__main__":
 
     print("✅ PST 학습 완료!")
 
-    conversation_history = []
-
     while True:
         user_input = input("\n컨텍스트 입력 (종료: exit): ").strip()
         if user_input.lower() == "exit":
             break
-        
-        conversation_history.append("User: " + user_input)
-        
-        # 최근 6문장까지만 써서 메모리 제한
-        seed = " ".join(conversation_history[-3:]) + " Bot:"
-        
+        bot_response = ""
+        ""
         print("생성문장: ", end='', flush=True)
-        for word in pst.generate_sentence_stream(seed=seed, max_len=70, temperature=0.7, top_p=0.9, encoder=encoder, alpha=0.7):
+        for word in pst.generate_sentence_stream(seed=user_input, max_len=70, temperature=0.7, top_p=0.9, encoder=encoder, alpha=0.7):
             clean_word = word.replace('▁', ' ')
             print(clean_word, end='', flush=True)
+            bot_response += clean_word
             time.sleep(0.05)
         print()
-        
-        # 생성한 봇 답변을 히스토리에 저장
-        bot_response = ""  # 생성문장 스트림에서 합쳐서 저장하는 코드 추가 가능
-        conversation_history.append("Bot:" + bot_response)
