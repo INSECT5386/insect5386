@@ -138,6 +138,9 @@ if not os.path.exists('S3GeN.db'):
 else:
     gen = SQLiteStatSeqGenerator()
 
+from google.colab import files
+files.download('S3GeN.db')  # 여기에 다운로드할 파일명을 넣어줘
+
 # API 라우트
 @app.get('/chat')
 async def chat_sse(message: str):
