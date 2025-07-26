@@ -12,7 +12,7 @@ def download_file(url, save_path):
 # ⬇️ 데이터와 토크나이저 다운로드
 
 download_file('https://huggingface.co/datasets/Yuchan5386/S3GeN/resolve/main/qa_pairs.jsonl?download=true', 'qa_pairs.jsonl')
-path = 'qa_pairs.jsonl
+path = 'qa_pairs.jsonl'
 import re
 import random
 import time
