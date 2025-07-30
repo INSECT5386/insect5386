@@ -121,47 +121,68 @@ dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 print("✅ TF Dataset 생성 완료!")
 
 # ======================= Cobrablock ======================
-class block(tf.keras.layers.Layer):
-    def __init__(self, d_model, dropout_rate=0.1):
+class Block(tf.keras.layers.Layer):
+    def __init__(self, d_model, kernel_size=3, dropout_rate=0.1):
         super().__init__()
         self.norm1 = layers.LayerNormalization(epsilon=1e-5)
         self.dropout1 = layers.Dropout(dropout_rate)
         self.norm2 = layers.LayerNormalization(epsilon=1e-5)
         self.dropout2 = layers.Dropout(dropout_rate)
 
+        # Causal Conv1D: causal padding을 위해 'causal' 설정
         self.conv = layers.Conv1D(
+            filters=d_model,
+            kernel_size=kernel_size,
+            padding='causal',  # causal padding (autoregressive)
+            activation='relu'
+        )
+
+        # Global Average Pooling 1D
+        self.global_pool = layers.GlobalAveragePooling1D()
 
     def call(self, x, training=False):
         residual = x
         x = self.norm1(x)
-        x = self.mamba(x)
-        x = residual + self.dropout1(x, training=training)
+        x = self.conv(x)  # Causal Conv1D 적용
+        x = self.dropout1(x, training=training)
+        x = residual + x  # Residual connection
 
+        # 두 번째 sub-layer: Global Pooling 기반 변환 (예: 정보 요약 후 확장)
         residual = x
         x = self.norm2(x)
+
+        # Global Pooling으로 문맥 전체 요약 후, 다시 시퀀스 길이로 확장
+        pooled = self.global_pool(x)  # [batch_size, d_model]
+        # 다시 시퀀스 형태로 복원 (모든 위치에 동일한 pooled 벡터 삽입)
+        seq_len = tf.shape(x)[1]
+        expanded = tf.expand_dims(pooled, axis=1)  # [batch, 1, d_model]
+        expanded = tf.tile(expanded, [1, seq_len, 1])  # [batch, seq_len, d_model]
+
+        x = expanded
         x = self.dropout2(x, training=training)
-        x = residual + x
+        x = residual + x  # Residual connection
 
         return x
+
 
 # ======================= CobraModel ======================
 class Model(tf.keras.Model):
     def __init__(self, vocab_size, d_model, n_layers, dropout_rate=0.1):
         super().__init__()
         self.token_embedding = layers.Embedding(vocab_size, d_model)
-        self.blocks = [block(d_model, dropout_rate) for _ in range(n_layers)]
+        self.blocks = [Block(d_model, dropout_rate=dropout_rate) for _ in range(n_layers)]
         self.ln_f = layers.LayerNormalization(epsilon=1e-5)
 
     def call(self, x, training=False):
-        x = self.token_embedding(x)
+        x = self.token_embedding(x)  # [batch_size, seq_len, d_model]
 
         for block in self.blocks:
             x = block(x, training=training)
 
         x = self.ln_f(x)
+        # 출력: 어휘 크기로 다시 프로젝션 (tie weights)
         logits = tf.matmul(x, self.token_embedding.embeddings, transpose_b=True)
         return logits
-
 
 # 손실 함수 및 메트릭 정의
 loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True, reduction='none')
