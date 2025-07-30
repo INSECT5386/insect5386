@@ -175,7 +175,7 @@ class Block(tf.keras.layers.Layer):
         z = tf.tile(z, [1, seq_len, 1])  # [B, T, D]
         z = self.dropout2(z, training=training)
 
-        x = x + z  # [B, T, D]
+        x = tf.concat([x, z], axis=-1)  # [B, T, D]
         x = self.W(x)  # optional projection
 
         return x
