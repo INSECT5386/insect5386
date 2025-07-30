@@ -205,21 +205,6 @@ def masked_perplexity(y_true, y_pred):
     avg_loss = tf.reduce_sum(loss * mask) / tf.reduce_sum(mask)
     return tf.exp(tf.minimum(avg_loss, 10.0))  # 수치 안정성 확보
 
-def masked_top5_accuracy(y_true, y_pred):
-    top5_preds = tf.nn.top_k(y_pred, k=5).indices
-    top5_preds = tf.cast(top5_preds, dtype=y_true.dtype)  # <-- 이 줄 추가
-    y_true_expanded = tf.expand_dims(y_true, axis=-1)
-    matches = tf.reduce_any(tf.equal(y_true_expanded, top5_preds), axis=-1)
-    matches = tf.cast(matches, tf.float32)
-    mask = tf.cast(tf.not_equal(y_true, pad_id), tf.float32)
-    return tf.reduce_sum(matches * mask) / tf.reduce_sum(mask)
-
-
-def token_level_loss(y_true, y_pred):
-    loss = loss_fn(y_true, y_pred)
-    mask = tf.cast(tf.not_equal(y_true, pad_id), tf.float32)
-    return tf.reduce_mean(loss * mask)
-
 def create_lr_schedule(initial_lr=5e-5, decay_steps=10000, decay_rate=0.9):
     return tf.keras.optimizers.schedules.ExponentialDecay(
         initial_learning_rate=initial_lr,
@@ -251,9 +236,7 @@ model.compile(
     loss=masked_loss,
     metrics=[
         masked_accuracy,
-        masked_perplexity,
-        masked_top5_accuracy,
-        token_level_loss
+        masked_perplexity
     ]
 )
 
