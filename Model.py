@@ -42,7 +42,7 @@ def create_qa_sentences(df, max_pairs=50000):
         qa_pairs.append(full)
     return qa_pairs
 
-train_sentences = create_qa_sentences(df, max_pairs=500)  # 너무 크면 메모리 문제, 제한
+train_sentences = create_qa_sentences(df, max_pairs=50000)  # 너무 크면 메모리 문제, 제한
 print(f"✅ 전처리 완료: {len(train_sentences)}개의 QA 쌍 생성")
 
 # ⬇️ 토크나이저 불러오기
@@ -154,10 +154,10 @@ class Block(tf.keras.layers.Layer):
         self.dropout1 = layers.Dropout(dropout_rate)
         self.norm2 = layers.LayerNormalization(epsilon=1e-6)
         self.dropout2 = layers.Dropout(dropout_rate)
+
+        self.rnn = layers.GRU(d_model, return_sequences=True)
         
         self.global_pool = layers.GlobalAveragePooling1D()
-        self.attention = layers.Attention()  # Cross-attention
-        self.dense = layers.Dense(d_model//2)
         self.dense_1 = layers.Dense(d_model * 2, activation='gelu')
         self.dense_2 = layers.Dense(d_model)
         
@@ -172,15 +172,8 @@ class Block(tf.keras.layers.Layer):
         context = tf.tile(context, [1, seq_len, 1])  # [B, T, D]
         context = self.dropout1(context, training=training)
 
-        # Step 2: Cross-attention: x attends to pooled context
-        # Query = z, Key = Value = context
-        attended = self.attention([z, context], training=training)  # [B, T, D]
-
-        # Step 3: Residual connection + add
-        x = residual + attended  # [B, T, D]
-
-        x = self.dense(x)
-        x = self.dense_1(x)
+        x = self.rnn(residual)
+        x = self.dense_1(x + context)
         x = self.dense_2(x)
         
         return x
