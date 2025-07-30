@@ -160,11 +160,12 @@ class Block(tf.keras.layers.Layer):
             filters=d_model,
             kernel_size=kernel_size,
             padding='causal',
-            activation='relu'
+            activation='gelu'
         )
 
         # Global Average Pooling
         self.global_pool = layers.GlobalAveragePooling1D()
+        self.W = layers.Dense(d_model)
 
     def call(self, x, training=False):
         # 첫 번째: Conv 블록
@@ -172,18 +173,19 @@ class Block(tf.keras.layers.Layer):
         x = self.norm1(x)
         x = self.conv(x)
         x = self.dropout1(x, training=training)
-        x = residual + x
 
         # 두 번째: Global Pooling 기반 어텐션 유사 구조
-        residual = x
-        x = self.norm2(x)
-        pooled = self.global_pool(x)  # [B, D]
-        seq_len = tf.shape(x)[1]
+        z = residual
+        z = self.norm2(z)
+        pooled = self.global_pool(z)  # [B, D]
+        seq_len = tf.shape(z)[1]
         expanded = tf.expand_dims(pooled, 1)  # [B, 1, D]
         expanded = tf.tile(expanded, [1, seq_len, 1])  # [B, T, D]
-        x = expanded
-        x = self.dropout2(x, training=training)
-        x = residual + x
+        z = expanded
+        z = self.dropout2(z, training=training)
+
+        x = x + z
+        x = self.W(x)
 
         return x
 
