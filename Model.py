@@ -23,18 +23,18 @@ download_file('https://huggingface.co/datasets/Yuchan5386/KeraLux4/resolve/main/
 df = pd.read_parquet("dataset.parquet", engine="pyarrow")
 
 # ⬇️ <start> 질문 <sep> 답변 <end> 포맷으로 변환
-train_sentences = []
-
-for conversations in df["conversations"]:
-    for i in range(0, len(conversations) - 1, 2):
-        item1, item2 = conversations[i], conversations[i + 1]
-        if item1.get("from") == "human" and item2.get("from") == "gpt":
-            prompt = item1.get("value", "").strip().replace("\n", " ")
-            response = item2.get("value", "").strip().replace("\n", " ")
-            full = f"<start> {prompt} <sep> {response} <end>"
-            train_sentences.append(full)
-train_sentences = train_sentences[:300000]
-print(f"총 문장 개수: {len(train_sentences)}")
+def load_qa_pairs_from_jsonl(path, max_pairs=200000000):
+    qa_pairs = []
+    with open(path, 'r', encoding='utf-8') as f:
+        for line in f:
+            obj = json.loads(line)
+            q = obj.get("question", "").strip()
+            a = obj.get("answer", "").strip()
+            full = f"<start> {q} <sep> {a} <end>
+            qa_pairs.append(full)
+            if len(qa_pairs) >= max_pairs:
+                break
+    return qa_pairs
 
 # ⬇️ 토크나이저 불러오기
 sp = spm.SentencePieceProcessor()
