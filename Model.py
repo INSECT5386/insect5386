@@ -156,7 +156,15 @@ class Block(tf.keras.layers.Layer):
         self.norm2 = layers.LayerNormalization(epsilon=1e-5)
         self.dropout2 = layers.Dropout(dropout_rate)
 
-        self.rnn = layers.LSTM(d_model, return_sequences=True)  # ✅
+        self.rnn = layers.GRU(d_model, return_sequences=True)
+        
+        self.rnn_2 = layers.GRU(d_model, return_sequences=True)  # ✅
+        
+        self.rnn_3 = layers.GRU(d_model, return_sequences=True)  # ✅
+        
+        self.rnn_4 = layers.GRU(d_model, return_sequences=True)  # ✅
+        
+        
         
         self.global_pool = layers.GlobalAveragePooling1D()
         self.W = layers.Dense(d_model)
@@ -166,6 +174,7 @@ class Block(tf.keras.layers.Layer):
 
         x = self.norm1(x)
         x = self.rnn(x)  # [B, T, D]
+        x = self.rnn_1(x)
         x = self.dropout1(x, training=training)
 
         z = self.norm2(residual)
@@ -176,8 +185,9 @@ class Block(tf.keras.layers.Layer):
         z = self.dropout2(z, training=training)
 
         x = tf.concat([x, z], axis=-1)  # [B, T, D]
-        x = self.W(x)  # optional projection
-
+        x = self.W(x)
+        x = self.rnn_3(x)
+        x = self.rnn_4(x)
         return x
 
 
@@ -234,7 +244,7 @@ def create_lr_schedule(initial_lr=5e-5, decay_steps=10000, decay_rate=0.9):
 model = Model(
     vocab_size=vocab_size,
     d_model=128,
-    n_layers=3
+    n_layers=2
 )
 
 # 옵티마이저
