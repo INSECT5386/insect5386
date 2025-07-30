@@ -155,15 +155,8 @@ class Block(tf.keras.layers.Layer):
         self.norm2 = layers.LayerNormalization(epsilon=1e-5)
         self.dropout2 = layers.Dropout(dropout_rate)
 
-        # Causal Conv1D
-        self.conv = layers.Conv1D(
-            filters=d_model,
-            kernel_size=kernel_size,
-            padding='causal',
-            activation='gelu'
-        )
-
-        # Global Average Pooling
+        self.rnn = layers.LSTM(hidden_dim)
+        
         self.global_pool = layers.GlobalAveragePooling1D()
         self.W = layers.Dense(d_model)
 
@@ -171,7 +164,7 @@ class Block(tf.keras.layers.Layer):
         # 첫 번째: Conv 블록
         residual = x
         x = self.norm1(x)
-        x = self.conv(x)
+        x = self.rnn(x)
         x = self.dropout1(x, training=training)
 
         # 두 번째: Global Pooling 기반 어텐션 유사 구조
