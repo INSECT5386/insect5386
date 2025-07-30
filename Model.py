@@ -33,7 +33,7 @@ df = load_jsonl("dataset.jsonl")
 print(f"✅ 데이터 로드 완료: {len(df)}개의 샘플")
 
 # ⬇️ DataFrame에서 질문과 답변 추출하여 <start> q <sep> a <end> 형식으로 변환
-def create_qa_sentences(df, max_pairs=200000):
+def create_qa_sentences(df, max_pairs=50000):
     qa_pairs = []
     for _, row in df.head(max_pairs).iterrows():
         q = str(row["question"]).strip()
@@ -42,7 +42,7 @@ def create_qa_sentences(df, max_pairs=200000):
         qa_pairs.append(full)
     return qa_pairs
 
-train_sentences = create_qa_sentences(df, max_pairs=200000)  # 너무 크면 메모리 문제, 제한
+train_sentences = create_qa_sentences(df, max_pairs=50000)  # 너무 크면 메모리 문제, 제한
 print(f"✅ 전처리 완료: {len(train_sentences)}개의 QA 쌍 생성")
 
 # ⬇️ 토크나이저 불러오기
@@ -148,7 +148,6 @@ print("✅ TF Dataset 생성 완료!")
 
 # ======================= Cobrablock ======================
 class Block(tf.keras.layers.Layer):
-class Block(tf.keras.layers.Layer):
     def __init__(self, d_model, dropout_rate=0.1):
         super(Block, self).__init__()
         self.d_model = d_model
@@ -157,7 +156,7 @@ class Block(tf.keras.layers.Layer):
         self.norm2 = layers.LayerNormalization(epsilon=1e-5)
         self.dropout2 = layers.Dropout(dropout_rate)
 
-        self.rnn = layers.SimpleRNN(d_model, return_sequences=True)  # ✅
+        self.rnn = layers.LSTM(d_model, return_sequences=True)  # ✅
         
         self.global_pool = layers.GlobalAveragePooling1D()
         self.W = layers.Dense(d_model)
@@ -234,8 +233,8 @@ def create_lr_schedule(initial_lr=5e-5, decay_steps=10000, decay_rate=0.9):
 # 모델 생성
 model = Model(
     vocab_size=vocab_size,
-    d_model=256,
-    n_layers=8
+    d_model=128,
+    n_layers=3
 )
 
 # 옵티마이저
