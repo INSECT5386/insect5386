@@ -16,12 +16,21 @@ def download_file(url, save_path):
     print(f"✅ 파일 저장됨: {save_path}")
 
 # ⬇️ 데이터와 토크나이저 다운로드
-# 🔴 공백 제거: ' https://' → 'https://'
+# 🔴 URL 앞뒤 공백 제거 필수!
 download_file('https://huggingface.co/datasets/Yuchan5386/chat/resolve/main/NewS3GeN/dataset.jsonl?download=true', 'dataset.jsonl')
 download_file('https://huggingface.co/datasets/Yuchan5386/Tokenizer/resolve/main/unigram_model.model?download=true', 'ko_unigram.model')
 
-# ⬇️ Parquet 데이터 불러오기
-df = pd.read_json("dataset.parquet", engine="pyarrow")
+# ⬇️ JSONL 파일을 Pandas DataFrame으로 읽기
+def load_jsonl(file_path):
+    data = []
+    with open(file_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            if line.strip():
+                data.append(json.loads(line))
+    return pd.DataFrame(data)
+
+df = load_jsonl("dataset.jsonl")
+print(f"✅ 데이터 로드 완료: {len(df)}개의 샘플")
 
 # ⬇️ DataFrame에서 질문과 답변 추출하여 <start> q <sep> a <end> 형식으로 변환
 def create_qa_sentences(df, max_pairs=200000):
