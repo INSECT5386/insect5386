@@ -148,37 +148,36 @@ print("✅ TF Dataset 생성 완료!")
 
 # ======================= Cobrablock ======================
 class Block(tf.keras.layers.Layer):
-    def __init__(self, d_model, kernel_size=3, dropout_rate=0.1):
-        super(Block, self).__init__()  # 🔴 super() 호출 수정
+class Block(tf.keras.layers.Layer):
+    def __init__(self, d_model, dropout_rate=0.1):
+        super(Block, self).__init__()
+        self.d_model = d_model
         self.norm1 = layers.LayerNormalization(epsilon=1e-5)
         self.dropout1 = layers.Dropout(dropout_rate)
         self.norm2 = layers.LayerNormalization(epsilon=1e-5)
         self.dropout2 = layers.Dropout(dropout_rate)
 
-        self.rnn = layers.LSTM(hidden_dim)
+        self.rnn = layers.SimpleRNN(d_model, return_sequences=True)  # ✅
         
         self.global_pool = layers.GlobalAveragePooling1D()
         self.W = layers.Dense(d_model)
 
     def call(self, x, training=False):
-        # 첫 번째: Conv 블록
-        residual = x
+        residual = x  # [B, T, D]
+
         x = self.norm1(x)
-        x = self.rnn(x)
+        x = self.rnn(x)  # [B, T, D]
         x = self.dropout1(x, training=training)
 
-        # 두 번째: Global Pooling 기반 어텐션 유사 구조
-        z = residual
-        z = self.norm2(z)
+        z = self.norm2(residual)
         pooled = self.global_pool(z)  # [B, D]
         seq_len = tf.shape(z)[1]
-        expanded = tf.expand_dims(pooled, 1)  # [B, 1, D]
-        expanded = tf.tile(expanded, [1, seq_len, 1])  # [B, T, D]
-        z = expanded
+        z = tf.expand_dims(pooled, 1)  # [B, 1, D]
+        z = tf.tile(z, [1, seq_len, 1])  # [B, T, D]
         z = self.dropout2(z, training=training)
 
-        x = x + z
-        x = self.W(x)
+        x = x + z  # [B, T, D]
+        x = self.W(x)  # optional projection
 
         return x
 
