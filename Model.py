@@ -125,11 +125,11 @@ class block(tf.keras.layers.Layer):
     def __init__(self, d_model, dropout_rate=0.1):
         super().__init__()
         self.norm1 = layers.LayerNormalization(epsilon=1e-5)
-        self.mamba = RealMambaCore(d_model)
         self.dropout1 = layers.Dropout(dropout_rate)
-
         self.norm2 = layers.LayerNormalization(epsilon=1e-5)
         self.dropout2 = layers.Dropout(dropout_rate)
+
+        self.conv = layers.Conv1D(
 
     def call(self, x, training=False):
         residual = x
