@@ -146,10 +146,6 @@ dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
 print("✅ TF Dataset 생성 완료!")
 
-
-import tensorflow as tf
-from tensorflow.keras import layers
-
 class Block(tf.keras.layers.Layer):
     def __init__(self, d_model, dropout_rate=0.1):
         super(Block, self).__init__()
