@@ -151,69 +151,82 @@ class Block(tf.keras.layers.Layer):
         super().__init__()
         self.d_model = d_model
 
-        # Learnable affine parameters
+        # 🔹 기존 A~F는 유지 (local context control)
         self.A = self.add_weight(shape=(d_model,), initializer='ones', trainable=True, name="A")
         self.B = self.add_weight(shape=(d_model,), initializer='zeros', trainable=True, name="B")
         self.C = self.add_weight(shape=(d_model,), initializer='ones', trainable=True, name="C")
         self.D = self.add_weight(shape=(d_model,), initializer='zeros', trainable=True, name="D")
-        self.E = self.add_weight(shape=(d_model,), initializer='ones', trainable=True, name="E")
-        self.F = self.add_weight(shape=(d_model,), initializer='zeros', trainable=True, name="F")
 
-        # 🔥 Conv1D for local token interaction
-        self.conv1 = layers.Conv1D(
-            d_model, kernel_size=kernel_size, padding='same', activation='gelu', name="conv1"
-        )
-        self.conv2 = layers.Conv1D(
-            d_model, kernel_size=1, padding='same', name="conv2"  # 1x1 conv
-        )
+        # 🔥 NEW: Global context control (Avg vs Max)
+        self.E = self.add_weight(shape=(d_model,), initializer='ones', trainable=True, name="E")  # for avg
+        self.F = self.add_weight(shape=(d_model,), initializer='ones', trainable=True, name="F")  # for max
+        # ✅ E, F: 각각 avg와 max 결과에 대한 채널별 가중치
 
-        # FFN
+        # 🔗 Fusion parameter: 모델이 '전체' vs '핵심' 중 무엇을 더 신뢰할지 결정
+        self.alpha = self.add_weight(shape=(), initializer='zeros', trainable=True, name="alpha")  # scalar gate
+
+        # 🔧 Local interaction
+        self.conv1 = layers.Conv1D(d_model, kernel_size=kernel_size, padding='same', activation='gelu')
+        self.conv2 = layers.Conv1D(d_model, kernel_size=1, padding='same')
+
+        # 🧱 FFN & Norms
         self.ffn = tf.keras.Sequential([
-            layers.Dense(d_model * 4, activation='gelu', name="ffn_1"),
-            layers.Dense(d_model, name="ffn_2")
-        ], name="ffn")
+            layers.Dense(d_model * 4, activation='gelu'),
+            layers.Dense(d_model)
+        ])
+        self.norm1 = layers.LayerNormalization()
+        self.norm2 = layers.LayerNormalization()
+        self.dropout1 = layers.Dropout(dropout_rate)
+        self.dropout2 = layers.Dropout(dropout_rate)
 
-        # Norm & Dropout
-        self.norm1 = layers.LayerNormalization(name="norm1")
-        self.norm2 = layers.LayerNormalization(name="norm2")
-        self.dropout1 = layers.Dropout(dropout_rate, name="dropout1")
-        self.dropout2 = layers.Dropout(dropout_rate, name="dropout2")
-
-        # Global pooling for global context
-        self.global_pool = layers.GlobalAveragePooling1D()
+        # 🌐 Dual Global Pooling
+        self.global_avg_pool = layers.GlobalAveragePooling1D()
+        self.global_max_pool = layers.GlobalMaxPooling1D()  # 중요 특징 추출
 
     def call(self, x, training=False):
-        residual1 = x  # [B, T, D]  <-- 이걸로 global context 추출
+        residual1 = x  # [B, T, D]
 
-        # 🔍 Option 1: residual1 기반 global context (더 안정적)
-        pooled = self.global_pool(residual1)  # [B, D]
+        # 🔹 Step 1: Local interaction (Conv)
+        x_local = tf.transpose(x, perm=[0, 2, 1])
+        x_local = self.conv1(x_local)
+        x_local = tf.transpose(x_local, perm=[0, 2, 1])
+        x_local = self.norm1(x_local)
+        x_local = self.dropout1(x_local, training=training)
+        x = x_local + residual1  # [B, T, D]
+
+        residual2 = x
+
+        # 🔹 Step 2: Dual Global Context 추출
+        avg_pooled = self.global_avg_pool(residual1)  # [B, D] → 전반적 주제
+        max_pooled = self.global_max_pool(residual1)  # [B, D] → 핵심 단어/특징
+
         seq_len = tf.shape(x)[1]
-        expanded = tf.expand_dims(pooled, 1)  # [B, 1, D]
-        expanded = tf.tile(expanded, [1, seq_len, 1])  # [B, T, D]
 
-        # 🌐 Global context with learnable scaling
-        z = self.E * (expanded * self.F)  # [B, T, D]
+        # Expand to [B, T, D]
+        avg_expanded = tf.tile(tf.expand_dims(avg_pooled, 1), [1, seq_len, 1])  # [B, T, D]
+        max_expanded = tf.tile(tf.expand_dims(max_pooled, 1), [1, seq_len, 1])
 
-        # 🔗 Step 1: Local interaction via Conv1D
-        x = tf.transpose(x, perm=[0, 2, 1])  # [B, D, T]
-        x = self.conv1(x)                    # [B, D, T]
-        x = tf.transpose(x, perm=[0, 2, 1])  # [B, T, D]
-        x = self.norm1(x)
-        x = self.dropout1(x, training=training)
-        x = x + residual1  # Residual connection
-        # x now has local context refined
+        # Apply learnable channel-wise scaling
+        avg_context = self.E * avg_expanded        # [B, T, D]
+        max_context = self.F * max_expanded        # [B, T, D]
 
-        residual2 = x  # For next residual
+        # 🔥 Fusion: 모델이 '전체 평균' vs '최대 특징' 중 무엇을 더 신뢰할지 학습
+        gate = tf.nn.sigmoid(self.alpha)  # scalar between 0 and 1
+        global_context = gate * avg_context + (1 - gate) * max_context  # [B, T, D]
+        # ✅ gate ≈ 1: 전체 맥락(Avg)에 집중
+        # ✅ gate ≈ 0: 핵심 정보(Max)에 집중
 
-        # 🔗 Step 2: Context-aware affine combination
-        context = self.C * (x * self.D) + z  # Local + Global context
-        transformed = self.ffn(x)            # Non-linear transformation
+        # 🔹 Step 3: Context-aware combination
+        local_context = self.C * (x * self.D)      # local + residual-based
+        combined_context = local_context + global_context
 
-        x = self.A * context + self.B * transformed
-        x = self.conv2(x)  # Final projection
+        transformed = self.ffn(x)
+
+        x = self.A * combined_context + self.B * transformed
+        x = self.conv2(x)
         x = self.norm2(x)
         x = self.dropout2(x, training=training)
-        x = x + residual2  # Final residual
+        x = x + residual2
 
         return x
 
