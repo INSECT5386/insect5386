@@ -146,30 +146,41 @@ dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
 print("✅ TF Dataset 생성 완료!")
 
+
+import tensorflow as tf
+from tensorflow.keras import layers
+
 class Block(tf.keras.layers.Layer):
     def __init__(self, d_model, dropout_rate=0.1):
         super(Block, self).__init__()
         self.d_model = d_model
 
+        # Learnable affine parameters (per-channel)
         self.A = self.add_weight(
-            shape=(hidden_dim,),
+            shape=(d_model,),
             initializer='random_normal',
             trainable=True,
             name="A"
         )
         
         self.B = self.add_weight(
-            shape=(hidden_dim,),
-            initializer='zero',
+            shape=(d_model,),
+            initializer='zeros',  # 'zero' → 'zeros'
             trainable=True,
             name="B"
         )
 
+        # Dense layers
         self.Wx_1 = layers.Dense(d_model)
         self.Wx_2 = layers.Dense(d_model)
 
+        # Normalization and dropout
+        self.norm1 = layers.LayerNormalization()
+        self.dropout1 = layers.Dropout(dropout_rate)
+
+        # Global pooling
         self.global_pool = layers.GlobalAveragePooling1D()
-        
+
     def call(self, x, training=False):
         residual = x  # [B, T, D]
 
@@ -181,11 +192,14 @@ class Block(tf.keras.layers.Layer):
         context = tf.tile(context, [1, seq_len, 1])  # [B, T, D]
         context = self.dropout1(context, training=training)
 
-        context = self.Wx_1(context)
-        x = self.Wx_2(residual)
+        # Transform context and residual
+        context = self.Wx_1(context)        # [B, T, D]
+        x_residual_transformed = self.Wx_2(residual)  # [B, T, D]
 
-        x = self.A * context + self.B * x
-        x = x + residual
+        # Apply learned affine combination
+        # A, B are (D,), so they broadcast over T
+        x = self.A * context + self.B * x_residual_transformed
+        x = x + residual  # Final residual connection
 
         return x
 
