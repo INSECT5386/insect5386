@@ -150,16 +150,10 @@ class Block(tf.keras.layers.Layer):
     def __init__(self, d_model, dropout_rate=0.1):
         super(Block, self).__init__()
         self.d_model = d_model
-        self.norm1 = layers.LayerNormalization(epsilon=1e-6)
-        self.dropout1 = layers.Dropout(dropout_rate)
-        self.norm2 = layers.LayerNormalization(epsilon=1e-6)
-        self.dropout2 = layers.Dropout(dropout_rate)
 
-        self.rnn = layers.GRU(d_model, return_sequences=True)
-        
+        self.al = 
+
         self.global_pool = layers.GlobalAveragePooling1D()
-        self.dense_1 = layers.Dense(d_model * 2, activation='gelu')
-        self.dense_2 = layers.Dense(d_model)
         
     def call(self, x, training=False):
         residual = x  # [B, T, D]
