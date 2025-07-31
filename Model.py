@@ -165,6 +165,9 @@ class Block(tf.keras.layers.Layer):
             name="B"
         )
 
+        self.Wx_1 = layers.Dense(d_model)
+        self.Wx_2 = layers.Dense(d_model)
+
         self.global_pool = layers.GlobalAveragePooling1D()
         
     def call(self, x, training=False):
@@ -178,9 +181,11 @@ class Block(tf.keras.layers.Layer):
         context = tf.tile(context, [1, seq_len, 1])  # [B, T, D]
         context = self.dropout1(context, training=training)
 
-        x = self.rnn(residual)
-        x = self.dense_1(x + context)
-        x = self.dense_2(x)
+        context = self.Wx_1(context)
+        x = self.Wx_2(residual)
+
+        
+
         
         return x
 
