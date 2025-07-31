@@ -174,19 +174,9 @@ class Block(tf.keras.layers.Layer):
         self.norm1 = layers.LayerNormalization()
         self.dropout1 = layers.Dropout(dropout_rate)
 
-        # Global pooling
-        self.global_pool = layers.GlobalAveragePooling1D()
-
     def call(self, x, training=False):
         residual = x  # [B, T, D]
 
-        # Step 1: Normalize and pool
-        z = self.norm1(x)  # [B, T, D]
-        pooled = self.global_pool(z)  # [B, D]
-        seq_len = tf.shape(x)[1]
-        context = tf.expand_dims(pooled, 1)  # [B, 1, D]
-        context = tf.tile(context, [1, seq_len, 1])  # [B, T, D]
-        context = self.dropout1(context, training=training)
 
         # Transform context and residual
         context = self.Wx_1(context)        # [B, T, D]
