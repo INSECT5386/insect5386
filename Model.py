@@ -151,57 +151,41 @@ class Block(tf.keras.layers.Layer):
         super(Block, self).__init__()
         self.d_model = d_model
 
-        # Learnable affine parameters (per-channel)
-        self.A = self.add_weight(
-            shape=(d_model,),
-            initializer='random_normal',
-            trainable=True,
-            name="A"
-        )
-        
-        self.B = self.add_weight(
-            shape=(d_model,),
-            initializer='zeros',  # 'zero' → 'zeros'
-            trainable=True,
-            name="B"
-        )
-        self.C = self.add_weight(
-            shape=(d_model,),
-            initializer='random_normal',
-            trainable=True,
-            name="C"
-        )
-        
+        # Affine parameters (optional: or use LayerNorm's built-in ones)
+        self.C = self.add_weight(shape=(d_model,), initializer='ones', trainable=True, name="C")
+        self.D = self.add_weight(shape=(d_model,), initializer='zeros', trainable=True, name="D")
 
-        self.D = self.add_weight(
-            shape=(d_model,),
-            initializer='zeros',
-            trainable=True,
-            name="D"
-        )
-        
         # Dense layers
         self.Wx_1 = layers.Dense(d_model)
         self.Wx_2 = layers.Dense(d_model)
 
         # Normalization and dropout
         self.norm1 = layers.LayerNormalization()
-        self.dropout1 = layers.Dropout(dropout_rate)
+        self.dropout = layers.Dropout(dropout_rate)
 
     def call(self, x, training=False):
         residual = x  # [B, T, D]
 
-        context = self.C * (x + self.D)
+        # Normalize first
+        x = self.norm1(x)
 
-        # Transform context and residual
+        # Channel-wise affine transform (like pre-activation)
+        context = self.C * x + self.D  # [B, T, D]
+
+        # Transform context
         context = self.Wx_1(context)        # [B, T, D]
-        x_residual_transformed = self.Wx_2(residual)  # [B, T, D]
+        context = tf.nn.gelu(context)       # ✅ 비선형성 추가
+        context = self.dropout(context, training=training)
 
-        # Apply learned affine combination
-        # A, B are (D,), so they broadcast over T
-        x = self.A * context + self.B * x_residual_transformed
-        x = x + residual  # Final residual connection
+        # Residual path
+        x_residual_transformed = self.Wx_2(residual)
+        x_residual_transformed = tf.nn.gelu(x_residual_transformed)
 
+        # Gated combination (more stable than raw A/B scaling)
+        gate = tf.sigmoid(self.Wx_1(context))  # 또는 별도의 gate 레이어
+        x = gate * context + (1 - gate) * x_residual_transformed
+
+        x = x + residual  # Final residual
         return x
 
 # ======================= CobraModel ======================
