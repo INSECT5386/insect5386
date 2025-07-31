@@ -185,10 +185,8 @@ class Block(tf.keras.layers.Layer):
         x = self.Wx_2(residual)
 
         x = self.A * context + self.B * x
+        x = x + residual
 
-        
-
-        
         return x
 
 # ======================= CobraModel ======================
