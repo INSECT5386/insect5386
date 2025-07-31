@@ -203,7 +203,7 @@ class Block(tf.keras.layers.Layer):
         residual2 = x
 
         # 🔗 Step 2: Context-aware affine combination
-        context = self.C * (x * self.D)
+        context = self.C * (x * self.D) + z
         transformed = self.ffn(x)
 
         x = self.A * context + self.B * transformed
