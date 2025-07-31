@@ -210,6 +210,7 @@ class Model(tf.keras.Model):
         super(Model, self).__init__()
         self.token_embedding = layers.Embedding(vocab_size, d_model)
         self.blocks = [Block(d_model, dropout_rate=dropout_rate) for _ in range(n_layers)]
+        self.o = layers.Dense(vocab_size)
         self.ln_f = layers.LayerNormalization(epsilon=1e-5)
 
     def call(self, x, training=False):
@@ -219,8 +220,7 @@ class Model(tf.keras.Model):
             x = block(x, training=training)
 
         x = self.ln_f(x)
-        # Weight tying
-        logits = tf.matmul(x, self.token_embedding.embeddings, transpose_b=True)
+        logits = self.o(x)
         return logits
 
 
