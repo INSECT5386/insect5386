@@ -147,62 +147,58 @@ dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 print("✅ TF Dataset 생성 완료!")
 
 class Block(tf.keras.layers.Layer):
-    def __init__(self, d_model, dropout_rate=0.1):
-        super(Block, self).__init__()
+    def __init__(self, d_model, kernel_size=3, dropout_rate=0.1):
+        super().__init__()
         self.d_model = d_model
 
-        # Learnable affine parameters (per-channel)
-        self.A = self.add_weight(
-            shape=(d_model,),
-            initializer='random_normal',
-            trainable=True,
-            name="A"
-        )
-        
-        self.B = self.add_weight(
-            shape=(d_model,),
-            initializer='zeros',  # 'zero' → 'zeros'
-            trainable=True,
-            name="B"
-        )
-        self.C = self.add_weight(
-            shape=(d_model,),
-            initializer='random_normal',
-            trainable=True,
-            name="C"
-        )
-        
+        # Learnable affine
+        self.A = self.add_weight(shape=(d_model,), initializer='ones', trainable=True)
+        self.B = self.add_weight(shape=(d_model,), initializer='zeros', trainable=True)
+        self.C = self.add_weight(shape=(d_model,), initializer='ones', trainable=True)
+        self.D = self.add_weight(shape=(d_model,), initializer='zeros', trainable=True)
 
-        self.D = self.add_weight(
-            shape=(d_model,),
-            initializer='zeros',
-            trainable=True,
-            name="D"
+        # 🔥 Conv1D for token interaction
+        self.conv1 = layers.Conv1D(
+            d_model, kernel_size=kernel_size, padding='same', activation='gelu'
         )
-        
-        # Dense layers
-        self.Wx_1 = layers.Dense(d_model, activation='gelu')
-        self.Wx_2 = layers.Dense(d_model, activation='gelu')
-        self.Wo = layers.Dense(d_model)
+        self.conv2 = layers.Conv1D(
+            d_model, kernel_size=1, padding='same'  # 1x1 conv for projection
+        )
 
-        # Normalization and dropout
+        # FFN
+        self.ffn = tf.keras.Sequential([
+            layers.Dense(d_model * 4, activation='gelu'),
+            layers.Dense(d_model)
+        ])
+
+        # Norm & Dropout
         self.norm1 = layers.LayerNormalization()
+        self.norm2 = layers.LayerNormalization()
         self.dropout1 = layers.Dropout(dropout_rate)
+        self.dropout2 = layers.Dropout(dropout_rate)
 
     def call(self, x, training=False):
-        residual = x  # [B, T, D]
+        residual1 = x  # [B, T, D]
 
-        context = self.C * (x * self.D)
+        # 🔗 Step 1: Conv로 토큰 간 상호작용
+        x = tf.transpose(x, perm=[0, 2, 1])  # [B, D, T]
+        x = self.conv1(x)                    # [B, D, T]
+        x = tf.transpose(x, perm=[0, 2, 1])  # [B, T, D]
+        x = self.norm1(x)
+        x = self.dropout1(x, training=training)
+        x = x + residual1  # residual
 
-        # Transform context and residual
-        context = self.Wx_1(context)        # [B, T, D]
-        x_residual_transformed = self.Wx_2(residual)  # [B, T, D]
+        residual2 = x
 
-        # Apply learned affine combination
-        # A, B are (D,), so they broadcast over T
-        x = self.A * context + self.B * x_residual_transformed
-        x = self.Wo(x)
-        x = x + residual  # Final residual connection
+        # 🔗 Step 2: Context-aware affine combination
+        context = self.C * (x * self.D)      # D, C는 채널별 가중치
+        transformed = self.ffn(x)
+
+        x = self.A * context + self.B * transformed
+        x = self.conv2(x)  # optional 1x1 conv
+        x = self.norm2(x)
+        x = self.dropout2(x, training=training)
+        x = x + residual2
 
         return x
 
