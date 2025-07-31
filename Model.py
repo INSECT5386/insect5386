@@ -16,7 +16,6 @@ def download_file(url, save_path):
     print(f"✅ 파일 저장됨: {save_path}")
 
 # ⬇️ 데이터와 토크나이저 다운로드
-# 🔴 URL 앞뒤 공백 제거 필수!
 download_file('https://huggingface.co/datasets/Yuchan5386/chat/resolve/main/NewS3GeN/dataset.jsonl?download=true', 'dataset.jsonl')
 download_file('https://huggingface.co/datasets/Yuchan5386/Tokenizer/resolve/main/unigram_model.model?download=true', 'ko_unigram.model')
 
@@ -42,7 +41,7 @@ def create_qa_sentences(df, max_pairs=50000):
         qa_pairs.append(full)
     return qa_pairs
 
-train_sentences = create_qa_sentences(df, max_pairs=50000)  # 너무 크면 메모리 문제, 제한
+train_sentences = create_qa_sentences(df, max_pairs=50000)
 print(f"✅ 전처리 완료: {len(train_sentences)}개의 QA 쌍 생성")
 
 # ⬇️ 토크나이저 불러오기
@@ -64,7 +63,6 @@ def text_to_ids(text):
     return sp.encode(text, out_type=int)
 
 def ids_to_text(ids):
-    # pad, unk 제거 후 디코딩
     filtered_ids = [id_ for id_ in ids if id_ not in [pad_id, unk_id]]
     return sp.decode(filtered_ids)
 
@@ -80,31 +78,24 @@ for sentence in train_sentences:
     if "<sep>" not in sentence:
         continue
 
-    # 텍스트를 토큰 ID로 변환
     all_ids = text_to_ids(sentence)
     if len(all_ids) >= max_len:
         all_ids = all_ids[:max_len]
 
-    # sep 토큰의 위치 찾기 (정확한 sep 토큰 ID 기반으로)
     try:
         sep_index = all_ids.index(sep_id)
     except ValueError:
-        continue  # sep 없으면 스킵
+        continue
 
-    # 인풋: <start> Q <sep>
     input_ids = all_ids[:sep_index + 1]
-    # 타겟: A <end>
     target_ids = all_ids[sep_index + 1:]
 
-    # 전체 인풋 시퀀스 (input + target)
     full_input = input_ids + target_ids
     full_input = full_input[:max_len]
 
-    # 타겟 마스크: 타겟 부분만 1, 나머지는 0
     target_mask = [0] * len(input_ids) + [1] * len(target_ids)
     target_mask = target_mask[:max_len]
 
-    # 패딩
     if len(full_input) < max_len:
         pad_len = max_len - len(full_input)
         full_input += [pad_id] * pad_len
@@ -112,18 +103,15 @@ for sentence in train_sentences:
 
     encoded_inputs.append(full_input)
 
-    # 타겟 시퀀스 (shifted left): 다음 토큰 예측
     target_seq = full_input[1:] + [end_id]
     target_seq = target_seq[:max_len]
 
-    # 마스킹된 타겟 (패드된 부분은 무시)
     masked_target = [
         t if m == 1 else pad_id
         for t, m in zip(target_seq, target_mask)
     ]
     targets.append(masked_target)
 
-# 넘파이 배열로 변환
 encoded_inputs = np.array(encoded_inputs, dtype=np.int32)
 targets = np.array(targets, dtype=np.int32)
 
@@ -151,25 +139,24 @@ class Block(tf.keras.layers.Layer):
         super().__init__()
         self.d_model = d_model
 
-        # 🔹 기존 A~F는 유지 (local context control)
+        # Local context control parameters
         self.A = self.add_weight(shape=(d_model,), initializer='ones', trainable=True, name="A")
         self.B = self.add_weight(shape=(d_model,), initializer='zeros', trainable=True, name="B")
         self.C = self.add_weight(shape=(d_model,), initializer='ones', trainable=True, name="C")
         self.D = self.add_weight(shape=(d_model,), initializer='zeros', trainable=True, name="D")
 
-        # 🔥 NEW: Global context control (Avg vs Max)
-        self.E = self.add_weight(shape=(d_model,), initializer='ones', trainable=True, name="E")  # for avg
-        self.F = self.add_weight(shape=(d_model,), initializer='ones', trainable=True, name="F")  # for max
-        # ✅ E, F: 각각 avg와 max 결과에 대한 채널별 가중치
+        # Global context control parameters
+        self.E = self.add_weight(shape=(d_model,), initializer='ones', trainable=True, name="E")
+        self.F = self.add_weight(shape=(d_model,), initializer='ones', trainable=True, name="F")
+        
+        # Fusion parameter
+        self.alpha = self.add_weight(shape=(), initializer='zeros', trainable=True, name="alpha")
 
-        # 🔗 Fusion parameter: 모델이 '전체' vs '핵심' 중 무엇을 더 신뢰할지 결정
-        self.alpha = self.add_weight(shape=(), initializer='zeros', trainable=True, name="alpha")  # scalar gate
-
-        # 🔧 Local interaction
+        # Local interaction layers - 수정된 부분
         self.conv1 = layers.Conv1D(d_model, kernel_size=kernel_size, padding='same', activation='gelu')
         self.conv2 = layers.Conv1D(d_model, kernel_size=1, padding='same')
 
-        # 🧱 FFN & Norms
+        # FFN & Norms
         self.ffn = tf.keras.Sequential([
             layers.Dense(d_model * 4, activation='gelu'),
             layers.Dense(d_model)
@@ -179,51 +166,48 @@ class Block(tf.keras.layers.Layer):
         self.dropout1 = layers.Dropout(dropout_rate)
         self.dropout2 = layers.Dropout(dropout_rate)
 
-        # 🌐 Dual Global Pooling
+        # Global pooling layers
         self.global_avg_pool = layers.GlobalAveragePooling1D()
-        self.global_max_pool = layers.GlobalMaxPooling1D()  # 중요 특징 추출
+        self.global_max_pool = layers.GlobalMaxPooling1D()
 
     def call(self, x, training=False):
         residual1 = x  # [B, T, D]
 
-        # 🔹 Step 1: Local interaction (Conv)
-        x_local = tf.transpose(x, perm=[0, 2, 1])
-        x_local = self.conv1(x_local)
-        x_local = tf.transpose(x_local, perm=[0, 2, 1])
+        # Step 1: Local interaction (Conv) - 수정된 부분
+        # Conv1D는 이미 (batch, time, features) 형태를 받으므로 transpose 불필요
+        x_local = self.conv1(x)  # [B, T, D]
         x_local = self.norm1(x_local)
         x_local = self.dropout1(x_local, training=training)
         x = x_local + residual1  # [B, T, D]
 
         residual2 = x
 
-        # 🔹 Step 2: Dual Global Context 추출
-        avg_pooled = self.global_avg_pool(residual1)  # [B, D] → 전반적 주제
-        max_pooled = self.global_max_pool(residual1)  # [B, D] → 핵심 단어/특징
+        # Step 2: Dual Global Context 추출
+        avg_pooled = self.global_avg_pool(residual1)  # [B, D]
+        max_pooled = self.global_max_pool(residual1)  # [B, D]
 
         seq_len = tf.shape(x)[1]
 
         # Expand to [B, T, D]
-        avg_expanded = tf.tile(tf.expand_dims(avg_pooled, 1), [1, seq_len, 1])  # [B, T, D]
+        avg_expanded = tf.tile(tf.expand_dims(avg_pooled, 1), [1, seq_len, 1])
         max_expanded = tf.tile(tf.expand_dims(max_pooled, 1), [1, seq_len, 1])
 
         # Apply learnable channel-wise scaling
-        avg_context = self.E * avg_expanded        # [B, T, D]
-        max_context = self.F * max_expanded        # [B, T, D]
+        avg_context = self.E * avg_expanded
+        max_context = self.F * max_expanded
 
-        # 🔥 Fusion: 모델이 '전체 평균' vs '최대 특징' 중 무엇을 더 신뢰할지 학습
-        gate = tf.nn.sigmoid(self.alpha)  # scalar between 0 and 1
-        global_context = gate * avg_context + (1 - gate) * max_context  # [B, T, D]
-        # ✅ gate ≈ 1: 전체 맥락(Avg)에 집중
-        # ✅ gate ≈ 0: 핵심 정보(Max)에 집중
+        # Fusion: 모델이 전체 평균 vs 최대 특징 중 무엇을 더 신뢰할지 학습
+        gate = tf.nn.sigmoid(self.alpha)
+        global_context = gate * avg_context + (1 - gate) * max_context
 
-        # 🔹 Step 3: Context-aware combination
-        local_context = self.C * (x * self.D)      # local + residual-based
+        # Step 3: Context-aware combination
+        local_context = self.C * (x * self.D)
         combined_context = local_context + global_context
 
         transformed = self.ffn(x)
 
         x = self.A * combined_context + self.B * transformed
-        x = self.conv2(x)
+        x = self.conv2(x)  # [B, T, D] - transpose 불필요
         x = self.norm2(x)
         x = self.dropout2(x, training=training)
         x = x + residual2
@@ -243,7 +227,6 @@ class Model(tf.keras.Model):
         self.lm_head = layers.Dense(vocab_size, name="lm_head")
 
     def call(self, x, training=False):
-        # x: [B, T]
         seq_len = tf.shape(x)[1]
         pos = tf.range(seq_len)
         x = self.token_embedding(x)  # [B, T, D]
@@ -255,7 +238,6 @@ class Model(tf.keras.Model):
         x = self.ln_f(x)
         logits = self.lm_head(x)  # [B, T, vocab_size]
         return logits
-
 
 # 손실 및 메트릭 정의
 loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True, reduction='none')
@@ -353,11 +335,10 @@ def generate_text_topp(model, prompt, max_len=100, max_gen=98, p=0.9, temperatur
 
         # 예측
         logits = model(input_tensor, training=False)  # [1, T, V]
-        # 마지막 생성된 위치의 로짓 (autoregressive)
         pos = min(current_len, max_len) - 1
         next_token_logits = logits[0, pos, :].numpy()
 
-        # 중요: end, pad에 패널티
+        # end, pad에 패널티
         next_token_logits[end_id] -= 5.0
         next_token_logits[pad_id] -= 10.0
 
@@ -372,7 +353,7 @@ def generate_text_topp(model, prompt, max_len=100, max_gen=98, p=0.9, temperatur
         cutoff = np.searchsorted(cumulative_probs, p)
         top_indices = sorted_indices[:cutoff + 1]
         top_probs = sorted_probs[:cutoff + 1]
-        top_probs /= np.sum(top_probs)  # 정규화
+        top_probs /= np.sum(top_probs)
 
         next_token_id = np.random.choice(top_indices, p=top_probs)
 
