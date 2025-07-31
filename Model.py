@@ -156,7 +156,6 @@ class Block(tf.keras.layers.Layer):
         self.B = self.add_weight(shape=(d_model,), initializer='zeros', trainable=True)
         self.C = self.add_weight(shape=(d_model,), initializer='ones', trainable=True)
         self.D = self.add_weight(shape=(d_model,), initializer='zeros', trainable=True)
-
         self.E = self.add_weight(shape=(d_model,), initializer='ones', trainable=True)
         self.F = self.add_weight(shape=(d_model,), initializer='zeros', trainable=True)
 
