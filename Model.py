@@ -152,10 +152,6 @@ class Block(tf.keras.layers.Layer):
         # Fusion parameter
         self.alpha = self.add_weight(shape=(), initializer='zeros', trainable=True, name="alpha")
 
-        # Local interaction layers - 수정된 부분
-        self.conv1 = layers.Conv1D(d_model, kernel_size=kernel_size, padding='same', activation='gelu')
-        self.conv2 = layers.Conv1D(d_model, kernel_size=1, padding='same')
-
         # FFN & Norms
         self.ffn = tf.keras.Sequential([
             layers.Dense(d_model * 4, activation='gelu'),
@@ -174,8 +170,6 @@ class Block(tf.keras.layers.Layer):
         residual1 = x  # [B, T, D]
 
         # Step 1: Local interaction (Conv) - 수정된 부분
-        # Conv1D는 이미 (batch, time, features) 형태를 받으므로 transpose 불필요
-        x_local = self.conv1(x)  # [B, T, D]
         x_local = self.norm1(x_local)
         x_local = self.dropout1(x_local, training=training)
         x = x_local + residual1  # [B, T, D]
@@ -207,7 +201,7 @@ class Block(tf.keras.layers.Layer):
         transformed = self.ffn(x)
 
         x = self.A * combined_context + self.B * transformed
-        x = self.conv2(x)  # [B, T, D] - transpose 불필요
+        
         x = self.norm2(x)
         x = self.dropout2(x, training=training)
         x = x + residual2
