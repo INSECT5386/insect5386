@@ -165,6 +165,19 @@ class Block(tf.keras.layers.Layer):
             trainable=True,
             name="B"
         )
+        self.C = self.add_weight(
+            shape=(d_model,),
+            initializer='random_normal',
+            trainable=True,
+            name="C"
+        )
+        
+        self.C_i = self.add_weight(
+            shape=(d_model,),
+            initializer='random_normal,  # 'zero' → 'zeros'
+            trainable=True,
+            name="C_i"
+        )
 
         # Dense layers
         self.Wx_1 = layers.Dense(d_model)
