@@ -148,7 +148,10 @@ class Block(tf.keras.layers.Layer):
         # Global context control parameters
         self.E = self.add_weight(shape=(d_model,), initializer='ones', trainable=True, name="E")
         self.F = self.add_weight(shape=(d_model,), initializer='ones', trainable=True, name="F")
-        
+
+        self.G = self.add_weight(shape=(d_model,), initializer='ones', trainable=True, name="F")
+        self.G_i = self.add_weight(shape=(d_model,), initializer='zeros', trainable=True, name="F")
+
         # Fusion parameter
         self.alpha = self.add_weight(shape=(), initializer='zeros', trainable=True, name="alpha")
 
@@ -169,7 +172,7 @@ class Block(tf.keras.layers.Layer):
     def call(self, x, training=False):
         residual1 = x  # [B, T, D]
 
-        # Step 1: Local interaction (Conv) - 수정된 부분
+        x_local = self.G * (x + (self.G_i * x))
         x_local = self.norm1(x_local)
         x_local = self.dropout1(x_local, training=training)
         x = x_local + residual1  # [B, T, D]
