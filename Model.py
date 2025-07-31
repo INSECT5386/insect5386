@@ -181,8 +181,9 @@ class Block(tf.keras.layers.Layer):
         )
         
         # Dense layers
-        self.Wx_1 = layers.Dense(d_model)
-        self.Wx_2 = layers.Dense(d_model)
+        self.Wx_1 = layers.Dense(d_model, activation='gelu')
+        self.Wx_2 = layers.Dense(d_model, activation='gelu')
+        self.Wo = layers.Dense(d_model)
 
         # Normalization and dropout
         self.norm1 = layers.LayerNormalization()
@@ -200,6 +201,7 @@ class Block(tf.keras.layers.Layer):
         # Apply learned affine combination
         # A, B are (D,), so they broadcast over T
         x = self.A * context + self.B * x_residual_transformed
+        x = self.Wo(x)
         x = x + residual  # Final residual connection
 
         return x
