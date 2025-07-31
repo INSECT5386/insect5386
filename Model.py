@@ -184,6 +184,8 @@ class Block(tf.keras.layers.Layer):
         context = self.Wx_1(context)
         x = self.Wx_2(residual)
 
+        x = self.A * context + self.B * x
+
         
 
         
