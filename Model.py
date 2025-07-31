@@ -290,7 +290,8 @@ def create_lr_schedule(initial_lr=5e-5, decay_steps=10000, decay_rate=0.9):
 model = Model(
     vocab_size=vocab_size,
     d_model=128,
-    n_layers=8
+    n_layers=8,
+    seq_len=max_len
 )
 
 # 옵티마이저
