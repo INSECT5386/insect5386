@@ -191,7 +191,7 @@ class Block(tf.keras.layers.Layer):
     def call(self, x, training=False):
         residual = x  # [B, T, D]
 
-        context = self.C * (x + self.D)
+        context = self.C * (x * self.D)
 
         # Transform context and residual
         context = self.Wx_1(context)        # [B, T, D]
