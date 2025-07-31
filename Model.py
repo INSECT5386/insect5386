@@ -172,13 +172,14 @@ class Block(tf.keras.layers.Layer):
             name="C"
         )
         
-        self.C_i = self.add_weight(
-            shape=(d_model,),
-            initializer='random_normal,  # 'zero' → 'zeros'
-            trainable=True,
-            name="C_i"
-        )
 
+        self.D = self.add_weight(
+            shape=(d_model,),
+            initializer='zeros',
+            trainable=True,
+            name="D"
+        )
+        
         # Dense layers
         self.Wx_1 = layers.Dense(d_model)
         self.Wx_2 = layers.Dense(d_model)
@@ -190,6 +191,7 @@ class Block(tf.keras.layers.Layer):
     def call(self, x, training=False):
         residual = x  # [B, T, D]
 
+        context = self.C * (x + self.D)
 
         # Transform context and residual
         context = self.Wx_1(context)        # [B, T, D]
