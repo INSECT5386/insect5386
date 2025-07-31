@@ -151,85 +151,96 @@ class Block(tf.keras.layers.Layer):
         super().__init__()
         self.d_model = d_model
 
-        # Learnable affine
-        self.A = self.add_weight(shape=(d_model,), initializer='ones', trainable=True)
-        self.B = self.add_weight(shape=(d_model,), initializer='zeros', trainable=True)
-        self.C = self.add_weight(shape=(d_model,), initializer='ones', trainable=True)
-        self.D = self.add_weight(shape=(d_model,), initializer='zeros', trainable=True)
-        self.E = self.add_weight(shape=(d_model,), initializer='ones', trainable=True)
-        self.F = self.add_weight(shape=(d_model,), initializer='zeros', trainable=True)
+        # Learnable affine parameters
+        self.A = self.add_weight(shape=(d_model,), initializer='ones', trainable=True, name="A")
+        self.B = self.add_weight(shape=(d_model,), initializer='zeros', trainable=True, name="B")
+        self.C = self.add_weight(shape=(d_model,), initializer='ones', trainable=True, name="C")
+        self.D = self.add_weight(shape=(d_model,), initializer='zeros', trainable=True, name="D")
+        self.E = self.add_weight(shape=(d_model,), initializer='ones', trainable=True, name="E")
+        self.F = self.add_weight(shape=(d_model,), initializer='zeros', trainable=True, name="F")
 
-        # 🔥 Conv1D for token interaction
+        # 🔥 Conv1D for local token interaction
         self.conv1 = layers.Conv1D(
-            d_model, kernel_size=kernel_size, padding='same', activation='gelu'
+            d_model, kernel_size=kernel_size, padding='same', activation='gelu', name="conv1"
         )
         self.conv2 = layers.Conv1D(
-            d_model, kernel_size=1, padding='same'  # 1x1 conv for projection
+            d_model, kernel_size=1, padding='same', name="conv2"  # 1x1 conv
         )
 
         # FFN
         self.ffn = tf.keras.Sequential([
-            layers.Dense(d_model * 4, activation='gelu'),
-            layers.Dense(d_model)
-        ])
+            layers.Dense(d_model * 4, activation='gelu', name="ffn_1"),
+            layers.Dense(d_model, name="ffn_2")
+        ], name="ffn")
 
         # Norm & Dropout
-        self.norm1 = layers.LayerNormalization()
-        self.norm2 = layers.LayerNormalization()
-        self.dropout1 = layers.Dropout(dropout_rate)
-        self.dropout2 = layers.Dropout(dropout_rate)
+        self.norm1 = layers.LayerNormalization(name="norm1")
+        self.norm2 = layers.LayerNormalization(name="norm2")
+        self.dropout1 = layers.Dropout(dropout_rate, name="dropout1")
+        self.dropout2 = layers.Dropout(dropout_rate, name="dropout2")
+
+        # Global pooling for global context
         self.global_pool = layers.GlobalAveragePooling1D()
 
-
     def call(self, x, training=False):
-        residual1 = x  # [B, T, D]
+        residual1 = x  # [B, T, D]  <-- 이걸로 global context 추출
 
-        pooled = self.global_pool(x)  # [B, D]
+        # 🔍 Option 1: residual1 기반 global context (더 안정적)
+        pooled = self.global_pool(residual1)  # [B, D]
         seq_len = tf.shape(x)[1]
         expanded = tf.expand_dims(pooled, 1)  # [B, 1, D]
         expanded = tf.tile(expanded, [1, seq_len, 1])  # [B, T, D]
 
-        z = self.E * (expanded * self.F)
+        # 🌐 Global context with learnable scaling
+        z = self.E * (expanded * self.F)  # [B, T, D]
 
-        # 🔗 Step 1: Conv로 토큰 간 상호작용
+        # 🔗 Step 1: Local interaction via Conv1D
         x = tf.transpose(x, perm=[0, 2, 1])  # [B, D, T]
         x = self.conv1(x)                    # [B, D, T]
         x = tf.transpose(x, perm=[0, 2, 1])  # [B, T, D]
         x = self.norm1(x)
         x = self.dropout1(x, training=training)
-        x = x + residual1  # residual
+        x = x + residual1  # Residual connection
+        # x now has local context refined
 
-        residual2 = x
+        residual2 = x  # For next residual
 
         # 🔗 Step 2: Context-aware affine combination
-        context = self.C * (x * self.D) + z
-        transformed = self.ffn(x)
+        context = self.C * (x * self.D) + z  # Local + Global context
+        transformed = self.ffn(x)            # Non-linear transformation
 
         x = self.A * context + self.B * transformed
-        x = self.conv2(x)  # optional 1x1 conv
+        x = self.conv2(x)  # Final projection
         x = self.norm2(x)
         x = self.dropout2(x, training=training)
-        x = x + residual2
+        x = x + residual2  # Final residual
 
         return x
 
-# ======================= CobraModel ======================
 class Model(tf.keras.Model):
-    def __init__(self, vocab_size, d_model, n_layers, dropout_rate=0.1):
-        super(Model, self).__init__()
+    def __init__(self, vocab_size, d_model, n_layers, seq_len, dropout_rate=0.1):
+        super().__init__()
         self.token_embedding = layers.Embedding(vocab_size, d_model)
-        self.blocks = [Block(d_model, dropout_rate=dropout_rate) for _ in range(n_layers)]
-        self.o = layers.Dense(vocab_size)
-        self.ln_f = layers.LayerNormalization(epsilon=1e-5)
+        self.pos_embedding = layers.Embedding(seq_len, d_model)
+        self.blocks = [
+            Block(d_model, kernel_size=3, dropout_rate=dropout_rate)
+            for _ in range(n_layers)
+        ]
+        self.ln_f = layers.LayerNormalization()
+        self.lm_head = layers.Dense(vocab_size, name="lm_head")
 
     def call(self, x, training=False):
-        x = self.token_embedding(x)
+        # x: [B, T]
+        seq_len = tf.shape(x)[1]
+        pos = tf.range(seq_len)
+        x = self.token_embedding(x)  # [B, T, D]
+        x = x + self.pos_embedding(pos)  # [T, D]
 
         for block in self.blocks:
             x = block(x, training=training)
 
         x = self.ln_f(x)
-        logits = self.o(x)
+        logits = self.lm_head(x)  # [B, T, vocab_size]
         return logits
 
 
