@@ -151,7 +151,19 @@ class Block(tf.keras.layers.Layer):
         super(Block, self).__init__()
         self.d_model = d_model
 
-        self.al = 
+        self.A = self.add_weight(
+            shape=(hidden_dim,),
+            initializer='random_normal',
+            trainable=True,
+            name="A"
+        )
+        
+        self.B = self.add_weight(
+            shape=(hidden_dim,),
+            initializer='zero',
+            trainable=True,
+            name="B"
+        )
 
         self.global_pool = layers.GlobalAveragePooling1D()
         
