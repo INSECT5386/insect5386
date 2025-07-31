@@ -157,6 +157,9 @@ class Block(tf.keras.layers.Layer):
         self.C = self.add_weight(shape=(d_model,), initializer='ones', trainable=True)
         self.D = self.add_weight(shape=(d_model,), initializer='zeros', trainable=True)
 
+        self.E = self.add_weight(shape=(d_model,), initializer='ones', trainable=True)
+        self.F = self.add_weight(shape=(d_model,), initializer='zeros', trainable=True)
+
         # 🔥 Conv1D for token interaction
         self.conv1 = layers.Conv1D(
             d_model, kernel_size=kernel_size, padding='same', activation='gelu'
@@ -176,9 +179,18 @@ class Block(tf.keras.layers.Layer):
         self.norm2 = layers.LayerNormalization()
         self.dropout1 = layers.Dropout(dropout_rate)
         self.dropout2 = layers.Dropout(dropout_rate)
+        self.global_pool = layers.GlobalAveragePooling1D()
+
 
     def call(self, x, training=False):
         residual1 = x  # [B, T, D]
+
+        pooled = self.global_pool(x)  # [B, D]
+        seq_len = tf.shape(x)[1]
+        expanded = tf.expand_dims(pooled, 1)  # [B, 1, D]
+        expanded = tf.tile(expanded, [1, seq_len, 1])  # [B, T, D]
+
+        z = self.E * (expanded * self.F)
 
         # 🔗 Step 1: Conv로 토큰 간 상호작용
         x = tf.transpose(x, perm=[0, 2, 1])  # [B, D, T]
@@ -191,7 +203,7 @@ class Block(tf.keras.layers.Layer):
         residual2 = x
 
         # 🔗 Step 2: Context-aware affine combination
-        context = self.C * (x * self.D)      # D, C는 채널별 가중치
+        context = self.C * (x * self.D)
         transformed = self.ffn(x)
 
         x = self.A * context + self.B * transformed
