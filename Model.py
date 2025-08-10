@@ -134,82 +134,20 @@ dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
 print("✅ TF Dataset 생성 완료!")
 
-class Block(tf.keras.layers.Layer):
-    def __init__(self, d_model, kernel_size=3, dropout_rate=0.1):
-        super().__init__()
-        self.d_model = d_model
+def sharedblock(x, d_model):
+    skip = x
+    a = layers.Dense(d_model)(x)
+    b = layers.Dense(d_model, activation='sigmoid')(x)
+    x = layers.Dense(d_model*2, activation='gelu')(a)
 
-        # Local context control parameters
-        self.A = self.add_weight(shape=(d_model,), initializer='ones', trainable=True, name="A")
-        self.B = self.add_weight(shape=(d_model,), initializer='zeros', trainable=True, name="B")
-        self.C = self.add_weight(shape=(d_model,), initializer='ones', trainable=True, name="C")
-        self.D = self.add_weight(shape=(d_model,), initializer='zeros', trainable=True, name="D")
+    return x = x * b + skip
+    
+def model(d_model):
+    inputs = layers.Input(shape=(MAX_SEQ_LEN,), dtype=tf.int32)
+    embedding = layers.Embedding(vocab_size, EMBED_DIM, mask_zero=True)(inputs)
 
-        # Global context control parameters
-        self.E = self.add_weight(shape=(d_model,), initializer='ones', trainable=True, name="E")
-        self.F = self.add_weight(shape=(d_model,), initializer='ones', trainable=True, name="F")
+    x = sharedblock(x, d_model)
 
-        self.G = self.add_weight(shape=(d_model,), initializer='ones', trainable=True, name="F")
-        self.G_i = self.add_weight(shape=(d_model,), initializer='zeros', trainable=True, name="F")
-
-        # Fusion parameter
-        self.alpha = self.add_weight(shape=(), initializer='zeros', trainable=True, name="alpha")
-
-        # FFN & Norms
-        self.ffn = tf.keras.Sequential([
-            layers.Dense(d_model * 4, activation='gelu'),
-            layers.Dense(d_model)
-        ])
-        self.norm1 = layers.LayerNormalization()
-        self.norm2 = layers.LayerNormalization()
-        self.dropout1 = layers.Dropout(dropout_rate)
-        self.dropout2 = layers.Dropout(dropout_rate)
-
-        # Global pooling layers
-        self.global_avg_pool = layers.GlobalAveragePooling1D()
-        self.global_max_pool = layers.GlobalMaxPooling1D()
-
-    def call(self, x, training=False):
-        residual1 = x  # [B, T, D]
-
-        x_local = self.G * (x + (self.G_i * x))
-        x_local = self.norm1(x_local)
-        x_local = self.dropout1(x_local, training=training)
-        x = x_local + residual1  # [B, T, D]
-
-        residual2 = x
-
-        # Step 2: Dual Global Context 추출
-        avg_pooled = self.global_avg_pool(residual1)  # [B, D]
-        max_pooled = self.global_max_pool(residual1)  # [B, D]
-
-        seq_len = tf.shape(x)[1]
-
-        # Expand to [B, T, D]
-        avg_expanded = tf.tile(tf.expand_dims(avg_pooled, 1), [1, seq_len, 1])
-        max_expanded = tf.tile(tf.expand_dims(max_pooled, 1), [1, seq_len, 1])
-
-        # Apply learnable channel-wise scaling
-        avg_context = self.E * avg_expanded
-        max_context = self.F * max_expanded
-
-        # Fusion: 모델이 전체 평균 vs 최대 특징 중 무엇을 더 신뢰할지 학습
-        gate = tf.nn.sigmoid(self.alpha)
-        global_context = gate * avg_context + (1 - gate) * max_context
-
-        # Step 3: Context-aware combination
-        local_context = self.C * (x * self.D)
-        combined_context = local_context + global_context
-
-        transformed = self.ffn(x)
-
-        x = self.A * combined_context + self.B * transformed
-        
-        x = self.norm2(x)
-        x = self.dropout2(x, training=training)
-        x = x + residual2
-
-        return x
 
 class Model(tf.keras.Model):
     def __init__(self, vocab_size, d_model, n_layers, seq_len, dropout_rate=0.1):
