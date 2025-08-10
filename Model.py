@@ -142,7 +142,7 @@ def sharedblock(x):
     x = layers.Dense(d_model * 2, activation='gelu')(a)
     return x * b + skip
     
-def model(vocab_size, d_model):
+def ModelLM(vocab_size, d_model):
     inputs = layers.Input(shape=(max_len,), dtype=tf.int32)
     embedding = layers.Embedding(vocab_size, d_model, mask_zero=True)(inputs)
     block = sharedblock()
@@ -183,7 +183,7 @@ def create_lr_schedule(initial_lr=5e-5, decay_steps=10000, decay_rate=0.9):
     )
 
 # 모델 생성
-model = Model(
+model = ModelLM(
     vocab_size=vocab_size,
     d_model=128,
 )
