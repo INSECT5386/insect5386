@@ -137,9 +137,12 @@ print("✅ TF Dataset 생성 완료!")
 def sharedblock(x, d_model):
     skip = x
     a = layers.Dense(d_model)(x)
-    b = layers.Dense(d_model, activation='sigmoid')(x)
+    b = layers.Dense(d_model * 2, activation='sigmoid')(x)
     x = layers.Dense(d_model * 2, activation='gelu')(a)
-    return x * b + skip
+
+    proj = layers.Dense(d_model)
+    return proj(x * b) + skip
+
     
 def ModelLM(vocab_size, d_model):
     inputs = layers.Input(shape=(max_len,), dtype=tf.int32)
