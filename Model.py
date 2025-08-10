@@ -16,7 +16,7 @@ def download_file(url, save_path):
     print(f"✅ 파일 저장됨: {save_path}")
 
 # ⬇️ 데이터와 토크나이저 다운로드
-download_file('https://huggingface.co/datasets/Yuchan5386/sss/resolve/main/datase11.jsonl?download=true', 'dataset.jsonl')
+download_file('https://huggingface.co/datasets/Yuchan5386/sss/resolve/main/data.jsonl?download=true', 'dataset.jsonl')
 download_file('https://huggingface.co/datasets/Yuchan5386/sss/resolve/main/ko_unigram.model?download=true', 'ko_unigram.model')
 
 # ⬇️ JSONL 파일을 Pandas DataFrame으로 읽기
@@ -35,8 +35,8 @@ print(f"✅ 데이터 로드 완료: {len(df)}개의 샘플")
 def create_qa_sentences(df, max_pairs=50000):
     qa_pairs = []
     for _, row in df.head(max_pairs).iterrows():
-        q = str(row["question"]).strip()
-        a = str(row["answer"]).strip()
+        q = str(row["input"]).strip()
+        a = str(row["target"]).strip()
         full = f"<start> {q} <sep> {a} <end>"
         qa_pairs.append(full)
     return qa_pairs
