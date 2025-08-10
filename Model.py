@@ -134,9 +134,8 @@ dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
 print("✅ TF Dataset 생성 완료!")
 
-def sharedblock(x):
+def sharedblock(x, d_model):
     skip = x
-    d_model = x.shape[-1]
     a = layers.Dense(d_model)(x)
     b = layers.Dense(d_model, activation='sigmoid')(x)
     x = layers.Dense(d_model * 2, activation='gelu')(a)
@@ -145,12 +144,12 @@ def sharedblock(x):
 def ModelLM(vocab_size, d_model):
     inputs = layers.Input(shape=(max_len,), dtype=tf.int32)
     embedding = layers.Embedding(vocab_size, d_model, mask_zero=True)(inputs)
-    block = sharedblock()
-
-    x = block(x)
-    x = block(x)
-    x = block(x)
-    return x
+    x = embedding
+    x = sharedblock(x, d_model)
+    x = sharedblock(x, d_model)
+    x = sharedblock(x, d_model)
+    x = layers.Dense(vocab_size)(x)
+    return tf.keras.Model(inputs=inputs, outputs=x)
 
 
 # 손실 및 메트릭 정의
