@@ -217,16 +217,8 @@ history = model.fit(
     verbose=1
 )
 
-# 가중치 저장
-model.save_weights("Cobra.weights.h5")
-print("✅ 모델 가중치 저장 완료!")
+model.export('LinearLM')
 
-# Google Colab에서 다운로드
-try:
-    from google.colab import files
-    files.download('Cobra.weights.h5')
-except ImportError:
-    print("Colab이 아닙니다. 파일은 로컬에 저장됨.")
 
 # ======================= 텍스트 생성 함수 =======================
 def generate_text_topp(model, prompt, max_len=100, max_gen=98, p=0.9, temperature=0.8, min_len=20):
