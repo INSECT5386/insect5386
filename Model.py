@@ -134,14 +134,13 @@ dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
 print("✅ TF Dataset 생성 완료!")
 
-def sharedblock():
+def sharedblock(x):
     skip = x
-    d_model = 128
+    d_model = x.shape[-1]
     a = layers.Dense(d_model)(x)
     b = layers.Dense(d_model, activation='sigmoid')(x)
-    x = layers.Dense(d_model*2, activation='gelu')(a)
-
-    return x = x * b + skip
+    x = layers.Dense(d_model * 2, activation='gelu')(a)
+    return x * b + skip
     
 def model(vocab_size, d_model):
     inputs = layers.Input(shape=(max_len,), dtype=tf.int32)
