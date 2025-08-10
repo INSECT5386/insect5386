@@ -134,8 +134,9 @@ dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
 print("✅ TF Dataset 생성 완료!")
 
-def sharedblock(x, d_model):
+def sharedblock():
     skip = x
+    d_model = 128
     a = layers.Dense(d_model)(x)
     b = layers.Dense(d_model, activation='sigmoid')(x)
     x = layers.Dense(d_model*2, activation='gelu')(a)
@@ -145,34 +146,13 @@ def sharedblock(x, d_model):
 def model(d_model):
     inputs = layers.Input(shape=(MAX_SEQ_LEN,), dtype=tf.int32)
     embedding = layers.Embedding(vocab_size, EMBED_DIM, mask_zero=True)(inputs)
+    block = sharedblock()
 
-    x = sharedblock(x, d_model)
+    x = block(x)
+    x = block(x)
+    x = block(x)
+    return x
 
-
-class Model(tf.keras.Model):
-    def __init__(self, vocab_size, d_model, n_layers, seq_len, dropout_rate=0.1):
-        super().__init__()
-        self.token_embedding = layers.Embedding(vocab_size, d_model)
-        self.pos_embedding = layers.Embedding(seq_len, d_model)
-        self.blocks = [
-            Block(d_model, kernel_size=3, dropout_rate=dropout_rate)
-            for _ in range(n_layers)
-        ]
-        self.ln_f = layers.LayerNormalization()
-        self.lm_head = layers.Dense(vocab_size, name="lm_head")
-
-    def call(self, x, training=False):
-        seq_len = tf.shape(x)[1]
-        pos = tf.range(seq_len)
-        x = self.token_embedding(x)  # [B, T, D]
-        x = x + self.pos_embedding(pos)  # [T, D]
-
-        for block in self.blocks:
-            x = block(x, training=training)
-
-        x = self.ln_f(x)
-        logits = self.lm_head(x)  # [B, T, vocab_size]
-        return logits
 
 # 손실 및 메트릭 정의
 loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True, reduction='none')
