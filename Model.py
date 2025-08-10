@@ -16,8 +16,8 @@ def download_file(url, save_path):
     print(f"✅ 파일 저장됨: {save_path}")
 
 # ⬇️ 데이터와 토크나이저 다운로드
-download_file('https://huggingface.co/datasets/Yuchan5386/chat/resolve/main/NewS3GeN/dataset.jsonl?download=true', 'dataset.jsonl')
-download_file('https://huggingface.co/datasets/Yuchan5386/Tokenizer/resolve/main/unigram_model.model?download=true', 'ko_unigram.model')
+download_file('https://huggingface.co/datasets/Yuchan5386/sss/resolve/main/datase11.jsonl?download=true', 'dataset.jsonl')
+download_file('https://huggingface.co/datasets/Yuchan5386/sss/resolve/main/ko_unigram.model?download=true', 'ko_unigram.model')
 
 # ⬇️ JSONL 파일을 Pandas DataFrame으로 읽기
 def load_jsonl(file_path):
@@ -41,7 +41,7 @@ def create_qa_sentences(df, max_pairs=50000):
         qa_pairs.append(full)
     return qa_pairs
 
-train_sentences = create_qa_sentences(df, max_pairs=50000)
+train_sentences = create_qa_sentences(df, max_pairs=1021041)
 print(f"✅ 전처리 완료: {len(train_sentences)}개의 QA 쌍 생성")
 
 # ⬇️ 토크나이저 불러오기
