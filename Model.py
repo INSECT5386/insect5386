@@ -143,9 +143,9 @@ def sharedblock():
 
     return x = x * b + skip
     
-def model(d_model):
-    inputs = layers.Input(shape=(MAX_SEQ_LEN,), dtype=tf.int32)
-    embedding = layers.Embedding(vocab_size, EMBED_DIM, mask_zero=True)(inputs)
+def model(vocab_size, d_model):
+    inputs = layers.Input(shape=(max_len,), dtype=tf.int32)
+    embedding = layers.Embedding(vocab_size, d_model, mask_zero=True)(inputs)
     block = sharedblock()
 
     x = block(x)
@@ -187,8 +187,6 @@ def create_lr_schedule(initial_lr=5e-5, decay_steps=10000, decay_rate=0.9):
 model = Model(
     vocab_size=vocab_size,
     d_model=128,
-    n_layers=8,
-    seq_len=max_len
 )
 
 # 옵티마이저
