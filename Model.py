@@ -16,8 +16,8 @@ def download_file(url, save_path):
     print(f"✅ 파일 저장됨: {save_path}")
 
 # ⬇️ 데이터와 토크나이저 다운로드
-download_file('https://huggingface.co/datasets/Yuchan5386/Test1111/resolve/main/dataset.parquet?download=true', 'dataset.parquet')
-download_file('https://huggingface.co/datasets/Yuchan5386/Test1111/resolve/main/kolig_unigram%20(2).model?download=true', 'ko_unigram.model')
+download_file('https://huggingface.co/datasets/Yuchan5386/Dialogue/resolve/main/dataset.parquet?download=true', 'dataset.parquet')
+download_file('https://huggingface.co/datasets/Yuchan5386/Dialogue/resolve/main/ko_unigram.model?download=true', 'ko_unigram.model')
 
 # ⬇️ Parquet 데이터 불러오기
 df = pd.read_parquet("dataset.parquet", engine="pyarrow")
