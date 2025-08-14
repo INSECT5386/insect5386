@@ -237,7 +237,6 @@ def masked_top5_accuracy(y_true, y_pred):
     mask = tf.cast(tf.not_equal(y_true, pad_id), tf.float32)
     return tf.reduce_sum(matches * mask) / tf.reduce_sum(mask)
 
-
 def token_level_loss(y_true, y_pred):
     loss = loss_fn(y_true, y_pred)
     mask = tf.cast(tf.not_equal(y_true, pad_id), tf.float32)
@@ -252,7 +251,6 @@ def create_lr_schedule(initial_lr=5e-5, decay_steps=10000, decay_rate=0.9):
     )
 
 model = InteractGPT(vocab_size=vocab_size, seq_len=max_len, d_model=256, d_ff=1024, n_layers=6)    
-  
 
 # 옵티마이저 설정
 optimizer = tf.keras.optimizers.Adam(
