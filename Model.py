@@ -16,8 +16,8 @@ def download_file(url, save_path):
     print(f"✅ 파일 저장됨: {save_path}")
 
 # ⬇️ 데이터와 토크나이저 다운로드
-download_file('https://huggingface.co/datasets/Yuchan5386/KeraLux4/resolve/main/dataset.parquet?download=true', 'dataset.parquet')
-download_file('https://huggingface.co/datasets/Yuchan5386/KeraLux4/resolve/main/kolig_unigram.model?download=true', 'ko_unigram.model')
+download_file('https://huggingface.co/datasets/Yuchan5386/Dialogue/resolve/main/dataset.parquet?download=true', 'dataset.parquet')
+download_file('https://huggingface.co/datasets/Yuchan5386/Dialogue/resolve/main/ko_unigram.model?download=true', 'ko_unigram.model')
 
 # ⬇️ Parquet 데이터 불러오기
 df = pd.read_parquet("dataset.parquet", engine="pyarrow")
@@ -33,7 +33,7 @@ for conversations in df["conversations"]:
             response = item2.get("value", "").strip().replace("\n", " ")
             full = f"<start> {prompt} <sep> {response} <end>"
             train_sentences.append(full)
-train_sentences = train_sentences[:300000]
+train_sentences = train_sentences[:50000]
 print(f"총 문장 개수: {len(train_sentences)}")
 
 # ⬇️ 토크나이저 불러오기
@@ -120,134 +120,92 @@ dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
 print("✅ TF Dataset 생성 완료!")
 
+class RotaryPositionalEmbedding(layers.Layer):  
+    def __init__(self, dim):  
+        super().__init__()  
+        inv_freq = 1.0 / (10000 ** (np.arange(0, dim, 2) / dim))  
+        self.inv_freq = tf.constant(inv_freq, dtype=tf.float32)  
+  
+    def call(self, x):  
+        batch, heads, seq_len, depth = tf.unstack(tf.shape(x))  
+        t = tf.range(seq_len, dtype=tf.float32)  
+        freqs = tf.einsum('i,j->ij', t, self.inv_freq)  
+        emb_sin = tf.sin(freqs)  
+        emb_cos = tf.cos(freqs)  
+        emb_cos = tf.reshape(emb_cos, [1, 1, seq_len, -1])  
+        emb_sin = tf.reshape(emb_sin, [1, 1, seq_len, -1])  
+        x1 = x[..., ::2]  
+        x2 = x[..., 1::2]  
+        x_rotated = tf.stack([  
+            x1 * emb_cos - x2 * emb_sin,  
+            x1 * emb_sin + x2 * emb_cos  
+        ], axis=-1)  
+        x_rotated = tf.reshape(x_rotated, tf.shape(x))  
+        return x_rotated
 
-class SimpleFFN(tf.keras.layers.Layer):
-    def __init__(self, dim):
+class SwiGLU(tf.keras.layers.Layer):
+    def __init__(self, d_model, d_ff):
         super().__init__()
-        self.gate_proj = layers.Dense(dim)
-        self.up_proj = layers.Dense(dim)
-        self.down_proj = layers.Dense(dim)
+        self.proj = tf.keras.layers.Dense(d_ff * 2)
+        self.out = tf.keras.layers.Dense(d_model)
 
     def call(self, x):
-        gate = tf.nn.silu(self.gate_proj(x))
-        up = self.up_proj(x)
-        return self.down_proj(gate * up)
-
-# ==================== RealMambaCore =====================
-class RealMambaCore(tf.keras.layers.Layer):
-    def __init__(self, hidden_dim):
-        super().__init__()
-        self.hidden_dim = hidden_dim
+        x_proj = self.proj(x)
+        x_val, x_gate = tf.split(x_proj, 2, axis=-1)
+        return self.out(x_val * tf.nn.silu(x_gate))
         
-        self.ffn = SimpleFFN(hidden_dim)  # 또는 'tanh'
+class GPTBlock(tf.keras.layers.Layer):
+    def __init__(self, d_model, d_ff, num_heads=8, dropout_rate=0.1, adapter_dim=64):  
+        super().__init__()  
+        self.ln1 = tf.keras.layers.LayerNormalization(epsilon=1e-5)  
+        self.mha = tf.keras.layers.MultiHeadAttention(num_heads=num_heads, key_dim=d_model // num_heads)  
+        self.dropout1 = tf.keras.layers.Dropout(dropout_rate) 
+        self.adapter_down = tf.keras.layers.Dense(adapter_dim, activation='gelu') 
+        self.adapter_up = tf.keras.layers.Dense(d_model)  
+  
+        self.ln2 = tf.keras.layers.LayerNormalization(epsilon=1e-5)  
+        self.ffn = SwiGLU(d_model, d_ff)  
+        self.dropout2 = tf.keras.layers.Dropout(dropout_rate) 
+        self.rope = RotaryPositionalEmbedding(d_model // num_heads)  
+  
+    def call(self, x, training=False):  
+        x_norm = self.ln1(x)  
+        b, s, _ = tf.shape(x_norm)[0], tf.shape(x_norm)[1], tf.shape(x_norm)[2]  
+        h = self.mha.num_heads  
+        d = x_norm.shape[-1] // h  
+  
+        qkv = tf.reshape(x_norm, [b, s, h, d])  
+        qkv = tf.transpose(qkv, [0, 2, 1, 3])  
+        q = self.rope(qkv)  
+        k = self.rope(qkv)  
+        q = tf.reshape(tf.transpose(q, [0, 2, 1, 3]), [b, s, h * d])  
+        k = tf.reshape(tf.transpose(k, [0, 2, 1, 3]), [b, s, h * d])  
+  
+        attn_out = self.mha(query=q, value=x_norm, key=k, use_causal_mask=True, training=training)  
+        attn_out = self.dropout1(attn_out, training=training)  
 
-        self.gate_proj = layers.Dense(hidden_dim)
-        self.input_proj = layers.Dense(hidden_dim)
-
-        self.A = self.add_weight(shape=(hidden_dim,),
-                                 initializer=tf.keras.initializers.RandomNormal(mean=-0.5, stddev=0.1),
-                                 trainable=True, name="A")
-        self.B = self.add_weight(shape=(hidden_dim,),
-                                 initializer='random_normal',
-                                 trainable=True, name="B")
-        self.C = self.add_weight(shape=(hidden_dim,),
-                                 initializer='random_normal',
-                                 trainable=True, name="C")
-        self.D = self.add_weight(shape=(hidden_dim,),
-                                 initializer='zeros',
-                                 trainable=True, name="D")
-
-        self.norm = layers.LayerNormalization()
-        self.output_proj = layers.Dense(hidden_dim)
-
-    def fft_convolve(self, u_t, kernel_t, T):
-        pad_len = T - 1
-        seq_len = T + pad_len
-
-        fft_len_float = tf.math.ceil(tf.math.log(tf.cast(seq_len, tf.float32)) / tf.math.log(2.0))
-        fft_len = tf.cast(2 ** fft_len_float, tf.int32)
-
-        u_padded = tf.pad(u_t, [[0, 0], [0, 0], [pad_len, fft_len - seq_len]])
-        K_padded = tf.pad(kernel_t, [[0, 0], [0, fft_len - T]])
-
-        U_f = tf.signal.fft(tf.cast(tf.complex(u_padded, 0.0), tf.complex64))
-        K_f = tf.signal.fft(tf.cast(tf.complex(K_padded, 0.0), tf.complex64))
-
-        Y_f = U_f * tf.expand_dims(K_f, 0)
-        y_full = tf.signal.ifft(Y_f)
-        y_real = tf.math.real(y_full)[..., pad_len:pad_len + T]
-
-        return y_real
-
-    def call(self, x):
-        B = tf.shape(x)[0]
-        T = tf.shape(x)[1]
-        D = self.hidden_dim
-
-        gate = tf.nn.silu(self.gate_proj(x))
-        x_proj = self.input_proj(x)
-        u = gate * x_proj
-
-        time_idx = tf.cast(tf.range(T), dtype=self.A.dtype)[:, None]
-        A_pow = tf.pow(tf.expand_dims(self.A, 0), time_idx)
-        kernel = self.B * A_pow
-
-        u_t = tf.transpose(u, [0, 2, 1])
-        kernel_t = tf.transpose(kernel, [1, 0])
-
-        y_real = self.fft_convolve(u_t, kernel_t, T)
-        y = tf.transpose(y_real, [0, 2, 1])
-
-        y = self.C * y + self.D * u
-
-        y = self.norm(y)
-        y = self.ffn(y)
-        y = self.output_proj(y)
-
-        return y
-
-# ======================= Cobrablock ======================
-class Cobrablock(tf.keras.layers.Layer):
-    def __init__(self, d_model, dropout_rate=0.1):
-        super().__init__()
-        self.norm1 = layers.LayerNormalization(epsilon=1e-5)
-        self.mamba = RealMambaCore(d_model)
-        self.dropout1 = layers.Dropout(dropout_rate)
-
-        self.norm2 = layers.LayerNormalization(epsilon=1e-5)
-        self.dropout2 = layers.Dropout(dropout_rate)
-
-    def call(self, x, training=False):
-        residual = x
-        x = self.norm1(x)
-        x = self.mamba(x)
-        x = residual + self.dropout1(x, training=training)
-
-        residual = x
-        x = self.norm2(x)
-        x = self.dropout2(x, training=training)
-        x = residual + x
-
+        adapter_out = self.adapter_up(self.adapter_down(attn_out))
+        attn_out = attn_out + adapter_out  
+  
+        x = x + attn_out  
+        ffn_out = self.ffn(self.ln2(x))  
+        x = x + self.dropout2(ffn_out, training=training)  
         return x
 
-# ======================= CobraModel ======================
-class CobraModel(tf.keras.Model):
-    def __init__(self, vocab_size, d_model, n_layers, dropout_rate=0.1):
-        super().__init__()
-        self.token_embedding = layers.Embedding(vocab_size, d_model)
-        self.blocks = [Cobrablock(d_model, dropout_rate) for _ in range(n_layers)]
-        self.ln_f = layers.LayerNormalization(epsilon=1e-5)
-
-    def call(self, x, training=False):
-        x = self.token_embedding(x)
-
-        for block in self.blocks:
-            x = block(x, training=training)
-
-        x = self.ln_f(x)
-        logits = tf.matmul(x, self.token_embedding.embeddings, transpose_b=True)
-        return logits
-
+class InteractGPT(tf.keras.Model):  
+    def __init__(self, vocab_size, seq_len, d_model, d_ff, n_layers, num_heads=8, dropout_rate=0.1):  
+        super().__init__()  
+        self.token_embedding = tf.keras.layers.Embedding(vocab_size, d_model)  
+        self.blocks = [GPTBlock(d_model, d_ff, num_heads, dropout_rate) for _ in range(n_layers)]  
+        self.ln_f = tf.keras.layers.LayerNormalization(epsilon=1e-5)  
+  
+    def call(self, x, training=False):  
+        x = self.token_embedding(x)  
+        for block in self.blocks:  
+            x = block(x, training=training)  
+        x = self.ln_f(x)  
+        logits = tf.matmul(x, self.token_embedding.embeddings, transpose_b=True)  
+        return logits  
 
 # 손실 함수 및 메트릭 정의
 loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True, reduction='none')
@@ -293,13 +251,8 @@ def create_lr_schedule(initial_lr=5e-5, decay_steps=10000, decay_rate=0.9):
         staircase=False
     )
 
-
-# 모델 생성
-model = CobraModel(
-    vocab_size=vocab_size,
-    d_model=384,
-    n_layers=12
-)
+model = InteractGPT(vocab_size=vocab_size, seq_len=max_len, d_model=256, d_ff=1024, n_layers=6)    
+  
 
 # 옵티마이저 설정
 optimizer = tf.keras.optimizers.Adam(
@@ -338,8 +291,6 @@ history = model.fit(
 # 가중치 저장
 model.save_weights("Cobra.weights.h5")
 print("모델 가중치 저장 완료!")
-from google.colab import files
-files.download('Cobra.weights.h5')  # 여기에 다운로드할 파일명을 넣어줘
 
 
 def generate_text_topp(model, prompt, max_len=100, max_gen=98, p=0.9, temperature=0.8, min_len=20):
