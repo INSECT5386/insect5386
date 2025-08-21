@@ -74,7 +74,7 @@ def data_generator(file_path, max_len=max_len, pad_id=pad_id, start_id=start_id,
 #3097345
 
 stream_dataset = tf.data.Dataset.from_generator(
-    lambda: data_generator("VeTrans.jsonl", max_samples=30),
+    lambda: data_generator("VeTrans.jsonl", max_samples=50000),
     output_signature=(
         tf.TensorSpec(shape=(max_len,), dtype=tf.int32),
         tf.TensorSpec(shape=(max_len,), dtype=tf.int32)
@@ -171,7 +171,7 @@ dec_rnn_cell = RecurrentFFN(128,128)
 dec_rnn = RNN(dec_rnn_cell, return_sequences=True, return_state=True)
 dec_out, _ = dec_rnn(dec_emb, initial_state=enc_state)
 
-attn_out = Attention()([dec_out, enc_seq])
+attn_out = tf.keras.layers.MultiHeadAttention(8, 128//8)([dec_out, enc_seq])
 attn_out = LayerNormalization()(attn_out)
 attn_out = Dense(128, activation='relu')(attn_out)  # FFN 추가
 logits = Dense(vocab_size)(attn_out)
