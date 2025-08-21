@@ -194,17 +194,17 @@ class RecurrentFFN(tf.keras.layers.Layer):
       
 # 인코더
 encoder_input = tf.keras.Input(shape=(max_enc_len,))
-encoder_emb = tf.keras.layers.Embedding(vocab_size, 200)(encoder_input)
+encoder_emb = tf.keras.layers.Embedding(vocab_size, 128)(encoder_input)
 
-rnn_cell = RecurrentFFN(input_dim=200, hidden_dim=200)
+rnn_cell = RecurrentFFN(input_dim=128, hidden_dim=128)
 encoder = tf.keras.layers.RNN(rnn_cell, return_sequences=True, return_state=True, name='encoder')
 encoder_output, encoder_final_state = encoder(encoder_emb)
 
 # 디코더
 decoder_input = tf.keras.Input(shape=(max_dec_len,))
-decoder_emb = tf.keras.layers.Embedding(vocab_size, 200)(decoder_input)
+decoder_emb = tf.keras.layers.Embedding(vocab_size, 128)(decoder_input)
 
-rnn_cell_decoder = RecurrentFFN(input_dim=200, hidden_dim=200)
+rnn_cell_decoder = RecurrentFFN(input_dim=128, hidden_dim=128)
 
 decoder = tf.keras.layers.RNN(
     rnn_cell_decoder,
@@ -216,9 +216,7 @@ decoder = tf.keras.layers.RNN(
 decoder_output, _ = decoder(decoder_emb, initial_state=encoder_final_state)
 
 # 출력층
-decoder_dense = tf.keras.layers.TimeDistributed(
-    tf.keras.layers.Dense(vocab_size)
-)
+decoder_dense = tf.keras.layers.Dense(vocab_size)
 decoder_outputs = decoder_dense(decoder_output)
 
 # 모델 정의
