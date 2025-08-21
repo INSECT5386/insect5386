@@ -1,13 +1,14 @@
 import tensorflow as tf
-from tensorflow.keras.layers import Input, Embedding, Dense, LayerNormalization, Dropout, RNN
+from tensorflow.keras.layers import Input, Embedding, Dense, LayerNormalization, Dropout, RNN, Attention
 from tensorflow.keras.models import Model
-from tensorflow.keras.initializers import GlorotUniform, Orthogonal
 import numpy as np
-import sentencepiece as spm
-import pandas as pd
+import json
 import requests
+import sentencepiece as spm
 
-# ⬇️ 파일 다운로드 함수
+# =======================
+# 파일 다운로드
+# =======================
 def download_file(url, save_path):
     response = requests.get(url, stream=True)
     response.raise_for_status()
@@ -16,284 +17,233 @@ def download_file(url, save_path):
             f.write(chunk)
     print(f"✅ 파일 저장됨: {save_path}")
 
-# ⬇️ 데이터와 토크나이저 다운로드
-download_file('https://huggingface.co/datasets/Yuchan5386/KeraLux4/resolve/main/dataset.parquet?download=true', 'dataset.parquet')
-download_file('https://huggingface.co/datasets/Yuchan5386/KeraLux4/resolve/main/kolig_unigram.model?download=true', 'ko_unigram.model')
+download_file(
+    'https://huggingface.co/datasets/Yuchan5386/Test1111/resolve/main/dataset.jsonl?download=true',
+    'VeTrans.jsonl'
+)
+download_file(
+    'https://huggingface.co/datasets/Yuchan5386/Test1111/resolve/main/kolig_unigram.model?download=true',
+    'ko_unigram.model'
+)
 
-# ⬇️ Parquet 데이터 불러오기  
-df = pd.read_parquet("dataset.parquet", engine="pyarrow")
-
-# ⬇️ <start> 질문 <sep> 답변 <end> 포맷으로 변환
-train_sentences = []
-
-for conversations in df["conversations"]:
-    for i in range(0, len(conversations) - 1, 2):
-        item1, item2 = conversations[i], conversations[i + 1]
-        if item1.get("from") == "human" and item2.get("from") == "gpt":
-            prompt = item1.get("value", "").strip().replace("\n", " ")
-            response = item2.get("value", "").strip().replace("\n", " ")
-            full = f"<start> {prompt} <sep> {response} <end>"
-            train_sentences.append(full)
-train_sentences = train_sentences[:10]  # 예제용 소량
-print(f"총 문장 개수: {len(train_sentences)}")
-
-# ⬇️ 토크나이저 불러오기
+# =======================
+# 토크나이저 로드
+# =======================
 sp = spm.SentencePieceProcessor()
-sp.load("ko_unigram.model")
-
-# ⬇️ 특수 토큰 ID 추출
-pad_id = sp.piece_to_id("<pad>") if sp.piece_to_id("<pad>") != -1 else 0  
-start_id = sp.piece_to_id("<start>")  
-sep_id = sp.piece_to_id("<sep>")  
-end_id = sp.piece_to_id("<end>")  
-
+sp.load('ko_unigram.model')
 vocab_size = sp.get_piece_size()
-print(f"✅ Vocabulary size: {vocab_size}")
 
-# ⬇️ 전처리 하이퍼파라미터
-max_enc_len = 128   # 인코더 최대 길이 (질문 부분)
-max_dec_len = 128   # 디코더 최대 길이 (답변 부분)
-batch_size = 32
+pad_id = sp.piece_to_id("<pad>") if sp.piece_to_id("<pad>") != -1 else 0
+start_id = sp.piece_to_id("<start>") if sp.piece_to_id("<start>") != -1 else (sp.bos_id() or 1)
+end_id = sp.piece_to_id("<end>") if sp.piece_to_id("<end>") != -1 else (sp.eos_id() or 2)
 
-# ⬇️ 전처리 결과 저장할 리스트
-encoder_inputs = []
-decoder_inputs = []
-targets = []
+print("TOKENS:", {"pad": pad_id, "start": start_id, "end": end_id, "vocab": vocab_size})
 
-for sentence in train_sentences:
-    if "<sep>" not in sentence:
-        continue
+# =======================
+# 데이터셋 생성
+# =======================
+max_len = 100
+batch_size = 64
 
-    sep_index = sentence.index("<sep>")
-    input_text = sentence[:sep_index].strip()      # 질문 부분
-    target_text = sentence[sep_index + len("<sep>"):].strip()  # 답변 부분
+def data_generator(file_path, max_len=max_len, pad_id=pad_id, start_id=start_id, end_id=end_id, max_samples=None):
+    count = 0
+    with open(file_path, "r", encoding="utf-8") as f:
+        for line in f:
+            if max_samples and count >= max_samples:
+                break
+            item = json.loads(line)
+            if "conversations" not in item or len(item["conversations"]) < 2:
+                continue
+            src = item["conversations"][0].get("value", "").strip()
+            tgt = item["conversations"][1].get("value", "").strip()
+            if len(src) < 2 or len(tgt) < 2 or src == tgt:
+                continue
+            def encode_text(text):
+                ids = sp.encode(text, out_type=int)
+                ids = [start_id] + ids + [end_id]
+                if len(ids) < max_len:
+                    ids += [pad_id]*(max_len - len(ids))
+                else:
+                    ids = ids[:max_len]
+                    if ids[-1] != end_id:
+                        ids[-1] = end_id
+                return np.array(ids, dtype=np.int32)
+            yield (encode_text(src), encode_text(tgt))
+            count += 1
 
-    # 인코더 입력: 질문 + <sep>
-    enc_ids = sp.encode(input_text + " <sep>")[:max_enc_len]
+#3097345
 
-    # 디코더 입력: <start> + 답변
-    dec_input_ids = [start_id] + sp.encode(target_text)[:max_dec_len - 1]
-
-    # 정답 라벨: 답변 + <end>
-    target_ids = sp.encode(target_text + " <end>")[:max_dec_len]
-
-    # 패딩 추가
-    enc_padded = enc_ids + [pad_id] * (max_enc_len - len(enc_ids))
-    dec_padded = dec_input_ids + [pad_id] * (max_dec_len - len(dec_input_ids))
-    target_padded = target_ids + [pad_id] * (max_dec_len - len(target_ids))
-
-    encoder_inputs.append(enc_padded)
-    decoder_inputs.append(dec_padded)
-    targets.append(target_padded)
-
-# ⬇️ 넘파이 배열로 변환
-encoder_inputs = np.array(encoder_inputs, dtype=np.int32)
-decoder_inputs = np.array(decoder_inputs, dtype=np.int32)
-targets = np.array(targets, dtype=np.int32)
-
-# ⬇️ TensorFlow Dataset 생성
-def data_generator():
-    for enc, dec, tgt in zip(encoder_inputs, decoder_inputs, targets):
-        # 딕셔너리 대신 튜플 형태로 반환
-        yield (enc, dec), tgt
-
-output_types = (
-    (tf.int32, tf.int32), # 두 개의 입력 텐서에 대한 타입
-    tf.int32             # 타겟에 대한 타입
+stream_dataset = tf.data.Dataset.from_generator(
+    lambda: data_generator("VeTrans.jsonl", max_samples=30),
+    output_signature=(
+        tf.TensorSpec(shape=(max_len,), dtype=tf.int32),
+        tf.TensorSpec(shape=(max_len,), dtype=tf.int32)
+    )
 )
+stream_dataset = stream_dataset.shuffle(5000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
-output_shapes = (
-    (tf.TensorShape([max_enc_len]), tf.TensorShape([max_dec_len])), # 두 개의 입력 텐서에 대한 모양
-    tf.TensorShape([max_dec_len])                                   # 타겟에 대한 모양
-)
+# 디코더 입력/타겟 매핑
+def map_fn(src, tgt):
+    dec_input = tgt[:, :-1]
+    dec_target = tgt[:, 1:]
+    return ({"enc_inputs": src, "dec_inputs": dec_input}, dec_target)
 
-dataset = tf.data.Dataset.from_generator(
-    data_generator,
-    output_types=output_types,
-    output_shapes=output_shapes
-)
+train_ds = stream_dataset.map(map_fn)
+print("✅ train_ds 준비 완료:", train_ds)
 
-dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
-print("dataset ok")
-
-import tensorflow as tf
-
+# =======================
+# RecurrentFFN
+# =======================
 class RecurrentFFN(tf.keras.layers.Layer):
-    def __init__(self, input_dim, hidden_dim=None, dropout_rate=0.1):
-        super().__init__()
+    def __init__(self, input_dim, hidden_dim=None, dropout_rate=0.1, **kwargs):
+        super().__init__(**kwargs)
         self.input_dim = input_dim
-        self.hidden_dim = hidden_dim or input_dim * 4
+        self.hidden_dim = hidden_dim or input_dim*4
         self.state_size = self.hidden_dim
 
-        # 각 레이어를 개별적으로 선언
-        self.update_gate_dense = tf.keras.layers.Dense(self.hidden_dim)
-        self.update_gate_act = tf.keras.layers.Activation('sigmoid')
+        self.update_gate_dense = Dense(self.hidden_dim)
+        self.update_gate_act = tf.keras.activations.sigmoid
 
-        self.reset_gate_dense = tf.keras.layers.Dense(self.hidden_dim)
-        self.reset_gate_act = tf.keras.layers.Activation('sigmoid')
+        self.reset_gate_dense = Dense(self.hidden_dim)
+        self.reset_gate_act = tf.keras.activations.sigmoid
 
-        self.gate_proj = tf.keras.layers.Dense(self.hidden_dim, use_bias=True)
-        self.up_proj = tf.keras.layers.Dense(self.hidden_dim, use_bias=True)
+        self.gate_proj = Dense(self.hidden_dim)
+        self.up_proj = Dense(self.hidden_dim)
+        self.down_proj = Dense(input_dim)
 
-        self.down_proj = tf.keras.layers.Dense(input_dim, use_bias=True)
-
-        self.norm_hidden = tf.keras.layers.LayerNormalization()
-        self.norm_output = tf.keras.layers.LayerNormalization()
-
-        self.dropout = tf.keras.layers.Dropout(dropout_rate)
+        self.norm_hidden = LayerNormalization()
+        self.norm_output = LayerNormalization()
+        self.dropout = Dropout(dropout_rate)
 
     def build(self, input_shape):
         combined_input_dim = input_shape[-1] + self.hidden_dim
-
         self.update_gate_dense.build((None, combined_input_dim))
         self.reset_gate_dense.build((None, combined_input_dim))
         self.gate_proj.build((None, combined_input_dim))
         self.up_proj.build((None, combined_input_dim))
         self.down_proj.build((None, self.hidden_dim))
+
+        # LayerNormalization build
+        self.norm_hidden.build((None, self.hidden_dim))
+        self.norm_output.build((None, self.input_dim))
+
         self.built = True
 
+
     def call(self, x, hidden_state, training=False):
-        # hidden_state가 튜플일 경우 첫 번째 요소를 추출
-        # Keras RNN 래퍼가 셀의 상태를 튜플로 묶어서 전달할 수 있기 때문
         if isinstance(hidden_state, (list, tuple)):
-            current_hidden_state = hidden_state[0]
+            h = hidden_state[0]
         else:
-            current_hidden_state = hidden_state
-
-        # 이제 x와 current_hidden_state는 모두 (batch_size, feature_dim) 형태의 2차원 텐서여야 합니다.
-        combined = tf.concat([x, current_hidden_state], axis=-1)
-
-        update_gate = self.update_gate_act(self.update_gate_dense(combined))
-        reset_gate = self.reset_gate_act(self.reset_gate_dense(combined))
-
-        gated_hidden = reset_gate * current_hidden_state # 여기도 current_hidden_state 사용
-        candidate_combined = tf.concat([x, gated_hidden], axis=-1)
-
-        gate = self.gate_proj(candidate_combined)
-        up = self.up_proj(candidate_combined)
-        swiglu_output = tf.nn.silu(gate) * up
-
-        new_hidden_state = (1 - update_gate) * current_hidden_state + update_gate * swiglu_output
-        new_hidden_state = self.norm_hidden(new_hidden_state)
-
-        output = self.down_proj(new_hidden_state)
-        output = self.norm_output(output)
-        output = self.dropout(output, training=training)
-
-        # RNN 셀로 사용될 때는 (출력, 다음_상태) 튜플을 반환해야 함.
-        # Keras의 RNN 레이어가 이 형태를 기대함.
-        return output, new_hidden_state
-
-    @property
-    def state_size(self):
-        return self.hidden_dim
+            h = hidden_state
+        combined = tf.concat([x,h], axis=-1)
+        u = self.update_gate_act(self.update_gate_dense(combined))
+        r = self.reset_gate_act(self.reset_gate_dense(combined))
+        gated_h = r*h
+        cand = tf.concat([x,gated_h], axis=-1)
+        gate = self.gate_proj(cand)
+        up = self.up_proj(cand)
+        swiglu = tf.nn.silu(gate)*up
+        new_h = (1-u)*h + u*swiglu
+        new_h = self.norm_hidden(new_h)
+        out = self.down_proj(new_h)
+        out = self.norm_output(out)
+        out = self.dropout(out, training=training)
+        return out, new_h
 
     def get_initial_state(self, batch_size=None, dtype=None):
-        actual_dtype = dtype if dtype is not None else self.dtype if hasattr(self, 'dtype') else tf.float32
-        return tf.zeros(shape=[batch_size, self.state_size], dtype=actual_dtype)
-      
-# 인코더
-encoder_input = tf.keras.Input(shape=(max_enc_len,))
-encoder_emb = tf.keras.layers.Embedding(vocab_size, 128)(encoder_input)
+        return tf.zeros([batch_size, self.state_size], dtype=dtype or tf.float32)
 
-rnn_cell = RecurrentFFN(input_dim=128, hidden_dim=128)
-encoder = tf.keras.layers.RNN(rnn_cell, return_sequences=True, return_state=True, name='encoder')
-encoder_output, encoder_final_state = encoder(encoder_emb)
+# =======================
+# 학습 모델 정의
+# =======================
+max_enc_len = max_len
+max_dec_len = max_len
+
+# 인코더
+enc_input = Input(shape=(max_enc_len,), name="enc_inputs")
+enc_emb = Embedding(vocab_size,128)(enc_input)
+enc_rnn_cell = RecurrentFFN(128,128)
+enc_rnn = RNN(enc_rnn_cell, return_sequences=True, return_state=True)
+enc_seq, enc_state = enc_rnn(enc_emb)
 
 # 디코더
-decoder_input = tf.keras.Input(shape=(max_dec_len,))
-decoder_emb = tf.keras.layers.Embedding(vocab_size, 128)(decoder_input)
+dec_input = Input(shape=(max_dec_len-1,), name="dec_inputs")
+dec_emb = Embedding(vocab_size,128)(dec_input)
+dec_rnn_cell = RecurrentFFN(128,128)
+dec_rnn = RNN(dec_rnn_cell, return_sequences=True, return_state=True)
+dec_out, _ = dec_rnn(dec_emb, initial_state=enc_state)
 
-rnn_cell_decoder = RecurrentFFN(input_dim=128, hidden_dim=128)
+# Attention
+attn_out = Attention()([dec_out, enc_seq])
 
-decoder = tf.keras.layers.RNN(
-    rnn_cell_decoder,
-    return_sequences=True,
-    return_state=True,
-    name='decoder',
+# 최종 로짓
+logits = Dense(vocab_size)(attn_out)
+
+train_model = Model([enc_input, dec_input], logits)
+train_model.compile(optimizer='adam', loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True))
+print(train_model.summary())
+epochs = 1
+train_model.fit(train_ds, epochs=epochs)
+# =======================
+# 추론 모델 정의
+# =======================
+# 인코더 모델
+encoder_model = Model(enc_input, [enc_seq, enc_state])
+
+# 디코더 모델
+dec_token_input = Input(shape=(1,), name="dec_token_input")
+dec_state_input = Input(shape=(128,), name="dec_state_input")
+enc_seq_input = Input(shape=(max_enc_len,128), name="enc_seq_input")  # 인코더 시퀀스 feed
+
+dec_emb_layer = Embedding(vocab_size,128)
+dec_rnn_cell_infer = RecurrentFFN(128,128)
+dec_rnn_layer = RNN(dec_rnn_cell_infer, return_sequences=True, return_state=True)
+dec_dense_layer = Dense(vocab_size)
+
+dec_embedded = dec_emb_layer(dec_token_input)
+dec_out_step, dec_state_out = dec_rnn_layer(dec_embedded, initial_state=dec_state_input)
+dec_attn_out = Attention()([dec_out_step, enc_seq_input])
+dec_logits_step = dec_dense_layer(dec_attn_out)
+
+decoder_model = Model(
+    [dec_token_input, dec_state_input, enc_seq_input],
+    [dec_logits_step, dec_state_out]
 )
+encoder_model.save("vechat_encoder.keras")
+decoder_model.save("vechat_decoder.keras", include_optimizer=False)
 
-decoder_output, _ = decoder(decoder_emb, initial_state=encoder_final_state)
-
-# 출력층
-decoder_dense = tf.keras.layers.Dense(vocab_size)
-decoder_outputs = decoder_dense(decoder_output)
-
-# 모델 정의
-model = tf.keras.Model(inputs=[encoder_input, decoder_input], outputs=decoder_outputs)
-
-model.compile(optimizer='adam', loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True))
-
-model.summary()
-model.fit(dataset, epochs=10, steps_per_epoch=len(train_sentences) // batch_size)
-
-def generate(model, sp, input_text, max_dec_len=128, temperature=0.7, verbose=False):
-    """
-    사용자 입력 문장을 받아 AI 응답 생성
-    :param model: 훈련된 VecAwSeq2Seq 모델
-    :param sp: SentencePiece Tokenizer
-    :param input_text: 사용자 입력 (str)
-    :param max_dec_len: 최대 생성 길이
-    :param temperature: 샘플링 온도 (낮을수록 greedy, 높을수록 창의적)
-    :param verbose: 디버깅 메시지 출력 여부
-    :return: 생성된 텍스트
-    """
-    start_id = sp.piece_to_id("<start>")
-    end_id = sp.piece_to_id("<end>")
-    sep_id = sp.piece_to_id("<sep>")
-
-    # 인코더 입력 전처리
-    enc_ids = sp.encode(input_text + " <sep>")
-    enc_ids = enc_ids[:max_enc_len]
-    enc_ids += [sp.pad_id()] * (max_enc_len - len(enc_ids))
+# =======================
+# 추론 함수
+# =======================
+def generate(input_text, max_dec_len=64, temperature=0.7, verbose=False):
+    enc_ids = sp.encode(input_text)[:max_enc_len]
+    enc_ids += [pad_id]*(max_enc_len-len(enc_ids))
     enc_tensor = tf.constant([enc_ids], dtype=tf.int32)
 
-    if verbose:
-        print("Encoder Input:", input_text)
-        print("Encoded:", enc_ids)
-
-    # 인코더 실행
-    encoder_output, encoder_state = model.encoder(enc_tensor, training=False)
-
-    # 디코더 초기 입력: <start>
-    dec_input = tf.constant([[start_id]], dtype=tf.int32)
-    current_state = encoder_state
+    enc_seq, enc_state = encoder_model(enc_tensor)
+    dec_input_token = tf.constant([[start_id]], dtype=tf.int32)
     generated_ids = []
+    state = enc_state
 
     for step in range(max_dec_len):
-        decoder_output, next_state = model.decoder(
-            dec_input, initial_state=current_state, training=False
-        )
-
-        logits = decoder_output[:, -1, :]  # 마지막 타임스텝의 로짓
-
-        # 온도 조절 샘플링
-        if temperature == 0.:
-            pred_id = tf.argmax(logits, axis=-1, output_type=tf.int32)
+        dec_logits, state = decoder_model([dec_input_token, state, enc_seq])
+        logits = dec_logits[:, -1, :]
+        if temperature==0.0:
+            pred_id = tf.argmax(logits, axis=-1)
         else:
-            logits = logits / temperature
-            pred_id = tf.random.categorical(logits, 1, dtype=tf.int32)
-
-        pred_id = tf.squeeze(pred_id, axis=1)
-
-        # 종료 토큰 체크
-        if int(pred_id[0]) == end_id:
+            pred_id = tf.random.categorical(logits/temperature,1)
+            pred_id = tf.squeeze(pred_id, axis=-1)
+        if int(pred_id[0])==end_id:
             break
-
         generated_ids.append(int(pred_id[0]))
-        dec_input = pred_id[:, tf.newaxis]  # 다음 입력으로 업데이트
-        current_state = next_state
-
+        dec_input_token = tf.expand_dims(pred_id, axis=0)
         if verbose:
             print(f"Step {step}: ID={int(pred_id[0])}, Token='{sp.decode([int(pred_id[0])])}'")
+    return sp.decode(generated_ids)
 
-    decoded_text = sp.decode(generated_ids)
-    return decoded_text
-
-
-# 예시 질문
+# =======================
+# 테스트
+# =======================
 user_input = "오늘 날씨가 어때?"
-
-# AI 답변 생성
-response = generate(model, sp, user_input, max_dec_len=64, temperature=0.7, verbose=True)
+response = generate(user_input, verbose=True)
 print("\nAI 답변:", response)
