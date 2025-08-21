@@ -143,11 +143,9 @@ class RecurrentFFN(tf.keras.layers.Layer):
         gate = self.gate_proj(cand)
         up = self.up_proj(cand)
         swiglu = tf.nn.silu(gate)*up
-        new_h = (1-u)*h + u*swiglu
-        new_h = self.norm_hidden(new_h)
+        new_h = self.norm_hidden((1-u)*h + u*swiglu + h)  # residual 추가
         out = self.down_proj(new_h)
         out = self.norm_output(out)
-        out = self.dropout(out, training=training)
         return out, new_h
 
     def get_initial_state(self, batch_size=None, dtype=None):
@@ -173,11 +171,11 @@ dec_rnn_cell = RecurrentFFN(128,128)
 dec_rnn = RNN(dec_rnn_cell, return_sequences=True, return_state=True)
 dec_out, _ = dec_rnn(dec_emb, initial_state=enc_state)
 
-# Attention
 attn_out = Attention()([dec_out, enc_seq])
-
-# 최종 로짓
+attn_out = LayerNormalization()(attn_out)
+attn_out = Dense(128, activation='relu')(attn_out)  # FFN 추가
 logits = Dense(vocab_size)(attn_out)
+
 
 train_model = Model([enc_input, dec_input], logits)
 train_model.compile(optimizer='adam', loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True))
