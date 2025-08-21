@@ -171,7 +171,7 @@ dec_rnn_cell = RecurrentFFN(128,128)
 dec_rnn = RNN(dec_rnn_cell, return_sequences=True, return_state=True)
 dec_out, _ = dec_rnn(dec_emb, initial_state=enc_state)
 
-attn_out = tf.keras.layers.MultiHeadAttention(8, 128//8)([dec_out, enc_seq])
+attn_out = tf.keras.layers.MultiHeadAttention(8, 128//8)(dec_out, enc_seq, enc_seq)
 attn_out = LayerNormalization()(attn_out)
 attn_out = Dense(128, activation='relu')(attn_out)  # FFN 추가
 logits = Dense(vocab_size)(attn_out)
