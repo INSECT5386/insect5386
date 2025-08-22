@@ -1,13 +1,12 @@
 import tensorflow as tf
-from tensorflow.keras.layers import Input, Embedding, Dense, LayerNormalization, Dropout, RNN, Attention
-from tensorflow.keras.models import Model
+from tensorflow.keras import layers, Model
 import numpy as np
+import sentencepiece as spm
 import json
 import requests
-import sentencepiece as spm
 
 # =======================
-# 파일 다운로드
+# 0) 파일 다운로드
 # =======================
 def download_file(url, save_path):
     response = requests.get(url, stream=True)
@@ -17,35 +16,29 @@ def download_file(url, save_path):
             f.write(chunk)
     print(f"✅ 파일 저장됨: {save_path}")
 
-download_file(
-    'https://huggingface.co/datasets/Yuchan5386/Test1111/resolve/main/dataset.jsonl?download=true',
-    'VeTrans.jsonl'
-)
-download_file(
-    'https://huggingface.co/datasets/Yuchan5386/Test1111/resolve/main/kolig_unigram.model?download=true',
-    'ko_unigram.model'
-)
+download_file('https://huggingface.co/datasets/Yuchan5386/Test1111/resolve/main/dataset.jsonl?download=true', 'VeTrans.jsonl')
+download_file('https://huggingface.co/datasets/Yuchan5386/Test1111/resolve/main/kolig_unigram.model?download=true', 'ko_unigram.model')
 
 # =======================
-# 토크나이저 로드
+# 1) Tokenizer
 # =======================
 sp = spm.SentencePieceProcessor()
 sp.load('ko_unigram.model')
 vocab_size = sp.get_piece_size()
 
-pad_id = sp.piece_to_id("<pad>") if sp.piece_to_id("<pad>") != -1 else 0
-start_id = sp.piece_to_id("<start>") if sp.piece_to_id("<start>") != -1 else (sp.bos_id() or 1)
-end_id = sp.piece_to_id("<end>") if sp.piece_to_id("<end>") != -1 else (sp.eos_id() or 2)
+pad_id = sp.piece_to_id("<pad>") or 0
+start_id = sp.piece_to_id("<start>") or sp.bos_id() or 1
+end_id = sp.piece_to_id("<end>") or sp.eos_id() or 2
 
 print("TOKENS:", {"pad": pad_id, "start": start_id, "end": end_id, "vocab": vocab_size})
 
-# =======================
-# 데이터셋 생성
-# =======================
 max_len = 100
 batch_size = 64
 
-def data_generator(file_path, max_len=max_len, pad_id=pad_id, start_id=start_id, end_id=end_id, max_samples=None):
+# =======================
+# 2) Data generator
+# =======================
+def data_generator(file_path, max_len=100, pad_id=0, start_id=1, end_id=2, max_samples=None):
     count = 0
     with open(file_path, "r", encoding="utf-8") as f:
         for line in f:
@@ -54,27 +47,24 @@ def data_generator(file_path, max_len=max_len, pad_id=pad_id, start_id=start_id,
             item = json.loads(line)
             if "conversations" not in item or len(item["conversations"]) < 2:
                 continue
-            src = item["conversations"][0].get("value", "").strip()
-            tgt = item["conversations"][1].get("value", "").strip()
-            if len(src) < 2 or len(tgt) < 2 or src == tgt:
+            src = item["conversations"][0].get("value","").strip()
+            tgt = item["conversations"][1].get("value","").strip()
+            if len(src) < 2 or len(tgt) < 2 or src==tgt:
                 continue
             def encode_text(text):
                 ids = sp.encode(text, out_type=int)
-                ids = [start_id] + ids + [end_id]
-                if len(ids) < max_len:
-                    ids += [pad_id]*(max_len - len(ids))
+                ids = [start_id]+ids+[end_id]
+                if len(ids)<max_len:
+                    ids += [pad_id]*(max_len-len(ids))
                 else:
                     ids = ids[:max_len]
-                    if ids[-1] != end_id:
-                        ids[-1] = end_id
-                return np.array(ids, dtype=np.int32)
-            yield (encode_text(src), encode_text(tgt))
+                    if ids[-1]!=end_id: ids[-1]=end_id
+                return np.array(ids,dtype=np.int32)
+            yield encode_text(src), encode_text(tgt)
             count += 1
 
-#3097345
-
 stream_dataset = tf.data.Dataset.from_generator(
-    lambda: data_generator("VeTrans.jsonl", max_samples=50000),
+    lambda: data_generator("VeTrans.jsonl", max_len=max_len, pad_id=pad_id, start_id=start_id, end_id=end_id, max_samples=500000),
     output_signature=(
         tf.TensorSpec(shape=(max_len,), dtype=tf.int32),
         tf.TensorSpec(shape=(max_len,), dtype=tf.int32)
@@ -82,166 +72,185 @@ stream_dataset = tf.data.Dataset.from_generator(
 )
 stream_dataset = stream_dataset.shuffle(5000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
-# 디코더 입력/타겟 매핑
 def map_fn(src, tgt):
     dec_input = tgt[:, :-1]
     dec_target = tgt[:, 1:]
     return ({"enc_inputs": src, "dec_inputs": dec_input}, dec_target)
 
 train_ds = stream_dataset.map(map_fn)
-print("✅ train_ds 준비 완료:", train_ds)
 
 # =======================
-# RecurrentFFN
+# 3) SwiGLU FFN
 # =======================
-class RecurrentFFN(tf.keras.layers.Layer):
-    def __init__(self, input_dim, hidden_dim=None, dropout_rate=0.1, **kwargs):
-        super().__init__(**kwargs)
-        self.input_dim = input_dim
-        self.hidden_dim = hidden_dim or input_dim*4
-        self.state_size = self.hidden_dim
+class SwiGLU(layers.Layer):
+    def __init__(self, d_model, d_ff):
+        super().__init__()
+        self.proj = layers.Dense(d_ff*2)
+        self.out = layers.Dense(d_model)
+    def call(self, x):
+        x_val, x_gate = tf.split(self.proj(x), 2, axis=-1)
+        return self.out(x_val * tf.nn.silu(x_gate))
 
-        self.update_gate_dense = Dense(self.hidden_dim)
-        self.update_gate_act = tf.keras.activations.sigmoid
+# =======================
+# 4) SSM 레이어
+# =======================
+class SSMBlock(layers.Layer):
+    def __init__(self, d_model, d_ff=512, dropout=0.1):
+        super().__init__()
+        self.d_model = d_model
+        self.A = self.add_weight(shape=(d_model,), initializer=tf.keras.initializers.RandomNormal(-0.5,0.1), trainable=True)
+        self.B = self.add_weight(shape=(d_model,), initializer='random_normal', trainable=True)
+        self.C = self.add_weight(shape=(d_model,), initializer='random_normal', trainable=True)
+        self.D = self.add_weight(shape=(d_model,), initializer='zeros', trainable=True)
+        self.ffn = SwiGLU(d_model, d_ff)
+        self.norm = layers.LayerNormalization(epsilon=1e-6)
+        self.dropout = layers.Dropout(dropout)
+    def call(self, x, training=False):
+        # gating
+        u = x * tf.nn.sigmoid(x)
+        B = tf.shape(x)[0]; T = tf.shape(x)[1]; D = self.d_model
+        t_idx = tf.cast(tf.range(T), x.dtype)[:, None]  # (T,1)
+        A_pow = tf.pow(tf.expand_dims(self.A,0), t_idx)  # (T,D)
+        y_states = u * A_pow[None,:,:] * self.B[None,None,:]  # (B,T,D)
+        y = y_states * self.C[None,None,:] + self.D[None,None,:]*u  # (B,T,D)
+        y = self.norm(y)
+        y = self.ffn(y)
+        y = self.dropout(y, training=training)
+        return y
 
-        self.reset_gate_dense = Dense(self.hidden_dim)
-        self.reset_gate_act = tf.keras.activations.sigmoid
+# =======================
+# 5) SSMDecoderBlock
+# =======================
+class SSMDecoderBlock(layers.Layer):
+    def __init__(self, d_model, d_ff, num_heads=8, dropout=0.1):
+        super().__init__()
+        self.ssm = SSMBlock(d_model, d_ff=d_ff, dropout=dropout)
+        self.cross_mha = layers.MultiHeadAttention(num_heads=num_heads, key_dim=d_model)
+        self.norm = layers.LayerNormalization(epsilon=1e-6)
+        self.ffn = SwiGLU(d_model, d_ff)
+    def call(self, dec_emb, enc_out, training=False):
+        x = self.ssm(dec_emb, training=training)
+        attn_out = self.cross_mha(x, enc_out, enc_out)
+        x = x + attn_out
+        x = self.ffn(x)
+        out = self.norm(x)
+        return out
 
-        self.gate_proj = Dense(self.hidden_dim)
-        self.up_proj = Dense(self.hidden_dim)
-        self.down_proj = Dense(input_dim)
+# =======================
+# 6) Transformer
+# =======================
+class Transformer(tf.keras.Model):
+    def __init__(self, num_layers, d_model, num_heads, dff, input_vocab_size, target_vocab_size,
+                 max_len=100, dropout=0.1):
+        super().__init__()
+        self.max_len = max_len
+        self.d_model = d_model
+        # Embedding
+        self.enc_embedding = layers.Embedding(input_vocab_size,d_model)
+        self.enc_pos_embedding = layers.Embedding(max_len,d_model)
+        self.dec_embedding = layers.Embedding(target_vocab_size,d_model)
+        self.dec_pos_embedding = layers.Embedding(max_len,d_model)
+        # Layers
+        self.enc_layers = [SSMBlock(d_model, d_ff=512, dropout=0.1) for _ in range(num_layers)]
+        self.dec_layers = [SSMDecoderBlock(d_model,d_ff=dff,num_heads=num_heads,dropout=dropout) for _ in range(num_layers)]
+        self.final_layer = layers.Dense(target_vocab_size)
+    def call(self, inputs, training=False):
+        enc_inputs = inputs["enc_inputs"]
+        dec_inputs = inputs["dec_inputs"]
+        enc_pos = tf.range(tf.shape(enc_inputs)[1])[tf.newaxis,:]
+        dec_pos = tf.range(tf.shape(dec_inputs)[1])[tf.newaxis,:]
+        # Encoder
+        x = self.enc_embedding(enc_inputs)+self.enc_pos_embedding(enc_pos)
+        for layer in self.enc_layers:
+            x = layer(x, training=training)
+        enc_out = x
+        # Decoder
+        y = self.dec_embedding(dec_inputs)+self.dec_pos_embedding(dec_pos)
+        for layer in self.dec_layers:
+            y = layer(y, enc_out, training=training)
+        logits = self.final_layer(y)
+        return logits
 
-        self.norm_hidden = LayerNormalization()
-        self.norm_output = LayerNormalization()
-        self.dropout = Dropout(dropout_rate)
+model = Transformer(num_layers=4,d_model=128,num_heads=8,dff=512,
+                    input_vocab_size=vocab_size,target_vocab_size=vocab_size)
 
-    def build(self, input_shape):
-        combined_input_dim = input_shape[-1] + self.hidden_dim
-        self.update_gate_dense.build((None, combined_input_dim))
-        self.reset_gate_dense.build((None, combined_input_dim))
-        self.gate_proj.build((None, combined_input_dim))
-        self.up_proj.build((None, combined_input_dim))
-        self.down_proj.build((None, self.hidden_dim))
+# =======================
+# 7) Loss & Metrics
+# =======================
+optimizer = tf.keras.optimizers.Adam(1e-4, clipnorm=1.0)
 
-        # LayerNormalization build
-        self.norm_hidden.build((None, self.hidden_dim))
-        self.norm_output.build((None, self.input_dim))
+def smoothed_loss_keras(y_true,y_pred,eps=0.1):
+    y_true = tf.cast(y_true, tf.int32)
+    mask = tf.cast(tf.not_equal(y_true,pad_id), tf.float32)
+    vocab = tf.shape(y_pred)[-1]
+    y_true_oh = tf.one_hot(y_true,depth=vocab,dtype=tf.float32)
+    y_true_ls = (1.0-eps)*y_true_oh + eps/tf.cast(vocab,tf.float32)
+    log_probs = tf.nn.log_softmax(y_pred,axis=-1)
+    per_tok = -tf.reduce_sum(y_true_ls*log_probs,axis=-1)
+    per_tok = per_tok*mask
+    return tf.reduce_sum(per_tok)/(tf.reduce_sum(mask)+1e-8)
 
-        self.built = True
+def masked_accuracy(y_true,y_pred):
+    y_true = tf.cast(y_true, tf.int32)
+    mask = tf.cast(tf.not_equal(y_true,pad_id), tf.float32)
+    pred_id = tf.argmax(y_pred,axis=-1,output_type=tf.int32)
+    acc = tf.cast(tf.equal(y_true,pred_id), tf.float32)*mask
+    return tf.reduce_sum(acc)/(tf.reduce_sum(mask)+1e-8)
 
+tf.config.optimizer.set_jit(True)
+model.compile(optimizer=optimizer, loss=smoothed_loss_keras, metrics=[masked_accuracy], run_eagerly=False)
+model.summary()
+# =======================
+# 8) Training
+# =======================
+model.fit(train_ds, epochs=1)
+model.save_weights("VeChat_SSM.weights.h5")
+print("✅ 모델 가중치 저장 완료!")
 
-    def call(self, x, hidden_state, training=False):
-        if isinstance(hidden_state, (list, tuple)):
-            h = hidden_state[0]
+# =======================
+# 9) Top-p Sampling
+# =======================
+def top_p_sample(logits,p=0.9):
+    sorted_ids = tf.argsort(logits,direction='DESCENDING')
+    sorted_logits = tf.gather(logits,sorted_ids)
+    probs = tf.nn.softmax(sorted_logits)
+    cumulative_probs = tf.cumsum(probs)
+    cutoff = tf.reduce_sum(tf.cast(cumulative_probs<=p, tf.float32))
+    top_ids = sorted_ids[:tf.cast(cutoff+1,tf.int32)]
+    top_logits = tf.gather(logits,top_ids)
+    top_probs = tf.nn.softmax(top_logits)
+    return np.random.choice(top_ids.numpy(),p=top_probs.numpy())
+
+def generate_text(src_text,max_len=100,top_p=0.9):
+    def encode_text(text):
+        ids = sp.encode(text,out_type=int)
+        ids = [start_id]+ids+[end_id]
+        if len(ids)<max_len:
+            ids += [pad_id]*(max_len-len(ids))
         else:
-            h = hidden_state
-        combined = tf.concat([x,h], axis=-1)
-        u = self.update_gate_act(self.update_gate_dense(combined))
-        r = self.reset_gate_act(self.reset_gate_dense(combined))
-        gated_h = r*h
-        cand = tf.concat([x,gated_h], axis=-1)
-        gate = self.gate_proj(cand)
-        up = self.up_proj(cand)
-        swiglu = tf.nn.silu(gate)*up
-        new_h = self.norm_hidden((1-u)*h + u*swiglu + h)  # residual 추가
-        out = self.down_proj(new_h)
-        out = self.norm_output(out)
-        return out, new_h
-
-    def get_initial_state(self, batch_size=None, dtype=None):
-        return tf.zeros([batch_size, self.state_size], dtype=dtype or tf.float32)
-
-# =======================
-# 학습 모델 정의
-# =======================
-max_enc_len = max_len
-max_dec_len = max_len
-
-# 인코더
-enc_input = Input(shape=(max_enc_len,), name="enc_inputs")
-enc_emb = Embedding(vocab_size,128)(enc_input)
-enc_rnn_cell = RecurrentFFN(128,128)
-enc_rnn = RNN(enc_rnn_cell, return_sequences=True, return_state=True)
-enc_seq, enc_state = enc_rnn(enc_emb)
-
-# 디코더
-dec_input = Input(shape=(max_dec_len-1,), name="dec_inputs")
-dec_emb = Embedding(vocab_size,128)(dec_input)
-dec_rnn_cell = RecurrentFFN(128,128)
-dec_rnn = RNN(dec_rnn_cell, return_sequences=True, return_state=True)
-dec_out, _ = dec_rnn(dec_emb, initial_state=enc_state)
-
-attn_out = tf.keras.layers.MultiHeadAttention(8, 128//8)(dec_out, enc_seq, enc_seq)
-attn_out = LayerNormalization()(attn_out)
-attn_out = Dense(128, activation='relu')(attn_out)  # FFN 추가
-logits = Dense(vocab_size)(attn_out)
-
-
-train_model = Model([enc_input, dec_input], logits)
-train_model.compile(optimizer='adam', loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True))
-print(train_model.summary())
-epochs = 1
-train_model.fit(train_ds, epochs=epochs)
-# =======================
-# 추론 모델 정의
-# =======================
-# 인코더 모델
-encoder_model = Model(enc_input, [enc_seq, enc_state])
-
-# 디코더 모델
-dec_token_input = Input(shape=(1,), name="dec_token_input")
-dec_state_input = Input(shape=(128,), name="dec_state_input")
-enc_seq_input = Input(shape=(max_enc_len,128), name="enc_seq_input")  # 인코더 시퀀스 feed
-
-dec_emb_layer = Embedding(vocab_size,128)
-dec_rnn_cell_infer = RecurrentFFN(128,128)
-dec_rnn_layer = RNN(dec_rnn_cell_infer, return_sequences=True, return_state=True)
-dec_dense_layer = Dense(vocab_size)
-
-dec_embedded = dec_emb_layer(dec_token_input)
-dec_out_step, dec_state_out = dec_rnn_layer(dec_embedded, initial_state=dec_state_input)
-dec_attn_out = Attention()([dec_out_step, enc_seq_input])
-dec_logits_step = dec_dense_layer(dec_attn_out)
-
-decoder_model = Model(
-    [dec_token_input, dec_state_input, enc_seq_input],
-    [dec_logits_step, dec_state_out]
-)
-encoder_model.save("vechat_encoder.keras")
-decoder_model.save("vechat_decoder.keras", include_optimizer=False)
+            ids = ids[:max_len]
+            if ids[-1]!=end_id: ids[-1]=end_id
+        return ids
+    src_ids = np.array([encode_text(src_text)])
+    enc_emb = model.enc_embedding(src_ids)
+    for layer in model.enc_layers:
+        enc_emb = layer(enc_emb, training=False)
+    out_seq = [start_id]
+    for _ in range(max_len-1):
+        dec_ids = np.array([out_seq])
+        dec_emb = model.dec_embedding(dec_ids)
+        for layer in model.dec_layers:
+            dec_emb = layer(dec_emb, enc_emb, training=False)
+        logits = model.final_layer(dec_emb)[0,-1]
+        next_id = top_p_sample(logits,top_p)
+        if next_id==end_id: break
+        out_seq.append(next_id)
+    toks = [int(t) for t in out_seq if t not in (pad_id,start_id,end_id)]
+    return sp.decode(toks)
 
 # =======================
-# 추론 함수
+# 10) Test
 # =======================
-def generate(input_text, max_dec_len=64, temperature=0.7, verbose=False):
-    enc_ids = sp.encode(input_text)[:max_enc_len]
-    enc_ids += [pad_id]*(max_enc_len-len(enc_ids))
-    enc_tensor = tf.constant([enc_ids], dtype=tf.int32)
-
-    enc_seq, enc_state = encoder_model(enc_tensor)
-    dec_input_token = tf.constant([[start_id]], dtype=tf.int32)
-    generated_ids = []
-    state = enc_state
-
-    for step in range(max_dec_len):
-        dec_logits, state = decoder_model([dec_input_token, state, enc_seq])
-        logits = dec_logits[:, -1, :]
-        if temperature==0.0:
-            pred_id = tf.argmax(logits, axis=-1)
-        else:
-            pred_id = tf.random.categorical(logits/temperature,1)
-            pred_id = tf.squeeze(pred_id, axis=-1)
-        if int(pred_id[0])==end_id:
-            break
-        generated_ids.append(int(pred_id[0]))
-        dec_input_token = tf.expand_dims(pred_id, axis=0)
-        if verbose:
-            print(f"Step {step}: ID={int(pred_id[0])}, Token='{sp.decode([int(pred_id[0])])}'")
-    return sp.decode(generated_ids)
-
-# =======================
-# 테스트
-# =======================
-user_input = "오늘 날씨가 어때?"
-response = generate(user_input, verbose=True)
-print("\nAI 답변:", response)
+print(generate_text("안녕하세요!"))
+print(generate_text("오늘은 뭐 할 거야?"))
+print(generate_text("오늘 기분은 어때?"))
