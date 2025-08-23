@@ -16,12 +16,13 @@ def download_file(url, save_path):
     print(f"✅ 파일 저장됨: {save_path}")
 
 # ⬇️ 데이터와 토크나이저 다운로드
-download_file('https://huggingface.co/datasets/Yuchan5386/Smolwrite-dataset/resolve/main/Text_Generation/converted.jsonl?download=true', 'dataset.parquet')
+download_file('https://huggingface.co/datasets/Yuchan5386/Smolwrite-dataset/resolve/main/Text_Generation/converted.jsonl?download=true', 'converted.jsonl')
 download_file('https://huggingface.co/datasets/Yuchan5386/Smolwrite-dataset/resolve/main/Text_Generation/unigram.model?download=true', 'ko_unigram.model')
 model_path = 'Smolwrite-gpt.weights.h5'
-# ⬇️ Parquet 데이터 불러오기
-df = pd.read_parquet("dataset.parquet", engine="pyarrow")
+import pandas as pd
 
+# JSONL 읽기
+df = pd.read_json("converted.jsonl", lines=True)
 # ⬇️ <start> 질문 <sep> 답변 <end> 포맷으로 변환
 train_sentences = []
 
