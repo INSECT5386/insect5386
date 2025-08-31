@@ -1,0 +1,1109 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Smolite Chat</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/atom-one-dark.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+<script src="https://unpkg.com/feather-icons"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+/* 전역 스타일 */
+:root {
+  --bg-primary: #0a0a0f;
+  --bg-secondary: #151520;
+  --bg-tertiary: #1a1a2e;
+  --accent-primary: #3b82f6;
+  --accent-hover: #2563eb;
+  --text-primary: #ffffff;
+  --text-secondary: #a1a1aa;
+  --text-muted: #71717a;
+  --border-color: #27272a;
+  --shadow-color: rgba(59, 130, 246, 0.2);
+  --sidebar-width: 280px;
+  --transition-speed: 0.3s;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  background: linear-gradient(180deg, var(--bg-primary) 0%, var(--bg-tertiary) 100%);
+  color: var(--text-primary);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* 사이드바 */
+#sidebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: var(--sidebar-width);
+  height: 100vh;
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border-color);
+  transform: translateX(-100%);
+  transition: transform var(--transition-speed) ease;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+}
+
+#sidebar.active {
+  transform: translateX(0);
+}
+
+#sidebar-header {
+  padding: 1.5rem 1rem 1rem;
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+#sidebar-title {
+  font-weight: 600;
+  font-size: 1.1rem;
+  color: var(--text-primary);
+}
+
+#btn-new-chat {
+  background: var(--accent-primary);
+  border: none;
+  border-radius: 6px;
+  padding: 0.5rem;
+  cursor: pointer;
+  color: white;
+  transition: background-color 0.2s;
+}
+
+#btn-new-chat:hover {
+  background: var(--accent-hover);
+}
+
+#chatroom-list {
+  flex: 1;
+  padding: 1rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.chatroom-item {
+  padding: 0.75rem;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-weight: 400;
+  position: relative;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chatroom-item:hover {
+  background: rgba(59, 130, 246, 0.1);
+  border-color: var(--accent-primary);
+}
+
+.chatroom-item.active {
+  background: var(--accent-primary);
+  color: white;
+}
+
+.chatroom-item .delete-btn {
+  position: absolute;
+  right: 0.5rem;
+  top: 50%;
+  transform: translateY(-50%);
+  background: rgba(255, 255, 255, 0.2);
+  border: none;
+  border-radius: 4px;
+  padding: 0.25rem;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.2s;
+  font-size: 12px;
+}
+
+.chatroom-item:hover .delete-btn {
+  opacity: 1;
+}
+
+/* 상단 버튼 */
+#top-buttons {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  display: flex;
+  gap: 0.5rem;
+  z-index: 500;
+}
+
+.top-btn {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 0.75rem;
+  cursor: pointer;
+  color: var(--text-primary);
+  transition: all 0.2s;
+  backdrop-filter: blur(10px);
+}
+
+.top-btn:hover {
+  background: var(--accent-primary);
+  border-color: var(--accent-primary);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px var(--shadow-color);
+}
+
+/* 메인 채팅 영역 */
+#main-content {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  transition: margin-left var(--transition-speed);
+}
+
+#main-content.sidebar-open {
+  margin-left: var(--sidebar-width);
+}
+
+#chat {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6rem 2rem 8rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  scroll-behavior: smooth;
+}
+
+/* 메시지 스타일 */
+.msg {
+  display: flex;
+  flex-direction: column;
+  animation: fadeInUp 0.3s ease;
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.msg.user {
+  align-items: flex-end;
+}
+
+.msg.bot {
+  align-items: flex-start;
+}
+
+.msg .bubble {
+  padding: 1rem 1.25rem;
+  border-radius: 1rem;
+  max-width: 75%;
+  word-break: break-word;
+  position: relative;
+}
+
+.msg.user .bubble {
+  background: linear-gradient(135deg, var(--accent-primary), var(--accent-hover));
+  color: white;
+  border-bottom-right-radius: 0.25rem;
+  box-shadow: 0 4px 16px var(--shadow-color);
+}
+
+.msg.bot .bubble {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  border-bottom-left-radius: 0.25rem;
+}
+
+.meta {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-bottom: 0.5rem;
+  padding: 0 0.5rem;
+}
+
+/* 코드 블록 스타일 */
+.pre-wrap {
+  position: relative;
+  margin: 0.5rem 0;
+}
+
+.copy-btn {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  background: var(--accent-primary);
+  color: white;
+  border: none;
+  padding: 0.25rem 0.5rem;
+  cursor: pointer;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.pre-wrap:hover .copy-btn {
+  opacity: 1;
+}
+
+.copy-btn:hover {
+  background: var(--accent-hover);
+}
+
+/* 입력 영역 */
+#input-container {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 1.5rem 2rem;
+  background: linear-gradient(transparent, var(--bg-primary) 20%);
+  backdrop-filter: blur(10px);
+  transition: margin-left var(--transition-speed);
+}
+
+#input-container.sidebar-open {
+  margin-left: var(--sidebar-width);
+}
+
+#input-wrapper {
+  position: relative;
+  max-width: 800px;
+  margin: 0 auto;
+  display: flex;
+}
+
+#input {
+  flex: 1;
+  padding: 1rem 4rem 1rem 1.5rem;
+  border-radius: 9999px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 2px solid var(--border-color);
+  outline: none;
+  font-size: 1rem;
+  transition: all 0.2s;
+  font-family: inherit;
+}
+
+#input:focus {
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 3px var(--shadow-color);
+}
+
+#input::placeholder {
+  color: var(--text-muted);
+}
+
+#btn-send {
+  position: absolute;
+  right: 0.5rem;
+  top: 50%;
+  transform: translateY(-50%);
+  background: var(--accent-primary);
+  border: none;
+  border-radius: 50%;
+  padding: 0.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+#btn-send:hover {
+  background: var(--accent-hover);
+  transform: translateY(-50%) scale(1.05);
+}
+
+#btn-send:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 초기 힌트 */
+#initial-hint {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 1.5rem;
+  font-weight: 300;
+  pointer-events: none;
+  opacity: 0.7;
+}
+
+/* 로딩 상태 */
+.loading {
+  display: inline-block;
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid var(--text-muted);
+  border-radius: 50%;
+  border-top-color: var(--accent-primary);
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 토스트 알림 */
+#toast {
+  position: fixed;
+  top: 2rem;
+  right: 2rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--accent-primary);
+  border-radius: 8px;
+  padding: 1rem 1.5rem;
+  color: var(--text-primary);
+  transform: translateX(100%);
+  transition: transform 0.3s;
+  z-index: 2000;
+}
+
+#toast.show {
+  transform: translateX(0);
+}
+
+/* 반응형 디자인 */
+@media (max-width: 768px) {
+  #chat {
+    padding: 5rem 1rem 7rem;
+  }
+  
+  #input-container {
+    padding: 1rem;
+  }
+  
+  .msg .bubble {
+    max-width: 90%;
+    padding: 0.75rem 1rem;
+  }
+  
+  #top-buttons {
+    top: 0.5rem;
+    right: 0.5rem;
+    gap: 0.25rem;
+  }
+  
+  .top-btn {
+    padding: 0.5rem;
+  }
+}
+
+/* 오버레이 */
+#overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  visibility: hidden;
+  transition: all 0.3s;
+  z-index: 999;
+}
+
+#overlay.active {
+  opacity: 1;
+  visibility: visible;
+}
+
+/* 메시지 타이핑 효과 */
+.typing-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 1rem 1.25rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 1rem;
+  border-bottom-left-radius: 0.25rem;
+  max-width: 75%;
+}
+
+.typing-dots {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.typing-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  animation: typingDots 1.4s infinite;
+}
+
+.typing-dot:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.typing-dot:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes typingDots {
+  0%, 60%, 100% {
+    opacity: 0.3;
+    transform: scale(1);
+  }
+  30% {
+    opacity: 1;
+    transform: scale(1.2);
+  }
+}
+
+/* 스크롤바 커스터마이징 */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+</style>
+</head>
+<body>
+<!-- 오버레이 -->
+<div id="overlay"></div>
+
+<!-- 사이드바 -->
+<div id="sidebar">
+  <div id="sidebar-header">
+    <span id="sidebar-title">채팅방</span>
+    <button id="btn-new-chat" title="새 채팅">
+      <i data-feather="plus" style="width: 18px; height: 18px;"></i>
+    </button>
+  </div>
+  <div id="chatroom-list"></div>
+</div>
+
+<!-- 메인 컨텐츠 -->
+<div id="main-content">
+  <!-- 상단 버튼 -->
+  <div id="top-buttons">
+    <button class="top-btn" id="btn-menu" title="메뉴" aria-label="사이드바 열기">
+      <i data-feather="menu" style="width: 20px; height: 20px;"></i>
+    </button>
+    <button class="top-btn" id="btn-clear" title="대화 초기화" aria-label="현재 대화 초기화">
+      <i data-feather="trash-2" style="width: 20px; height: 20px;"></i>
+    </button>
+    <button class="top-btn" id="btn-download" title="대화 다운로드" aria-label="대화 내용 다운로드">
+      <i data-feather="download" style="width: 20px; height: 20px;"></i>
+    </button>
+  </div>
+
+  <!-- 채팅 영역 -->
+  <main id="chat">
+    <div id="initial-hint">무엇을 도와드릴까요?</div>
+  </main>
+
+  <!-- 입력 영역 -->
+  <div id="input-container">
+    <div id="input-wrapper">
+      <input id="input" type="text" placeholder="메시지를 입력하세요..." autocomplete="off" />
+      <button id="btn-send" aria-label="메시지 전송">
+        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 10l7-7m0 0l7 7m-7-7v18"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- 토스트 알림 -->
+<div id="toast"></div>
+
+<script>
+class SmoliteChat {
+  constructor() {
+    this.STORAGE_KEY = 'smolite_chatrooms';
+    this.chatrooms = this.loadChatrooms();
+    this.currentRoom = null;
+    this.isLoading = false;
+    this.eventSource = null;
+    
+    this.initializeElements();
+    this.setupEventListeners();
+    this.renderRoomList();
+    this.renderChat();
+    
+    // 디바운스된 저장 함수
+    this.debouncedSave = this.debounce(this.saveChatrooms.bind(this), 500);
+  }
+
+  // 유틸리티 함수들
+  debounce(func, delay) {
+    let timeoutId;
+    return (...args) => {
+      clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => func.apply(this, args), delay);
+    };
+  }
+
+  sanitizeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  showToast(message, type = 'info') {
+    const toast = document.getElementById('toast');
+    toast.textContent = message;
+    toast.className = `show ${type}`;
+    setTimeout(() => {
+      toast.classList.remove('show');
+    }, 3000);
+  }
+
+  generateRoomName(text) {
+    return text.length > 30 ? text.substring(0, 30) + '...' : text;
+  }
+
+  // 저장소 관리
+  loadChatrooms() {
+    try {
+      return JSON.parse(localStorage.getItem(this.STORAGE_KEY) || '{}');
+    } catch (error) {
+      console.error('채팅방 데이터 로드 실패:', error);
+      return {};
+    }
+  }
+
+  saveChatrooms() {
+    try {
+      localStorage.setItem(this.STORAGE_KEY, JSON.stringify(this.chatrooms));
+    } catch (error) {
+      console.error('채팅방 데이터 저장 실패:', error);
+      this.showToast('저장 중 오류가 발생했습니다.', 'error');
+    }
+  }
+
+  // DOM 요소 초기화
+  initializeElements() {
+    this.elements = {
+      chat: document.getElementById('chat'),
+      input: document.getElementById('input'),
+      btnSend: document.getElementById('btn-send'),
+      hint: document.getElementById('initial-hint'),
+      sidebar: document.getElementById('sidebar'),
+      chatroomList: document.getElementById('chatroom-list'),
+      mainContent: document.getElementById('main-content'),
+      inputContainer: document.getElementById('input-container'),
+      overlay: document.getElementById('overlay')
+    };
+    
+    feather.replace();
+  }
+
+  // 이벤트 리스너 설정
+  setupEventListeners() {
+    // 메시지 전송
+    this.elements.input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        this.sendMessage();
+      }
+    });
+
+    this.elements.btnSend.addEventListener('click', () => this.sendMessage());
+
+    // 상단 버튼들
+    document.getElementById('btn-menu').addEventListener('click', () => this.toggleSidebar());
+    document.getElementById('btn-clear').addEventListener('click', () => this.clearChat());
+    document.getElementById('btn-download').addEventListener('click', () => this.downloadChat());
+    document.getElementById('btn-new-chat').addEventListener('click', () => this.createNewChat());
+
+    // 오버레이 클릭
+    this.elements.overlay.addEventListener('click', () => this.closeSidebar());
+
+    // ESC 키로 사이드바 닫기
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        this.closeSidebar();
+      }
+    });
+
+    // 창 크기 변경 대응
+    window.addEventListener('resize', () => {
+      if (window.innerWidth > 768 && this.elements.sidebar.classList.contains('active')) {
+        this.closeSidebar();
+      }
+    });
+  }
+
+  // 사이드바 관리
+  toggleSidebar() {
+    const isActive = this.elements.sidebar.classList.contains('active');
+    if (isActive) {
+      this.closeSidebar();
+    } else {
+      this.openSidebar();
+    }
+  }
+
+  openSidebar() {
+    this.elements.sidebar.classList.add('active');
+    this.elements.overlay.classList.add('active');
+    this.elements.mainContent.classList.add('sidebar-open');
+    this.elements.inputContainer.classList.add('sidebar-open');
+  }
+
+  closeSidebar() {
+    this.elements.sidebar.classList.remove('active');
+    this.elements.overlay.classList.remove('active');
+    this.elements.mainContent.classList.remove('sidebar-open');
+    this.elements.inputContainer.classList.remove('sidebar-open');
+  }
+
+  // 채팅방 관리
+  createNewChat() {
+    const name = prompt('새 채팅방 이름을 입력하세요:');
+    if (!name || !name.trim()) return;
+    
+    const roomName = name.trim();
+    if (this.chatrooms[roomName]) {
+      this.showToast('이미 존재하는 채팅방입니다.', 'error');
+      return;
+    }
+    
+    this.addChatRoom(roomName);
+    this.closeSidebar();
+  }
+
+  addChatRoom(name) {
+    this.chatrooms[name] = [];
+    this.currentRoom = name;
+    this.saveChatrooms();
+    this.renderRoomList();
+    this.renderChat();
+  }
+
+  deleteChatRoom(name) {
+    if (!confirm(`'${name}' 채팅방을 삭제하시겠습니까?`)) return;
+    
+    delete this.chatrooms[name];
+    if (this.currentRoom === name) {
+      this.currentRoom = Object.keys(this.chatrooms)[0] || null;
+    }
+    this.saveChatrooms();
+    this.renderRoomList();
+    this.renderChat();
+  }
+
+  // 채팅방 목록 렌더링
+  renderRoomList() {
+    this.elements.chatroomList.innerHTML = '';
+    
+    Object.keys(this.chatrooms).forEach(roomName => {
+      const div = document.createElement('div');
+      div.className = 'chatroom-item' + (roomName === this.currentRoom ? ' active' : '');
+      div.textContent = roomName;
+      
+      const deleteBtn = document.createElement('button');
+      deleteBtn.className = 'delete-btn';
+      deleteBtn.innerHTML = '×';
+      deleteBtn.onclick = (e) => {
+        e.stopPropagation();
+        this.deleteChatRoom(roomName);
+      };
+      
+      div.appendChild(deleteBtn);
+      
+      div.onclick = () => {
+        if (this.isLoading) return;
+        this.currentRoom = roomName;
+        this.renderRoomList();
+        this.renderChat();
+        this.closeSidebar();
+      };
+      
+      this.elements.chatroomList.appendChild(div);
+    });
+  }
+
+  // 채팅 렌더링
+  renderChat() {
+    this.elements.chat.innerHTML = '';
+    
+    if (!this.currentRoom) {
+      this.elements.hint.style.display = 'block';
+      return;
+    }
+    
+    this.elements.hint.style.display = 'none';
+    const messages = this.chatrooms[this.currentRoom] || [];
+    
+    messages.forEach(msg => this.renderMessage(msg, false));
+    this.scrollToBottom();
+  }
+
+  renderMessage(msg, animate = true) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'msg ' + (msg.role === 'user' ? 'user' : 'bot');
+    
+    if (msg.role === 'user') {
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.innerHTML = `<span class="who">나</span><span class="muted"> ${new Date(msg.ts).toLocaleTimeString()}</span>`;
+      wrapper.appendChild(meta);
+    }
+    
+    const content = document.createElement('div');
+    content.className = 'bubble';
+    
+    try {
+      content.innerHTML = marked.parse(msg.text || '');
+    } catch (error) {
+      content.textContent = msg.text || '';
+    }
+    
+    wrapper.appendChild(content);
+    this.elements.chat.appendChild(wrapper);
+    
+    // 코드 하이라이팅 및 복사 버튼 추가
+    this.enhanceCodeBlocks(wrapper);
+    
+    if (animate) {
+      this.scrollToBottom();
+    }
+  }
+
+  enhanceCodeBlocks(wrapper) {
+    wrapper.querySelectorAll('pre > code').forEach(code => {
+      try {
+        hljs.highlightElement(code);
+      } catch (error) {
+        console.warn('코드 하이라이팅 실패:', error);
+      }
+      
+      const pre = code.parentElement;
+      const wrap = document.createElement('div');
+      wrap.className = 'pre-wrap';
+      pre.parentNode.replaceChild(wrap, pre);
+      wrap.appendChild(pre);
+      
+      if (!wrap.querySelector('.copy-btn')) {
+        const copyBtn = document.createElement('button');
+        copyBtn.className = 'copy-btn';
+        copyBtn.textContent = '복사';
+        
+        copyBtn.onclick = async () => {
+          try {
+            await navigator.clipboard.writeText(code.innerText);
+            copyBtn.textContent = '복사됨!';
+            setTimeout(() => copyBtn.textContent = '복사', 1500);
+          } catch (error) {
+            copyBtn.textContent = '실패';
+            setTimeout(() => copyBtn.textContent = '복사', 1500);
+          }
+        };
+        
+        wrap.appendChild(copyBtn);
+      }
+    });
+  }
+
+  scrollToBottom() {
+    requestAnimationFrame(() => {
+      this.elements.chat.scrollTop = this.elements.chat.scrollHeight;
+    });
+  }
+
+  // 타이핑 인디케이터
+  showTypingIndicator() {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'msg bot';
+    wrapper.id = 'typing-indicator';
+    
+    const indicator = document.createElement('div');
+    indicator.className = 'typing-indicator';
+    indicator.innerHTML = `
+      <span>AI가 입력 중</span>
+      <div class="typing-dots">
+        <div class="typing-dot"></div>
+        <div class="typing-dot"></div>
+        <div class="typing-dot"></div>
+      </div>
+    `;
+    
+    wrapper.appendChild(indicator);
+    this.elements.chat.appendChild(wrapper);
+    this.scrollToBottom();
+  }
+
+  hideTypingIndicator() {
+    const indicator = document.getElementById('typing-indicator');
+    if (indicator) {
+      indicator.remove();
+    }
+  }
+
+  // 메시지 전송
+  async sendMessage() {
+    const text = this.elements.input.value.trim();
+    if (!text || this.isLoading) return;
+    
+    this.elements.input.value = '';
+    this.elements.hint.style.display = 'none';
+    this.isLoading = true;
+    this.elements.btnSend.disabled = true;
+
+    // 현재 방이 없으면 새로 생성
+    if (!this.currentRoom) {
+      const roomName = this.generateRoomName(text);
+      this.addChatRoom(roomName);
+    }
+
+    // 사용자 메시지 추가
+    const userMsg = {
+      role: 'user',
+      text: text,
+      ts: Date.now()
+    };
+    
+    this.chatrooms[this.currentRoom].push(userMsg);
+    this.debouncedSave();
+    this.renderMessage(userMsg);
+
+    // 타이핑 인디케이터 표시
+    this.showTypingIndicator();
+
+    // 봇 메시지 준비
+    const botMsg = {
+      role: 'bot',
+      text: '',
+      ts: Date.now() + 1
+    };
+    
+    this.chatrooms[this.currentRoom].push(botMsg);
+    this.debouncedSave();
+
+    try {
+      await this.streamBotResponse(text, botMsg);
+    } catch (error) {
+      console.error('메시지 전송 실패:', error);
+      botMsg.text = '⚠️ 오류가 발생했습니다. 다시 시도해 주세요.';
+      this.debouncedSave();
+    } finally {
+      this.hideTypingIndicator();
+      this.isLoading = false;
+      this.elements.btnSend.disabled = false;
+      this.elements.input.focus();
+    }
+  }
+
+  // 스트리밍 응답 처리
+  async streamBotResponse(text, botMsg) {
+    return new Promise((resolve, reject) => {
+      this.hideTypingIndicator();
+      this.renderMessage(botMsg);
+      
+      const botDom = Array.from(document.querySelectorAll('.msg.bot')).pop();
+      const contentNode = botDom.querySelector('.bubble');
+      
+      const url = `https://yuchan5386-smolite.hf.space/api/chat?message=${encodeURIComponent(text)}`;
+      
+      // 기존 연결 정리
+      if (this.eventSource) {
+        this.eventSource.close();
+      }
+      
+      this.eventSource = new EventSource(url);
+      let fullResponse = '';
+      let lastUpdateTime = Date.now();
+      
+      this.eventSource.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          
+          if (data.char !== undefined) {
+            fullResponse += data.char;
+            botMsg.text = fullResponse;
+            
+            // 너무 자주 업데이트하지 않도록 쓰로틀링
+            const now = Date.now();
+            if (now - lastUpdateTime > 50) {
+              this.updateBotMessage(contentNode, fullResponse);
+              lastUpdateTime = now;
+            }
+          } else if (data.done) {
+            this.updateBotMessage(contentNode, fullResponse);
+            this.eventSource.close();
+            this.eventSource = null;
+            resolve();
+          } else if (data.error) {
+            this.eventSource.close();
+            this.eventSource = null;
+            botMsg.text = '⚠️ ' + data.error;
+            contentNode.textContent = botMsg.text;
+            reject(new Error(data.error));
+          }
+        } catch (parseError) {
+          // JSON 파싱 실패 시 raw 텍스트로 처리
+          fullResponse += event.data;
+          botMsg.text = fullResponse;
+          contentNode.textContent = fullResponse;
+        }
+        
+        this.debouncedSave();
+      };
+      
+      this.eventSource.onerror = () => {
+        this.eventSource.close();
+        this.eventSource = null;
+        
+        if (!fullResponse) {
+          botMsg.text = '⚠️ 연결 오류가 발생했습니다.';
+          contentNode.textContent = botMsg.text;
+          reject(new Error('Connection error'));
+        } else {
+          resolve();
+        }
+      };
+      
+      // 타임아웃 설정 (30초)
+      setTimeout(() => {
+        if (this.eventSource) {
+          this.eventSource.close();
+          this.eventSource = null;
+          if (!fullResponse) {
+            botMsg.text = '⚠️ 응답 시간이 초과되었습니다.';
+            contentNode.textContent = botMsg.text;
+            reject(new Error('Timeout'));
+          }
+        }
+      }, 30000);
+    });
+  }
+
+  updateBotMessage(contentNode, text) {
+    try {
+      contentNode.innerHTML = marked.parse(text);
+      this.enhanceCodeBlocks(contentNode.closest('.msg'));
+    } catch (error) {
+      contentNode.textContent = text;
+    }
+    this.scrollToBottom();
+  }
+
+  // 채팅 관리 기능들
+  clearChat() {
+    if (!this.currentRoom) return;
+    if (!confirm('현재 대화를 모두 삭제하시겠습니까?')) return;
+    
+    this.chatrooms[this.currentRoom] = [];
+    this.saveChatrooms();
+    this.renderChat();
+    this.showToast('대화가 초기화되었습니다.');
+  }
+
+  downloadChat() {
+    if (!this.currentRoom) {
+      this.showToast('다운로드할 대화가 없습니다.', 'error');
+      return;
+    }
+    
+    try {
+      const chatData = {
+        roomName: this.currentRoom,
+        messages: this.chatrooms[this.currentRoom],
+        exportDate: new Date().toISOString()
+      };
+      
+      const blob = new Blob([JSON.stringify(chatData, null, 2)], {
+        type: 'application/json'
+      });
+      
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `${this.currentRoom}_${new Date().toISOString().split('T')[0]}.json`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      
+      this.showToast('대화가 다운로드되었습니다.');
+    } catch (error) {
+      console.error('다운로드 실패:', error);
+      this.showToast('다운로드 중 오류가 발생했습니다.', 'error');
+    }
+  }
+
+  // 정리 함수
+  cleanup() {
+    if (this.eventSource) {
+      this.eventSource.close();
+      this.eventSource = null;
+    }
+  }
+}
+
+// 애플리케이션 초기화
+document.addEventListener('DOMContentLoaded', () => {
+  window.smoliteChat = new SmoliteChat();
+});
+
+// 페이지 언로드 시 정리
+window.addEventListener('beforeunload', () => {
+  if (window.smoliteChat) {
+    window.smoliteChat.cleanup();
+  }
+});
+
+// 에러 핸들링
+window.addEventListener('error', (e) => {
+  console.error('전역 오류:', e.error);
+});
+
+window.addEventListener('unhandledrejection', (e) => {
+  console.error('처리되지 않은 Promise 거부:', e.reason);
+});
+</script>
+</body>
+</html>
