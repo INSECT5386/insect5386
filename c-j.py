@@ -29,7 +29,7 @@ class SwiGLU(tf.keras.layers.Layer):
         return self.out(x_val * tf.nn.silu(x_gate))
 
 class Adapter(tf.keras.layers.Layer):
-    def __init__(self, d_model, d_ff):
+    def __init__(self, d_model):
         super().__init__()
         self.proj = tf.keras.layers.Dense(64, dtype=tf.float32)
         self.out = tf.keras.layers.Dense(d_model, dtype=tf.float32)
@@ -45,8 +45,7 @@ class GPTBlock(tf.keras.layers.Layer):
         self.ln1 = tf.keras.layers.LayerNormalization(epsilon=1e-5, dtype=tf.float32)
         self.mha = tf.keras.layers.MultiHeadAttention(num_heads=num_heads, key_dim=d_model // num_heads, dtype=tf.float32)
         self.dropout1 = tf.keras.layers.Dropout(dropout_rate)
-        self.adapter_down = tf.keras.layers.Dense(adapter_dim, activation='gelu', dtype=tf.float32)
-        self.adapter_up = tf.keras.layers.Dense(d_model, dtype=tf.float32)
+        self.adapter = Adapter(d_model)
         self.ln2 = tf.keras.layers.LayerNormalization(epsilon=1e-5, dtype=tf.float32)
         self.ffn = SwiGLU(d_model, d_ff)
         self.dropout2 = tf.keras.layers.Dropout(dropout_rate)
@@ -87,3 +86,4 @@ class InLaM(tf.keras.Model):
         x = self.ln_f(x)
         logits = self.lm_head(x)
         return logits  # 이미 float32
+
