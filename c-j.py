@@ -35,9 +35,10 @@ class Adapter(tf.keras.layers.Layer):
         self.out = tf.keras.layers.Dense(d_model, dtype=tf.float32)
 
     def call(self, x):
+        skip = x
         x_proj = self.proj(x)
         x = tf.nn.gelu(x_proj)
-        return self.out(x)
+        return self.out(x) + skip
 
 class GPTBlock(tf.keras.layers.Layer):
     def __init__(self, d_model, d_ff, num_heads=8, dropout_rate=0.1, adapter_dim=64):
@@ -86,4 +87,5 @@ class InLaM(tf.keras.Model):
         x = self.ln_f(x)
         logits = self.lm_head(x)
         return logits  # 이미 float32
+
 
