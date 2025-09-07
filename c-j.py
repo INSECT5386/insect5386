@@ -65,10 +65,8 @@ class GPTBlock(tf.keras.layers.Layer):
         k = tf.reshape(tf.transpose(k, [0, 2, 1, 3]), [b, s, h * dh])
         attn_out = self.mha(query=q, value=x_norm, key=k, use_causal_mask=True, training=training)
         attn_out = self.dropout1(attn_out, training=training)
-        adapter_out = self.adapter_up(self.adapter_down(attn_out))
-        attn_out = attn_out + adapter_out
-        x = x + attn_out
         ffn_out = self.ffn(self.ln2(x))
+        x = self.adapter(ffn_out)
         x = x + self.dropout2(ffn_out, training=training)
         return x
 
@@ -87,5 +85,6 @@ class InLaM(tf.keras.Model):
         x = self.ln_f(x)
         logits = self.lm_head(x)
         return logits  # 이미 float32
+
 
 
