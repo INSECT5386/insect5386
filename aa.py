@@ -144,36 +144,61 @@ class SwiGLU(tf.keras.layers.Layer):
         x_val, x_gate = tf.split(x_proj, 2, axis=-1)
         return self.out(x_val * tf.nn.silu(x_gate))
 
+class SelectiveFilter(tf.keras.layers.Layer):
+    def __init__(self, d_model):
+        super().__init__()
+        self.wq = tf.keras.layers.Dense(d_model)
+        self.wk = tf.keras.layers.Dense(d_model)
+        self.wv = tf.keras.layers.Dense(d_model)
+        self.ws = tf.keras.layers.Dense(d_model)
+    
+    def call(self, x):
+        re = x
+        Q = self.wq(x)
+        K = self.wk(x)
+        V = self.wv(x)
+        Ws = tf.nn.sigmoid(self.ws(x))
+        o = (Ws * Q + (1.0 - Ws) * K) * V
+        return o + re
+
 class gMLPBlock(tf.keras.layers.Layer):
     def __init__(self, d_model, d_ff, seq_len, dropout_rate=0.1):
         super().__init__()
+        # 입력 정규화
         self.ln1 = tf.keras.layers.LayerNormalization(epsilon=1e-5)
-        # ✅ Causal Conv1D로 교체 + transpose 제거
-        self.spatial_proj = tf.keras.layers.Conv1D(
-            filters=seq_len,
-            kernel_size=1,
-            padding='causal',
-            use_bias=True,
-            dtype="bfloat16"
-        )
+        # 토큰 믹싱
+        self.spatial_proj = tf.keras.layers.Dense(seq_len)
+        # FFN 전 정규화
         self.ln2 = tf.keras.layers.LayerNormalization(epsilon=1e-5)
+        # SwiGLU
         self.ffn = SwiGLU(d_model)
+        # SelectiveFilter
+        self.s = SelectiveFilter(d_model=d_model)
+        # Dropout
         self.dropout = tf.keras.layers.Dropout(dropout_rate)
     
     def call(self, x, training=False):
         # 1️⃣ Input LayerNorm
         y = self.ln1(x)
         
-        # 2️⃣ Token mixing — ✅ transpose 없이 바로 Conv1D 적용
-        y = self.spatial_proj(y)  # [B, L, D] → [B, L, L] → token mixing
+        # 2️⃣ Token mixing
+        y_t = tf.transpose(y, [0, 2, 1])
+        y_t = self.spatial_proj(y_t)
+        y = tf.transpose(y_t, [0, 2, 1])
         x = x + self.dropout(y, training=training)  # residual
         
         # 3️⃣ Pre-FFN LayerNorm
         y = self.ln2(x)
-        # 4️⃣ FFN
-        x = x + self.dropout(self.ffn(y), training=training)  # residual
+
+        # 4️⃣ SelectiveFilter + Dropout
+        y = self.s(y)
+        y = self.dropout(y, training=training)
+
+        # 5️⃣ SwiGLU FFN + Dropout + residual
+        x = x + self.dropout(self.ffn(y), training=training)
         
         return x
+
 
 class InLaM(tf.keras.Model):
     def __init__(self, vocab_size, seq_len, d_model, d_ff, n_layers):
@@ -190,7 +215,7 @@ class InLaM(tf.keras.Model):
         embed_weights = self.token_embedding.weights[0]
         logits = tf.matmul(x, embed_weights, transpose_b=True)
         return tf.cast(logits, tf.float32)
-
+    
 # =======================
 # 손실/메트릭 정의
 # =======================
@@ -229,7 +254,7 @@ def masked_perplexity(y_true, y_pred, eps=0.1):
 # 모델 생성 & 컴파일
 # =======================
 with strategy.scope():
-    model = InLaM(vocab_size, seq_len=max_len, d_model=768, d_ff=768*4, n_layers=6)
+    model = InLaM(vocab_size, seq_len=max_len, d_model=512, d_ff=512*4, n_layers=6)
     dummy_input = tf.zeros((batch_size, max_len), dtype=tf.int32)
     _ = model(dummy_input, training=False)
     model.summary()
@@ -285,4 +310,3 @@ prompt = "딥러닝에 대해 설명하세요."
 sample_text = generate_text_topp(model, prompt, p=0.9)
 print("\n===== 생성 결과 =====\n")
 print(sample_text)
-
