@@ -183,7 +183,7 @@ class gMLPBlock(tf.keras.layers.Layer):
 
 # ===== InLaM Model with Positional Embedding =====
 class InLaM(tf.keras.Model):
-    def __init__(self, vocab_size, seq_len, d_model, d_ff, n_layers):
+    def __init__(self, vocab_size, seq_len, d_model, n_layers):
         super().__init__()
         self.seq_len = seq_len
         # Token embedding
@@ -244,7 +244,7 @@ def masked_perplexity(y_true, y_pred, eps=0.1):
 # 모델 생성 & 컴파일
 # =======================
 with strategy.scope():
-    model = InLaM(vocab_size, seq_len=max_len, d_model=512, d_ff=512*4, n_layers=8)
+    model = InLaM(vocab_size, seq_len=max_len, d_model=512, n_layers=8)
     dummy_input = tf.zeros((batch_size, max_len), dtype=tf.int32)
     _ = model(dummy_input, training=False)
     model.summary()
@@ -300,5 +300,6 @@ prompt = "딥러닝에 대해 설명하세요."
 sample_text = generate_text_topp(model, prompt, p=0.9)
 print("\n===== 생성 결과 =====\n")
 print(sample_text)
+
 
 
