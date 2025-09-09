@@ -144,78 +144,75 @@ class SwiGLU(tf.keras.layers.Layer):
         x_val, x_gate = tf.split(x_proj, 2, axis=-1)
         return self.out(x_val * tf.nn.silu(x_gate))
 
-class SelectiveFilter(tf.keras.layers.Layer):
-    def __init__(self, d_model):
+class RotaryPositionalEmbedding(tf.keras.layers.Layer):
+    def __init__(self, dim):
         super().__init__()
-        self.wq = tf.keras.layers.Dense(d_model)
-        self.wk = tf.keras.layers.Dense(d_model)
-        self.wv = tf.keras.layers.Dense(d_model)
-        self.ws = tf.keras.layers.Dense(d_model)
-    
+        inv_freq = 1.0 / (10000 ** (np.arange(0, dim, 2) / dim))
+        self.inv_freq = tf.constant(inv_freq, dtype=tf.float32)
+
     def call(self, x):
-        re = x
-        Q = self.wq(x)
-        K = self.wk(x)
-        V = self.wv(x)
-        Ws = tf.nn.sigmoid(self.ws(x))
-        o = (Ws * Q + (1.0 - Ws) * K) * V
-        return o + re
+        orig_dtype = x.dtype
+        # x shape: (batch, seq_len, d_model)
+        b, s, d = tf.unstack(tf.shape(x))
+        t = tf.range(s, dtype=tf.float32)
+
+        # RoPE 계산
+        freqs = tf.einsum('i,j->ij', t, self.inv_freq)
+        emb_sin = tf.sin(freqs)
+        emb_cos = tf.cos(freqs)
+
+        emb_sin = tf.reshape(emb_sin, [1, s, -1])
+        emb_cos = tf.reshape(emb_cos, [1, s, -1])
+
+        x1, x2 = x[..., ::2], x[..., 1::2]
+        x1 = tf.cast(x1, tf.float32)
+        x2 = tf.cast(x2, tf.float32)
+
+        x_rot = tf.concat([x1 * emb_cos - x2 * emb_sin,
+                           x1 * emb_sin + x2 * emb_cos], axis=-1)
+        x_rot = tf.cast(x_rot, orig_dtype)
+        return x_rot
 
 class gMLPBlock(tf.keras.layers.Layer):
     def __init__(self, d_model, d_ff, seq_len, dropout_rate=0.1):
         super().__init__()
-        # 입력 정규화
         self.ln1 = tf.keras.layers.LayerNormalization(epsilon=1e-5)
-        # 토큰 믹싱
         self.spatial_proj = tf.keras.layers.Dense(seq_len)
-        # FFN 전 정규화
         self.ln2 = tf.keras.layers.LayerNormalization(epsilon=1e-5)
-        # SwiGLU
         self.ffn = SwiGLU(d_model)
-        # SelectiveFilter
-        self.s = SelectiveFilter(d_model=d_model)
-        # Dropout
         self.dropout = tf.keras.layers.Dropout(dropout_rate)
-    
     def call(self, x, training=False):
-        # 1️⃣ Input LayerNorm
         y = self.ln1(x)
-        
-        # 2️⃣ Token mixing
+        y = self.rope(y)
         y_t = tf.transpose(y, [0, 2, 1])
         y_t = self.spatial_proj(y_t)
         y = tf.transpose(y_t, [0, 2, 1])
-        x = x + self.dropout(y, training=training)  # residual
-        
-        # 3️⃣ Pre-FFN LayerNorm
+        x = x + self.dropout(y, training=training)
+
         y = self.ln2(x)
-
-        # 4️⃣ SelectiveFilter + Dropout
-        y = self.s(y)
-        y = self.dropout(y, training=training)
-
-        # 5️⃣ SwiGLU FFN + Dropout + residual
         x = x + self.dropout(self.ffn(y), training=training)
-        
+
         return x
 
-
+# ===== InLaM Model with Positional Embedding =====
 class InLaM(tf.keras.Model):
     def __init__(self, vocab_size, seq_len, d_model, d_ff, n_layers):
         super().__init__()
+        self.seq_len = seq_len
+        # Token embedding
         self.token_embedding = tf.keras.layers.Embedding(vocab_size, d_model, dtype="bfloat16")
         self.blocks = [gMLPBlock(d_model, d_ff, seq_len) for _ in range(n_layers)]
         self.ln_f = tf.keras.layers.LayerNormalization(epsilon=1e-5, dtype="bfloat16")
 
-    def call(self, x, training=False):
+    def call(self, x, training=False):         # shape: (1, seq_len, d_model)
         x = self.token_embedding(x)
         for block in self.blocks:
             x = block(x, training=training)
         x = self.ln_f(x)
+        # Output logits
         embed_weights = self.token_embedding.weights[0]
         logits = tf.matmul(x, embed_weights, transpose_b=True)
         return tf.cast(logits, tf.float32)
-    
 # =======================
 # 손실/메트릭 정의
 # =======================
