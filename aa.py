@@ -144,6 +144,18 @@ class SwiGLU(tf.keras.layers.Layer):
         x_val, x_gate = tf.split(x_proj, 2, axis=-1)
         return self.out(x_val * tf.nn.silu(x_gate))
 
+class ContextAwareGate(tf.keras.layers.Layer):
+    def __init__(self, d_model):
+        super().__init__()
+        self.query_proj = tf.keras.layers.Dense(d_model)  # 마지막 토큰 → 게이트 조절
+
+    def call(self, x, last_token):  # x: (B, S, D), last_token: (B, D)
+        # 마지막 토큰으로 게이트 조절
+        query_gate = self.query_proj(last_token)[:, tf.newaxis, :]  # (B, 1, D)
+        # 토큰별 게이트 생성
+        gate = tf.sigmoid(x + query_gate)  # (B, S, D) — 컨텍스트 + 쿼리 기반
+        return x * gate
+
 class gMLPBlock(tf.keras.layers.Layer):
     def __init__(self, d_model, seq_len):
         super().__init__()
@@ -288,4 +300,5 @@ prompt = "딥러닝에 대해 설명하세요."
 sample_text = generate_text_topp(model, prompt, p=0.9)
 print("\n===== 생성 결과 =====\n")
 print(sample_text)
+
 
