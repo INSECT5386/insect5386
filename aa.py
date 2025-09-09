@@ -144,35 +144,6 @@ class SwiGLU(tf.keras.layers.Layer):
         x_val, x_gate = tf.split(x_proj, 2, axis=-1)
         return self.out(x_val * tf.nn.silu(x_gate))
 
-class RotaryPositionalEmbedding(tf.keras.layers.Layer):
-    def __init__(self, dim):
-        super().__init__()
-        inv_freq = 1.0 / (10000 ** (np.arange(0, dim, 2) / dim))
-        self.inv_freq = tf.constant(inv_freq, dtype=tf.float32)
-
-    def call(self, x):
-        orig_dtype = x.dtype
-        # x shape: (batch, seq_len, d_model)
-        b, s, d = tf.unstack(tf.shape(x))
-        t = tf.range(s, dtype=tf.float32)
-
-        # RoPE 계산
-        freqs = tf.einsum('i,j->ij', t, self.inv_freq)
-        emb_sin = tf.sin(freqs)
-        emb_cos = tf.cos(freqs)
-
-        emb_sin = tf.reshape(emb_sin, [1, s, -1])
-        emb_cos = tf.reshape(emb_cos, [1, s, -1])
-
-        x1, x2 = x[..., ::2], x[..., 1::2]
-        x1 = tf.cast(x1, tf.float32)
-        x2 = tf.cast(x2, tf.float32)
-
-        x_rot = tf.concat([x1 * emb_cos - x2 * emb_sin,
-                           x1 * emb_sin + x2 * emb_cos], axis=-1)
-        x_rot = tf.cast(x_rot, orig_dtype)
-        return x_rot
-
 class gMLPBlock(tf.keras.layers.Layer):
     def __init__(self, d_model, d_ff, seq_len, dropout_rate=0.1):
         super().__init__()
@@ -183,7 +154,7 @@ class gMLPBlock(tf.keras.layers.Layer):
         self.dropout = tf.keras.layers.Dropout(dropout_rate)
     def call(self, x, training=False):
         y = self.ln1(x)
-        y = self.rope(y)
+
         y_t = tf.transpose(y, [0, 2, 1])
         y_t = self.spatial_proj(y_t)
         y = tf.transpose(y_t, [0, 2, 1])
@@ -201,11 +172,18 @@ class InLaM(tf.keras.Model):
         self.seq_len = seq_len
         # Token embedding
         self.token_embedding = tf.keras.layers.Embedding(vocab_size, d_model, dtype="bfloat16")
+        # Learnable positional embedding
+        self.pos_embedding = tf.keras.layers.Embedding(seq_len, d_model, dtype="bfloat16")
         self.blocks = [gMLPBlock(d_model, d_ff, seq_len) for _ in range(n_layers)]
         self.ln_f = tf.keras.layers.LayerNormalization(epsilon=1e-5, dtype="bfloat16")
 
-    def call(self, x, training=False):         # shape: (1, seq_len, d_model)
-        x = self.token_embedding(x)
+    def call(self, x, training=False):
+        # Positions
+        batch_size = tf.shape(x)[0]
+        positions = tf.range(self.seq_len)[tf.newaxis, :]  # shape: (1, seq_len)
+        pos_embed = self.pos_embedding(positions)         # shape: (1, seq_len, d_model)
+        # Token + Position embedding
+        x = self.token_embedding(x) + pos_embed
         for block in self.blocks:
             x = block(x, training=training)
         x = self.ln_f(x)
@@ -213,7 +191,6 @@ class InLaM(tf.keras.Model):
         embed_weights = self.token_embedding.weights[0]
         logits = tf.matmul(x, embed_weights, transpose_b=True)
         return tf.cast(logits, tf.float32)
-# =======================
 # 손실/메트릭 정의
 # =======================
 def smoothed_loss_keras(y_true, y_pred, eps=0.1):
@@ -251,7 +228,7 @@ def masked_perplexity(y_true, y_pred, eps=0.1):
 # 모델 생성 & 컴파일
 # =======================
 with strategy.scope():
-    model = InLaM(vocab_size, seq_len=max_len, d_model=512, d_ff=512*4, n_layers=6)
+    model = InLaM(vocab_size, seq_len=max_len, d_model=512, d_ff=512*4, n_layers=8)
     dummy_input = tf.zeros((batch_size, max_len), dtype=tf.int32)
     _ = model(dummy_input, training=False)
     model.summary()
