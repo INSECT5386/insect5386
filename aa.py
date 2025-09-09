@@ -145,24 +145,28 @@ class SwiGLU(tf.keras.layers.Layer):
         return self.out(x_val * tf.nn.silu(x_gate))
 
 class gMLPBlock(tf.keras.layers.Layer):
-    def __init__(self, d_model, d_ff, seq_len, dropout_rate=0.1):
+    def __init__(self, d_model, seq_len):
         super().__init__()
-        self.ln1 = tf.keras.layers.LayerNormalization(epsilon=1e-5)
+        self.ln1 = tf.keras.layers.LayerNormalization()
         self.spatial_proj = tf.keras.layers.Dense(seq_len)
-        self.ln2 = tf.keras.layers.LayerNormalization(epsilon=1e-5)
+        self.context_gate = ContextAwareGate(d_model)  # ← NEW!
+        self.ln2 = tf.keras.layers.LayerNormalization()
         self.ffn = SwiGLU(d_model)
-        self.dropout = tf.keras.layers.Dropout(dropout_rate)
+
     def call(self, x, training=False):
         y = self.ln1(x)
-
         y_t = tf.transpose(y, [0, 2, 1])
         y_t = self.spatial_proj(y_t)
         y = tf.transpose(y_t, [0, 2, 1])
+
+        # 👇 Context-Aware Gate 추가 — 말귀 해결!
+        last_token = x[:, -1, :]  # 생성 모델 기준
+        y = self.context_gate(y, last_token)
+
         x = x + self.dropout(y, training=training)
 
         y = self.ln2(x)
         x = x + self.dropout(self.ffn(y), training=training)
-
         return x
 
 # ===== InLaM Model with Positional Embedding =====
@@ -284,3 +288,4 @@ prompt = "딥러닝에 대해 설명하세요."
 sample_text = generate_text_topp(model, prompt, p=0.9)
 print("\n===== 생성 결과 =====\n")
 print(sample_text)
+
