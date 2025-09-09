@@ -147,9 +147,16 @@ class SwiGLU(tf.keras.layers.Layer):
 class gMLPBlock(tf.keras.layers.Layer):
     def __init__(self, d_model, d_ff, seq_len, dropout_rate=0.1):
         super().__init__()
-        self.ln1 = tf.keras.layers.LayerNormalization(epsilon=1e-5)  # input normalization
-        self.spatial_proj = tf.keras.layers.Dense(seq_len)           # token mixing
-        self.ln2 = tf.keras.layers.LayerNormalization(epsilon=1e-5) # pre-FFN normalization
+        self.ln1 = tf.keras.layers.LayerNormalization(epsilon=1e-5)
+        # ✅ Causal Conv1D로 교체 + transpose 제거
+        self.spatial_proj = tf.keras.layers.Conv1D(
+            filters=seq_len,
+            kernel_size=1,
+            padding='causal',
+            use_bias=True,
+            dtype="bfloat16"
+        )
+        self.ln2 = tf.keras.layers.LayerNormalization(epsilon=1e-5)
         self.ffn = SwiGLU(d_model)
         self.dropout = tf.keras.layers.Dropout(dropout_rate)
     
@@ -157,10 +164,8 @@ class gMLPBlock(tf.keras.layers.Layer):
         # 1️⃣ Input LayerNorm
         y = self.ln1(x)
         
-        # 2️⃣ Token mixing
-        y_t = tf.transpose(y, [0, 2, 1])          # (batch, d_model, seq_len)
-        y_t = self.spatial_proj(y_t)              # O(N*d)
-        y = tf.transpose(y_t, [0, 2, 1])
+        # 2️⃣ Token mixing — ✅ transpose 없이 바로 Conv1D 적용
+        y = self.spatial_proj(y)  # [B, L, D] → [B, L, L] → token mixing
         x = x + self.dropout(y, training=training)  # residual
         
         # 3️⃣ Pre-FFN LayerNorm
@@ -169,7 +174,6 @@ class gMLPBlock(tf.keras.layers.Layer):
         x = x + self.dropout(self.ffn(y), training=training)  # residual
         
         return x
-
 
 class InLaM(tf.keras.Model):
     def __init__(self, vocab_size, seq_len, d_model, d_ff, n_layers):
@@ -281,3 +285,4 @@ prompt = "딥러닝에 대해 설명하세요."
 sample_text = generate_text_topp(model, prompt, p=0.9)
 print("\n===== 생성 결과 =====\n")
 print(sample_text)
+
