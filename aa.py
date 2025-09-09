@@ -134,45 +134,70 @@ dataset = dataset.shuffle(1000, seed=SEED).batch(batch_size, drop_remainder=True
 with strategy.scope():
     dist_dataset = strategy.experimental_distribute_dataset(dataset)
 
+import tensorflow as tf
+
 class SwiGLU(tf.keras.layers.Layer):
-    def __init__(self, d_model):
+    def __init__(self, d_model, expansion=4):
         super().__init__()
-        self.proj = tf.keras.layers.Dense(d_model*4)
-        self.out  = tf.keras.layers.Dense(d_model)
+        self.proj = tf.keras.layers.Dense(d_model * expansion, dtype="bfloat16")
+        self.out  = tf.keras.layers.Dense(d_model, dtype="bfloat16")
+
     def call(self, x):
         x_proj = self.proj(x)
         x_val, x_gate = tf.split(x_proj, 2, axis=-1)
         return self.out(x_val * tf.nn.silu(x_gate))
 
+
 class ContextAwareGate(tf.keras.layers.Layer):
     def __init__(self, d_model):
         super().__init__()
-        self.query_proj = tf.keras.layers.Dense(d_model)  # 마지막 토큰 → 게이트 조절
+        self.query_proj = tf.keras.layers.Dense(d_model, dtype="bfloat16")
+        self.ln = tf.keras.layers.LayerNormalization(dtype="bfloat16")
+        self.scale = tf.Variable(0.1, dtype="bfloat16")  # 게이트 포화 방지 스케일
 
     def call(self, x, last_token):  # x: (B, S, D), last_token: (B, D)
-        # 마지막 토큰으로 게이트 조절
         query_gate = self.query_proj(last_token)[:, tf.newaxis, :]  # (B, 1, D)
-        # 토큰별 게이트 생성
-        gate = tf.sigmoid(x + query_gate)  # (B, S, D) — 컨텍스트 + 쿼리 기반
+        combined = x + query_gate  # (B, S, D)
+        combined = self.ln(combined)
+        gate = tf.sigmoid(combined * self.scale)  # 포화 방지 스케일링
         return x * gate
 
+
 class gMLPBlock(tf.keras.layers.Layer):
-    def __init__(self, d_model, seq_len):
+    def __init__(self, d_model, max_seq_len, dropout_rate=0.1):
         super().__init__()
-        self.ln1 = tf.keras.layers.LayerNormalization()
-        self.spatial_proj = tf.keras.layers.Dense(seq_len)
-        self.context_gate = ContextAwareGate(d_model)  # ← NEW!
-        self.ln2 = tf.keras.layers.LayerNormalization()
+        self.ln1 = tf.keras.layers.LayerNormalization(dtype="bfloat16")
+        # ✅ 동적 시퀀스 길이 지원: EinsumDense로 공간 혼합 구현
+        self.spatial_proj = tf.keras.layers.EinsumDense(
+            equation="BSD,DS->BSD",
+            output_shape=(d_model, max_seq_len),  # 가중치는 최대 길이 기준으로 학습
+            dtype="bfloat16"
+        )
+        self.context_gate = ContextAwareGate(d_model)
+        self.ln2 = tf.keras.layers.LayerNormalization(dtype="bfloat16")
         self.ffn = SwiGLU(d_model)
+        self.dropout = tf.keras.layers.Dropout(dropout_rate)
 
-    def call(self, x, training=False):
+    def call(self, x, last_token=None, training=False):
+        seq_len = tf.shape(x)[1]
+
+        # LayerNorm + Spatial Mixing
         y = self.ln1(x)
-        y_t = tf.transpose(y, [0, 2, 1])
-        y_t = self.spatial_proj(y_t)
-        y = tf.transpose(y_t, [0, 2, 1])
+        y_t = tf.transpose(y, [0, 2, 1])  # (B, D, S)
+        y_t = self.spatial_proj(y_t)       # (B, D, S_max) → 실제 S에 맞게 슬라이스
+        y_t = y_t[:, :, :seq_len]          # ✅ 동적 길이에 맞춰 슬라이싱
+        y = tf.transpose(y_t, [0, 2, 1])   # (B, S, D)
 
-        # 👇 Context-Aware Gate 추가 — 말귀 해결!
-        last_token = x[:, -1, :]  # 생성 모델 기준
+        # Context Gate: 학습 시에는 마지막에서 두 번째 토큰 사용 (미래 유출 방지)
+        if last_token is None:
+            if training:
+                # 학습 시: teacher forcing → 마지막 토큰은 라벨이므로 사용 불가
+                # 직전 토큰 사용 (예: i번째 위치에서는 i-1번째 토큰 기준 게이팅)
+                last_token = x[:, -2, :] if seq_len > 1 else x[:, 0, :]
+            else:
+                # 추론 시: 마지막 토큰 사용
+                last_token = x[:, -1, :]
+
         y = self.context_gate(y, last_token)
 
         x = x + self.dropout(y, training=training)
@@ -181,33 +206,37 @@ class gMLPBlock(tf.keras.layers.Layer):
         x = x + self.dropout(self.ffn(y), training=training)
         return x
 
-# ===== InLaM Model with Positional Embedding =====
+
 class InLaM(tf.keras.Model):
-    def __init__(self, vocab_size, seq_len, d_model, n_layers):
+    def __init__(self, vocab_size, max_seq_len, d_model, n_layers, dropout_rate=0.1):
         super().__init__()
-        self.seq_len = seq_len
-        # Token embedding
+        self.max_seq_len = max_seq_len
         self.token_embedding = tf.keras.layers.Embedding(vocab_size, d_model, dtype="bfloat16")
-        # Learnable positional embedding
-        self.pos_embedding = tf.keras.layers.Embedding(seq_len, d_model, dtype="bfloat16")
-        self.blocks = [gMLPBlock(d_model, d_ff, seq_len) for _ in range(n_layers)]
+        self.pos_embedding = tf.keras.layers.Embedding(max_seq_len, d_model, dtype="bfloat16")
+        # ✅ gMLPBlock도 max_seq_len 전달
+        self.blocks = [gMLPBlock(d_model, max_seq_len, dropout_rate) for _ in range(n_layers)]
         self.ln_f = tf.keras.layers.LayerNormalization(epsilon=1e-5, dtype="bfloat16")
 
-    def call(self, x, training=False):
-        # Positions
+    def call(self, x, last_token=None, training=False):
         batch_size = tf.shape(x)[0]
-        positions = tf.range(self.seq_len)[tf.newaxis, :]  # shape: (1, seq_len)
-        pos_embed = self.pos_embedding(positions)         # shape: (1, seq_len, d_model)
-        # Token + Position embedding
-        x = self.token_embedding(x) + pos_embed
+        seq_len = tf.shape(x)[1]
+
+        # ✅ 동적 포지셔널 임베딩
+        positions = tf.range(seq_len)[tf.newaxis, :]  # (1, S)
+        positions = tf.clip_by_value(positions, 0, self.max_seq_len - 1)  # 안전장치
+        pos_embed = self.pos_embedding(positions)  # (1, S, D)
+        x = self.token_embedding(x) + pos_embed    # (B, S, D)
+
+        # ✅ 각 블록에 last_token 전달
         for block in self.blocks:
-            x = block(x, training=training)
-        x = self.ln_f(x)
-        # Output logits
-        embed_weights = self.token_embedding.weights[0]
-        logits = tf.matmul(x, embed_weights, transpose_b=True)
-        return tf.cast(logits, tf.float32)
-# 손실/메트릭 정의
+            x = block(x, last_token=last_token, training=training)
+
+        # ✅ 로짓 계산 전 float32로 캐스팅 (정밀도 보존)
+        x = tf.cast(self.ln_f(x), tf.float32)
+        embed_weights = tf.cast(self.token_embedding.weights[0], tf.float32)
+        logits = tf.matmul(x, embed_weights, transpose_b=True)  # (B, S, V)
+        return logits
+
 # =======================
 def smoothed_loss_keras(y_true, y_pred, eps=0.1):
     y_true = tf.cast(y_true, tf.int32)
@@ -300,6 +329,7 @@ prompt = "딥러닝에 대해 설명하세요."
 sample_text = generate_text_topp(model, prompt, p=0.9)
 print("\n===== 생성 결과 =====\n")
 print(sample_text)
+
 
 
 
