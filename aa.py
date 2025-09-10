@@ -170,7 +170,7 @@ class gMLPBlock(tf.keras.layers.Layer):
         # ✅ 동적 시퀀스 길이 지원: EinsumDense로 공간 혼합 구현
         self.spatial_proj = tf.keras.layers.EinsumDense(
             equation="BSD,DS->BSD",
-            output_shape=(d_model, max_seq_len),  # 가중치는 최대 길이 기준으로 학습
+            output_shape=(max_seq_len, max_seq_len),  # 가중치는 최대 길이 기준으로 학습
             dtype="bfloat16"
         )
         self.context_gate = ContextAwareGate(d_model)
@@ -329,6 +329,7 @@ prompt = "딥러닝에 대해 설명하세요."
 sample_text = generate_text_topp(model, prompt, p=0.9)
 print("\n===== 생성 결과 =====\n")
 print(sample_text)
+
 
 
 
