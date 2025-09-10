@@ -164,10 +164,9 @@ class gMLPBlock(tf.keras.layers.Layer):
     def __init__(self, d_model, max_seq_len, dropout_rate=0.1):
         super().__init__()
         self.ln1 = tf.keras.layers.LayerNormalization(dtype="bfloat16")
-        # ✅ 공간 혼합: S×S 가중치 행렬로 토큰 간 상호작용 모델링
         self.spatial_proj = tf.keras.layers.EinsumDense(
-            equation="BSD,SN->BDN",  # 입력 (B, S, D) → 가중치 (S, N) → 출력 (B, D, N)
-            output_shape=(d_model, max_seq_len),  # 가중치 shape: (max_seq_len, max_seq_len)
+            equation="BDS,SN->BDN",  # ✅ 입력 (B, D, S), 가중치 (S, N), 출력 (B, D, N)
+            output_shape=(max_seq_len,),  # ✅ 가중치의 두 번째 차원 = N = max_seq_len
             dtype="bfloat16"
         )
         self.context_gate = ContextAwareGate(d_model)
@@ -327,10 +326,3 @@ prompt = "딥러닝에 대해 설명하세요."
 sample_text = generate_text_topp(model, prompt, p=0.9)
 print("\n===== 생성 결과 =====\n")
 print(sample_text)
-
-
-
-
-
-
-
