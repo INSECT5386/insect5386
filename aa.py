@@ -148,15 +148,27 @@ class gMLPBlock(tf.keras.layers.Layer):
     def __init__(self, d_model, seq_len, dropout_rate=0.1):
         super().__init__()
         self.ln1 = tf.keras.layers.LayerNormalization(epsilon=1e-5)
+        self.spatial_gate = tf.keras.layers.Dense(seq_len, use_bias=False)
         self.spatial_proj = tf.keras.layers.Dense(seq_len)
         self.ln2 = tf.keras.layers.LayerNormalization(epsilon=1e-5)
         self.ffn = SwiGLU(d_model)
         self.dropout = tf.keras.layers.Dropout(dropout_rate)
+
     def call(self, x, training=False):
         y = self.ln1(x)
-        y_t = tf.transpose(y, [0, 2, 1])
-        y_t = self.spatial_proj(y_t)
-        y = tf.transpose(y_t, [0, 2, 1])
+        y_t = tf.transpose(y, [0, 2, 1])  # (B, D, S)
+
+        # ✅ 1. relu는 axis 없이 사용
+        gate_logits = self.spatial_gate(y_t)
+        gate = tf.nn.relu(gate_logits) + 1e-8  # 작은 값으로 0 방지
+
+        # ✅ 2. L1 정규화 추가 → 게이트 합 = 1 (소프트맥스 대체)
+        gate = gate / tf.reduce_sum(gate, axis=-1, keepdims=True)
+
+        # gated spatial mixing
+        y_t = self.spatial_proj(y_t) * gate
+
+        y = tf.transpose(y_t, [0, 2, 1])  # (B, S, D)
         x = x + self.dropout(y, training=training)
         y = self.ln2(x)
         x = x + self.dropout(self.ffn(y), training=training)
