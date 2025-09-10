@@ -135,9 +135,9 @@ with strategy.scope():
     dist_dataset = strategy.experimental_distribute_dataset(dataset)
 
 class SwiGLU(tf.keras.layers.Layer):
-    def __init__(self, d_model):
+    def __init__(self, d_model, f_d=8//3):
         super().__init__()
-        self.proj = tf.keras.layers.Dense(d_model*2)
+        self.proj = tf.keras.layers.Dense(d_model*f_d)
         self.out  = tf.keras.layers.Dense(d_model)
     def call(self, x):
         x_proj = self.proj(x)
@@ -154,15 +154,12 @@ class gMLPBlock(tf.keras.layers.Layer):
         self.dropout = tf.keras.layers.Dropout(dropout_rate)
     def call(self, x, training=False):
         y = self.ln1(x)
-
         y_t = tf.transpose(y, [0, 2, 1])
         y_t = self.spatial_proj(y_t)
         y = tf.transpose(y_t, [0, 2, 1])
         x = x + self.dropout(y, training=training)
-
         y = self.ln2(x)
         x = x + self.dropout(self.ffn(y), training=training)
-
         return x
 
 class InLaM(tf.keras.Model):
@@ -227,7 +224,7 @@ def masked_perplexity(y_true, y_pred, eps=0.1):
 # 모델 생성 & 컴파일
 # =======================
 with strategy.scope():
-    model = InLaM(vocab_size, max_seq_len=max_len, d_model=512, n_layers=8, dropout_rate=0.1)
+    model = InLaM(vocab_size, max_seq_len=max_len, d_model=512, n_layers=12, dropout_rate=0.1)
     dummy_input = tf.zeros((batch_size, max_len), dtype=tf.int32)
     _ = model(dummy_input, training=False)
     model.summary()
@@ -247,7 +244,7 @@ print("✅ 모델 가중치 저장 완료!")
 # =======================
 # 샘플 생성 함수
 # =======================
-def generate_text_topp(model, prompt, max_len=128, max_gen=98, p=0.9, temperature=0.68, min_len=20):
+def generate_text_topp(model, prompt, max_len=1024, max_gen=200, p=0.9, temperature=0.68, min_len=20):
     model_input = text_to_ids(f"<start> {prompt} <sep>")
     model_input = model_input[:max_len]
     generated = list(model_input)
