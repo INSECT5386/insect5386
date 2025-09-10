@@ -135,75 +135,35 @@ with strategy.scope():
     dist_dataset = strategy.experimental_distribute_dataset(dataset)
 
 class SwiGLU(tf.keras.layers.Layer):
-    def __init__(self, d_model, expansion=2):
+    def __init__(self, d_model):
         super().__init__()
-        self.proj = tf.keras.layers.Dense(d_model * expansion, dtype="bfloat16")
-        self.out  = tf.keras.layers.Dense(d_model, dtype="bfloat16")
-
+        self.proj = tf.keras.layers.Dense(d_model*2)
+        self.out  = tf.keras.layers.Dense(d_model)
     def call(self, x):
         x_proj = self.proj(x)
         x_val, x_gate = tf.split(x_proj, 2, axis=-1)
         return self.out(x_val * tf.nn.silu(x_gate))
 
-class ContextAwareGate(tf.keras.layers.Layer):
-    def __init__(self, d_model):
-        super().__init__()
-        self.query_proj = tf.keras.layers.Dense(d_model, dtype="bfloat16")
-        self.ln = tf.keras.layers.LayerNormalization(dtype="bfloat16")
-        self.scale = tf.Variable(0.1, dtype="bfloat16")  # 게이트 포화 방지 스케일
-
-    def call(self, x, last_token):  # x: (B, S, D), last_token: (B, S, D) ← 수정: 시퀀스 전체에 대한 컨텍스트
-        # last_token: 각 위치 i에 대한 컨텍스트 토큰 (예: i-1번째 토큰)
-        query_gate = self.query_proj(last_token)  # (B, S, D)
-        combined = x + query_gate  # (B, S, D)
-        combined = self.ln(combined)
-        gate = tf.sigmoid(combined * self.scale)  # 포화 방지 스케일링
-        return x * gate
-
 class gMLPBlock(tf.keras.layers.Layer):
-    def __init__(self, d_model, max_seq_len, dropout_rate=0.1):
+    def __init__(self, d_model, seq_len, dropout_rate=0.1):
         super().__init__()
-        self.ln1 = tf.keras.layers.LayerNormalization(dtype="bfloat16")
-        self.spatial_proj = tf.keras.layers.EinsumDense(
-            equation="BDS,SN->BDN",  # ✅ 입력 (B, D, S), 가중치 (S, N), 출력 (B, D, N)
-            output_shape=(max_seq_len,),  # ✅ 가중치의 두 번째 차원 = N = max_seq_len
-            dtype="bfloat16"
-        )
-        self.context_gate = ContextAwareGate(d_model)
-        self.ln2 = tf.keras.layers.LayerNormalization(dtype="bfloat16")
+        self.ln1 = tf.keras.layers.LayerNormalization(epsilon=1e-5)
+        self.spatial_proj = tf.keras.layers.Dense(seq_len)
+        self.ln2 = tf.keras.layers.LayerNormalization(epsilon=1e-5)
         self.ffn = SwiGLU(d_model)
         self.dropout = tf.keras.layers.Dropout(dropout_rate)
-
-    def call(self, x, last_token=None, training=False):
-        seq_len = tf.shape(x)[1]
-
-        # LayerNorm + Spatial Mixing
+    def call(self, x, training=False):
         y = self.ln1(x)
-        y_t = tf.transpose(y, [0, 2, 1])  # (B, D, S)
-        y_t = self.spatial_proj(y_t)       # (B, D, S_max)
-        y_t = y_t[:, :, :seq_len]          # ✅ 동적 길이에 맞춰 슬라이싱 → (B, D, S)
-        y = tf.transpose(y_t, [0, 2, 1])   # (B, S, D)
 
-        # Context Gate: 학습 시에는 각 위치 i에서 i-1번째 토큰을 컨텍스트로 사용 (미래 유출 방지)
-        if last_token is None:
-            if training:
-                # ✅ 위치별 컨텍스트: 각 i 위치에서 i-1번째 토큰 사용
-                # 첫 번째 위치는 자기 자신 또는 패딩 토큰으로 처리
-                shifted_x = tf.concat([x[:, :1, :], x[:, :-1, :]], axis=1)  # (B, S, D)
-                last_token = shifted_x
-            else:
-                # 추론 시: 모든 위치에서 마지막 토큰 사용 (autoregressive generation 가정)
-                last_token = x[:, -1:, :]  # (B, 1, D)
-                last_token = tf.tile(last_token, [1, seq_len, 1])  # (B, S, D)
-
-        y = self.context_gate(y, last_token)
-
+        y_t = tf.transpose(y, [0, 2, 1])
+        y_t = self.spatial_proj(y_t)
+        y = tf.transpose(y_t, [0, 2, 1])
         x = x + self.dropout(y, training=training)
 
         y = self.ln2(x)
         x = x + self.dropout(self.ffn(y), training=training)
-        return x
 
+        return x
 
 class InLaM(tf.keras.Model):
     def __init__(self, vocab_size, max_seq_len, d_model, n_layers, dropout_rate=0.1):
@@ -211,7 +171,7 @@ class InLaM(tf.keras.Model):
         self.max_seq_len = max_seq_len
         self.token_embedding = tf.keras.layers.Embedding(vocab_size, d_model, dtype="bfloat16")
         self.pos_embedding = tf.keras.layers.Embedding(max_seq_len, d_model, dtype="bfloat16")
-        self.blocks = [gMLPBlock(d_model, max_seq_len, dropout_rate) for _ in range(n_layers)]
+        self.blocks = [gMLPBlock(d_model, seq_len=max_seq_len, dropout_rate=0.1) for _ in range(n_layers)]
         self.ln_f = tf.keras.layers.LayerNormalization(epsilon=1e-5, dtype="bfloat16")
 
     def call(self, x, last_token=None, training=False):
@@ -223,17 +183,14 @@ class InLaM(tf.keras.Model):
         positions = tf.clip_by_value(positions, 0, self.max_seq_len - 1)
         pos_embed = self.pos_embedding(positions)     # (1, S, D)
         x = self.token_embedding(x) + pos_embed       # (B, S, D)
-
-        # 각 블록에 last_token 전달 (None이면 블록 내부에서 자동 생성)
         for block in self.blocks:
-            x = block(x, last_token=last_token, training=training)
-
-        # 로짓 계산 전 float32로 캐스팅 (정밀도 보존)
-        x = tf.cast(self.ln_f(x), tf.float32)
-        embed_weights = tf.cast(self.token_embedding.weights[0], tf.float32)
-        logits = tf.matmul(x, embed_weights, transpose_b=True)  # (B, S, V)
-        return logits
-
+            x = block(x, training=training)
+        x = self.ln_f(x)
+        # Output logits
+        embed_weights = self.token_embedding.weights[0]
+        logits = tf.matmul(x, embed_weights, transpose_b=True)
+        return tf.cast(logits, tf.float32)
+# 손실/메트릭 정의
 # =======================
 def smoothed_loss_keras(y_true, y_pred, eps=0.1):
     y_true = tf.cast(y_true, tf.int32)
