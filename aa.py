@@ -134,11 +134,8 @@ dataset = dataset.shuffle(1000, seed=SEED).batch(batch_size, drop_remainder=True
 with strategy.scope():
     dist_dataset = strategy.experimental_distribute_dataset(dataset)
 
-import tensorflow as tf
-
-
 class SwiGLU(tf.keras.layers.Layer):
-    def __init__(self, d_model, expansion=4):
+    def __init__(self, d_model, expansion=2):
         super().__init__()
         self.proj = tf.keras.layers.Dense(d_model * expansion, dtype="bfloat16")
         self.out  = tf.keras.layers.Dense(d_model, dtype="bfloat16")
@@ -147,7 +144,6 @@ class SwiGLU(tf.keras.layers.Layer):
         x_proj = self.proj(x)
         x_val, x_gate = tf.split(x_proj, 2, axis=-1)
         return self.out(x_val * tf.nn.silu(x_gate))
-
 
 class ContextAwareGate(tf.keras.layers.Layer):
     def __init__(self, d_model):
@@ -163,7 +159,6 @@ class ContextAwareGate(tf.keras.layers.Layer):
         combined = self.ln(combined)
         gate = tf.sigmoid(combined * self.scale)  # 포화 방지 스케일링
         return x * gate
-
 
 class gMLPBlock(tf.keras.layers.Layer):
     def __init__(self, d_model, max_seq_len, dropout_rate=0.1):
@@ -276,7 +271,7 @@ def masked_perplexity(y_true, y_pred, eps=0.1):
 # 모델 생성 & 컴파일
 # =======================
 with strategy.scope():
-    model = InLaM(vocab_size, seq_len=max_len, d_model=512, n_layers=8)
+    model = InLaM(vocab_size, max_seq_len=max_len, d_model=512, n_layers=8, dropout_rate=0.1)
     dummy_input = tf.zeros((batch_size, max_len), dtype=tf.int32)
     _ = model(dummy_input, training=False)
     model.summary()
@@ -332,6 +327,7 @@ prompt = "딥러닝에 대해 설명하세요."
 sample_text = generate_text_topp(model, prompt, p=0.9)
 print("\n===== 생성 결과 =====\n")
 print(sample_text)
+
 
 
 
