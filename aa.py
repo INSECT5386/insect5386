@@ -144,7 +144,7 @@ class SwiGLU(tf.keras.layers.Layer):
         x_val, x_gate = tf.split(x_proj, 2, axis=-1)
         return self.out(x_val * tf.nn.silu(x_gate))
 
-class SuperGatedMLP(tf.keras.layers.Layer):
+class Block(tf.keras.layers.Layer):
     def __init__(self, d_model, seq_len, expand_ratio=2, kernel_size=15, dropout_rate=0.1):
         super().__init__()
         self.d_model = d_model
@@ -191,7 +191,7 @@ class InLaM(tf.keras.Model):
         self.max_seq_len = max_seq_len
         self.token_embedding = tf.keras.layers.Embedding(vocab_size, d_model, dtype="bfloat16")
         self.pos_embedding = tf.keras.layers.Embedding(max_seq_len, d_model, dtype="bfloat16")
-        self.blocks = [gMLPBlock(d_model, seq_len=max_seq_len, dropout_rate=0.1) for _ in range(n_layers)]
+        self.blocks = [Block(d_model, seq_len=max_seq_len, dropout_rate=0.1) for _ in range(n_layers)]
         self.ln_f = tf.keras.layers.LayerNormalization(epsilon=1e-5, dtype="bfloat16")
 
     def call(self, x, last_token=None, training=False):
@@ -303,5 +303,6 @@ prompt = "딥러닝에 대해 설명하세요."
 sample_text = generate_text_topp(model, prompt, p=0.9)
 print("\n===== 생성 결과 =====\n")
 print(sample_text)
+
 
 
