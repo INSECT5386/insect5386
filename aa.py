@@ -144,31 +144,42 @@ class SwiGLU(tf.keras.layers.Layer):
         x_val, x_gate = tf.split(x_proj, 2, axis=-1)
         return self.out(x_val * tf.nn.silu(x_gate))
 
-class gMLPBlock(tf.keras.layers.Layer):
-    def __init__(self, d_model, seq_len, dropout_rate=0.1):
+class SuperGatedMLP(tf.keras.layers.Layer):
+    def __init__(self, d_model, seq_len, expand_ratio=2, kernel_size=15, dropout_rate=0.1):
         super().__init__()
+        self.d_model = d_model
+        self.hidden_dim = d_model * expand_ratio
+        
+        # ✅ 지역 문맥 강화 — Depthwise Conv1D (causal!)
+        self.conv = tf.keras.layers.Conv1D(
+            filters=d_model,
+            kernel_size=kernel_size,
+            padding='causal',  # 👈 핵심 변경!
+            groups=d_model,
+            activation=None,
+            name="local_context_conv"
+        )
+        
+        # ✅ 전역 문맥 — 확장된 공간 게이팅
+        self.proj_up = tf.keras.layers.Dense(self.hidden_dim, name="expand_channel")
+        self.spatial_gate = tf.keras.layers.Dense(seq_len, use_bias=True, name="spatial_gate")
+        self.spatial_proj = tf.keras.layers.Dense(seq_len, use_bias=False, name="spatial_proj")
+        self.proj_down = tf.keras.layers.Dense(d_model, name="compress_channel")
+        
         self.ln1 = tf.keras.layers.LayerNormalization(epsilon=1e-5)
-        self.spatial_gate = tf.keras.layers.Dense(seq_len, use_bias=False)
-        self.spatial_proj = tf.keras.layers.Dense(seq_len)
         self.ln2 = tf.keras.layers.LayerNormalization(epsilon=1e-5)
         self.ffn = SwiGLU(d_model)
         self.dropout = tf.keras.layers.Dropout(dropout_rate)
 
     def call(self, x, training=False):
         y = self.ln1(x)
-        y_t = tf.transpose(y, [0, 2, 1])  # (B, D, S)
-
-        # ✅ ReLU 대신 SiLU 사용
-        gate_logits = self.spatial_gate(y_t)
-        gate = tf.nn.silu(gate_logits) + 1e-8
-
-        # ✅ L1 정규화 → softmax 대체
-        gate = gate / tf.reduce_sum(gate, axis=-1, keepdims=True)
-
-        # gated spatial mixing
+        y = self.conv(y)  # (B, S, D) — 이제 미래 정보 차단됨!
+        y = self.proj_up(y)  # (B, S, D*expand)
+        y_t = tf.transpose(y, [0, 2, 1])  # (B, D*expand, S)
+        gate = tf.nn.silu(self.spatial_gate(y_t))
         y_t = self.spatial_proj(y_t) * gate
-
-        y = tf.transpose(y_t, [0, 2, 1])  # (B, S, D)
+        y = tf.transpose(y_t, [0, 2, 1])  # (B, S, D*expand)
+        y = self.proj_down(y)  # (B, S, D)
         x = x + self.dropout(y, training=training)
         y = self.ln2(x)
         x = x + self.dropout(self.ffn(y), training=training)
@@ -292,4 +303,5 @@ prompt = "딥러닝에 대해 설명하세요."
 sample_text = generate_text_topp(model, prompt, p=0.9)
 print("\n===== 생성 결과 =====\n")
 print(sample_text)
+
 
