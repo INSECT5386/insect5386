@@ -158,11 +158,11 @@ class gMLPBlock(tf.keras.layers.Layer):
         y = self.ln1(x)
         y_t = tf.transpose(y, [0, 2, 1])  # (B, D, S)
 
-        # ✅ 1. relu는 axis 없이 사용
+        # ✅ ReLU 대신 SiLU 사용
         gate_logits = self.spatial_gate(y_t)
-        gate = tf.nn.relu(gate_logits) + 1e-8  # 작은 값으로 0 방지
+        gate = tf.nn.silu(gate_logits) + 1e-8
 
-        # ✅ 2. L1 정규화 추가 → 게이트 합 = 1 (소프트맥스 대체)
+        # ✅ L1 정규화 → softmax 대체
         gate = gate / tf.reduce_sum(gate, axis=-1, keepdims=True)
 
         # gated spatial mixing
@@ -173,7 +173,7 @@ class gMLPBlock(tf.keras.layers.Layer):
         y = self.ln2(x)
         x = x + self.dropout(self.ffn(y), training=training)
         return x
-
+    
 class InLaM(tf.keras.Model):
     def __init__(self, vocab_size, max_seq_len, d_model, n_layers, dropout_rate=0.1):
         super().__init__()
@@ -236,7 +236,7 @@ def masked_perplexity(y_true, y_pred, eps=0.1):
 # 모델 생성 & 컴파일
 # =======================
 with strategy.scope():
-    model = InLaM(vocab_size, max_seq_len=max_len, d_model=512, n_layers=12, dropout_rate=0.1)
+    model = InLaM(vocab_size, max_seq_len=max_len, d_model=384, n_layers=16, dropout_rate=0.1)
     dummy_input = tf.zeros((batch_size, max_len), dtype=tf.int32)
     _ = model(dummy_input, training=False)
     model.summary()
@@ -292,3 +292,4 @@ prompt = "딥러닝에 대해 설명하세요."
 sample_text = generate_text_topp(model, prompt, p=0.9)
 print("\n===== 생성 결과 =====\n")
 print(sample_text)
+
