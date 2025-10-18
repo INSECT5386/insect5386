@@ -120,11 +120,6 @@ dataset = dataset.shuffle(1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
 print("✅ TF Dataset 생성 완료!")
 
-import tensorflow as tf
-from tensorflow.keras import layers, Model
-import numpy as np # 더미 인풋을 위한 임포트
-
-# SwiGLU FFN 구현 추가
 class SwiGLUFFN(tf.keras.layers.Layer):
     def __init__(self, dim):
         super().__init__()
@@ -156,95 +151,24 @@ def apply_rope(x):
     x_rot = tf.concat([x1 * cos - x2 * sin, x1 * sin + x2 * cos], axis=-1)
     return x_rot
 
-# ==================== RealMambaCore =====================
-class RealMambaCore(tf.keras.layers.Layer):
-    def __init__(self, hidden_dim):
-        super().__init__()
-        self.hidden_dim = hidden_dim
-
-        self.gate_proj = layers.Dense(hidden_dim)
-        self.input_proj = layers.Dense(hidden_dim)
-
-        self.A = self.add_weight(shape=(hidden_dim,),
-                                 initializer=tf.keras.initializers.RandomNormal(mean=-0.5, stddev=0.1),
-                                 trainable=True, name="A")
-        self.B = self.add_weight(shape=(hidden_dim,),
-                                 initializer='random_normal',
-                                 trainable=True, name="B")
-        self.C = self.add_weight(shape=(hidden_dim,),
-                                 initializer='random_normal',
-                                 trainable=True, name="C")
-        self.D = self.add_weight(shape=(hidden_dim,),
-                                 initializer='zeros',
-                                 trainable=True, name="D")
-
-        self.ffn = SwiGLUFFN(hidden_dim)
-
-        self.norm = layers.LayerNormalization()
-        self.output_proj = layers.Dense(hidden_dim)
-
-    def fft_convolve(self, u_t, kernel_t, T):
-        pad_len = T - 1
-        seq_len = T + pad_len
-
-        fft_len_float = tf.math.ceil(tf.math.log(tf.cast(seq_len, tf.float32)) / tf.math.log(2.0))
-        fft_len = tf.cast(2 ** fft_len_float, tf.int32)
-
-        u_padded = tf.pad(u_t, [[0, 0], [0, 0], [pad_len, fft_len - seq_len]])
-        K_padded = tf.pad(kernel_t, [[0, 0], [0, fft_len - T]])
-
-        U_f = tf.signal.fft(tf.cast(tf.complex(u_padded, 0.0), tf.complex64))
-        K_f = tf.signal.fft(tf.cast(tf.complex(K_padded, 0.0), tf.complex64))
-
-        Y_f = U_f * tf.expand_dims(K_f, 0)
-        y_full = tf.signal.ifft(Y_f)
-        y_real = tf.math.real(y_full)[..., pad_len:pad_len + T]
-
-        return y_real
-
-    def call(self, x):
-        B = tf.shape(x)[0]
-        T = tf.shape(x)[1]
-        D = self.hidden_dim
-
-        gate = tf.nn.silu(self.gate_proj(x))
-        x_proj = self.input_proj(x)
-        u = gate * x_proj
-
-        time_idx = tf.cast(tf.range(T), dtype=self.A.dtype)[:, None]
-        A_pow = tf.pow(tf.expand_dims(self.A, 0), time_idx)
-        kernel = self.B * A_pow
-
-        u_t = tf.transpose(u, [0, 2, 1])
-        kernel_t = tf.transpose(kernel, [1, 0])
-
-        y_real = self.fft_convolve(u_t, kernel_t, T)
-        y = tf.transpose(y_real, [0, 2, 1])
-
-        y = self.C * y + self.D * u
-
-        y = self.ffn(y)
-        y = self.norm(y)
-        y = self.output_proj(y)
-
-        return y
-
 # ======================= Cobrablock ======================
 class Cobrablock(tf.keras.layers.Layer):
     def __init__(self, d_model, dropout_rate=0.1):
         super().__init__()
         self.norm1 = layers.LayerNormalization(epsilon=1e-5)
-        self.mamba = RealMambaCore(d_model)
+        self.attn = Layers.MultiHeadAttention(8, 32)
         self.dropout1 = layers.Dropout(dropout_rate)
 
         self.norm2 = layers.LayerNormalization(epsilon=1e-5)
         self.dropout2 = layers.Dropout(dropout_rate)
-
+        self.ffn = SwiGLUFFN(d_model)
     def call(self, x, training=False):
         residual = x
         x = self.norm1(x)
-        x = self.mamba(x)
+        x = self.attn(x)
         x = residual + self.dropout1(x, training=training)
+
+        x = self.ffn(x)
 
         residual = x
         x = self.norm2(x)
@@ -321,7 +245,7 @@ def create_lr_schedule(initial_lr=5e-5, decay_steps=10000, decay_rate=0.9):
 # 모델 생성
 model = CobraModel(
     vocab_size=vocab_size,
-    d_model=192,
+    d_model=256,
     n_layers=10
 )
 
@@ -397,3 +321,4 @@ def generate_text_topp(model, prompt, max_len=100, max_gen=98, p=0.9, temperatur
 
 print("\n\n===== 생성 결과 =====")  
 print(generate_text_topp(model, "안녕", p=0.9))
+
