@@ -164,12 +164,16 @@ class Cobrablock(tf.keras.layers.Layer):
         self.ffn = SwiGLUFFN(d_model)
         self.w1 = layers.Dense(d_model)
         self.w2 = layers.Dense(d_model)
+        self.w3 = layers.Dense(d_model)
     def call(self, x, training=False):
         residual = x
         x = self.norm1(x)
         q = self.w1(x)
         k = self.w2(x)
-        x = self.attn(x)
+        v = self.w3(x)
+        q = apply_rope(q)
+        k = apply_rope(k)
+        x = self.attn(q, k, v, use_causal_mask=True)
         x = residual + self.dropout1(x, training=training)
 
         x = self.ffn(x)
@@ -191,11 +195,8 @@ class CobraModel(tf.keras.Model):
 
     def call(self, x, training=False):
         x = self.token_embedding(x)
-        x = apply_rope(x)
-
         for block in self.blocks:
             x = block(x, training=training)
-
         x = self.ln_f(x)
         logits = tf.matmul(x, self.token_embedding.embeddings, transpose_b=True)
         return logits
@@ -325,6 +326,7 @@ def generate_text_topp(model, prompt, max_len=100, max_gen=98, p=0.9, temperatur
 
 print("\n\n===== 생성 결과 =====")  
 print(generate_text_topp(model, "안녕", p=0.9))
+
 
 
 
