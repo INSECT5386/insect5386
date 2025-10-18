@@ -162,9 +162,13 @@ class Cobrablock(tf.keras.layers.Layer):
         self.norm2 = layers.LayerNormalization(epsilon=1e-5)
         self.dropout2 = layers.Dropout(dropout_rate)
         self.ffn = SwiGLUFFN(d_model)
+        self.w1 = layers.Dense(d_model)
+        self.w2 = layers.Dense(d_model)
     def call(self, x, training=False):
         residual = x
         x = self.norm1(x)
+        q = self.w1(x)
+        k = self.w2(x)
         x = self.attn(x)
         x = residual + self.dropout1(x, training=training)
 
@@ -321,5 +325,6 @@ def generate_text_topp(model, prompt, max_len=100, max_gen=98, p=0.9, temperatur
 
 print("\n\n===== 생성 결과 =====")  
 print(generate_text_topp(model, "안녕", p=0.9))
+
 
 
