@@ -156,7 +156,7 @@ class Cobrablock(tf.keras.layers.Layer):
     def __init__(self, d_model, dropout_rate=0.1):
         super().__init__()
         self.norm1 = layers.LayerNormalization(epsilon=1e-5)
-        self.attn = Layers.MultiHeadAttention(8, 32)
+        self.attn = layers.MultiHeadAttention(8, 32)
         self.dropout1 = layers.Dropout(dropout_rate)
 
         self.norm2 = layers.LayerNormalization(epsilon=1e-5)
@@ -321,4 +321,5 @@ def generate_text_topp(model, prompt, max_len=100, max_gen=98, p=0.9, temperatur
 
 print("\n\n===== 생성 결과 =====")  
 print(generate_text_topp(model, "안녕", p=0.9))
+
 
